@@ -1,6 +1,9 @@
 use std::{cmp::Ord, time::SystemTime};
 use std::path::{ PathBuf, Path };
+use std::hash::{Hash};
+use serde::{Serialize, Deserialize };
 
+#[derive(Hash, Debug, Serialize, Deserialize)]
 pub struct FileInfo {
     pub path: PathBuf,
     pub modified_at: SystemTime,
@@ -58,6 +61,13 @@ pub fn walk_path<'a >(path: &'a str) -> Result<Vec<FileInfo>, Box<dyn std::error
     files.sort();
     
     return Ok(files);
+}
+
+pub fn get_files_with_hash(path: &str) -> Result<(u64, Vec<FileInfo>), Box<dyn std::error::Error>>{
+    let files = walk_path(path)?;
+    let hash = crate::crypto::calculate_hash(&files);
+
+    return Ok((hash, files));
 }
 
 
