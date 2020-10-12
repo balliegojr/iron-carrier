@@ -4,10 +4,10 @@ use toml::from_str;
 
 use crate::RSyncError;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Config {
     pub paths: HashMap<String, String>,
-    pub peers: Option<Vec<String>>,
+    pub peers: Vec<String>,
     pub port: Option<u32>
 }
 
@@ -44,7 +44,7 @@ mod tests {
         ".to_owned();
 
         let config = Config::parse_content(config_content)?;
-        let peers = config.peers.unwrap();
+        let peers = config.peers;
 
         assert_eq!(1, peers.len());
         assert_eq!("127.0.0.1:8888", peers[0]);
