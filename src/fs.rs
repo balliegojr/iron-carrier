@@ -1,7 +1,12 @@
-use std::{cmp::Ord, time::SystemTime};
-use std::path::{ PathBuf, Path };
-use std::hash::{Hash};
+use std::{
+    cmp::Ord, 
+    time::SystemTime,
+    path::{PathBuf, Path},
+    hash::Hash
+};
 use serde::{Serialize, Deserialize };
+use tokio::fs;
+
 
 #[derive(Hash, Debug, Serialize, Deserialize, Clone)]
 pub struct FileInfo {
@@ -31,18 +36,17 @@ impl Ord for FileInfo {
     }
 }
 
-pub fn walk_path<'a >(root_path: &'a str) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+pub async fn walk_path<'a >(root_path: &'a str) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
     let root_path = Path::new(root_path).to_path_buf();
     let mut paths = vec![root_path.clone()];
     let mut files = Vec::new();
     
+    
     while let Some(path) = paths.pop() {
-        let entries = path.read_dir()?;
-        for entry in entries {
-            let entry = entry?;
-
+        let mut entries = fs::read_dir(path).await?;
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            let metadata = entry.metadata()?;
+            let metadata = entry.metadata().await?;
 
             if path.is_dir() {
                 paths.push(path);
@@ -63,8 +67,8 @@ pub fn walk_path<'a >(root_path: &'a str) -> Result<Vec<FileInfo>, Box<dyn std::
     return Ok(files);
 }
 
-pub fn get_files_with_hash(path: &str) -> Result<(u64, Vec<FileInfo>), Box<dyn std::error::Error>>{
-    let files = walk_path(path)?;
+pub async fn get_files_with_hash(path: &str) -> Result<(u64, Vec<FileInfo>), Box<dyn std::error::Error>>{
+    let files = walk_path(path).await?;
     let hash = crate::crypto::calculate_hash(&files);
 
     return Ok((hash, files));
@@ -75,9 +79,11 @@ pub fn get_files_with_hash(path: &str) -> Result<(u64, Vec<FileInfo>), Box<dyn s
 mod tests {
     use super::*;
 
-    #[test]
-    fn can_read_local_files() {
-        let files = walk_path("./samples").unwrap();
+    #[tokio::test]
+    async fn can_read_local_files() {
+        let files = walk_path("./samples").await.unwrap();
+        
+
         assert_eq!(files[0].path.to_str(), Some("config_peer_a.toml"));
         assert_eq!(files[1].path.to_str(), Some("config_peer_b.toml"));
 

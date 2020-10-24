@@ -1,8 +1,8 @@
-use std::{error::Error, fmt::Display, thread};
+use std::{error::Error, fmt::Display};
 
 use fs::FileInfo;
-use network::peer::{Peer, SyncAction};
-use thread::JoinHandle;
+use network::{peer::{Peer, SyncAction}, server::Server};
+use tokio::task::JoinHandle;
 
 pub mod config;
 mod fs;
@@ -17,9 +17,13 @@ pub enum RSyncError {
     InvalidConfigFile,
     InvalidAlias(String),
     ErrorReadingLocalFiles,
-    CantStartServer(Box<dyn Error>),
-    CantConnectToPeer(Box<dyn Error>),
-    CantCommunicateWithPeer(String)
+    ErrorFetchingPeerFiles,
+    CantStartServer(String),
+    CantConnectToPeer(String),
+    CantCommunicateWithPeer(String),
+    ErrorSendingFile,
+    ErrorWritingFile(String),
+    ErrorParsingCommands
 }
 
 impl Display for RSyncError {
@@ -32,6 +36,10 @@ impl Display for RSyncError {
             RSyncError::CantStartServer(_) => { write!(f, "Can't start server") }
             RSyncError::CantConnectToPeer(_) => { write!(f, "Can't connect to peer") }
             RSyncError::CantCommunicateWithPeer(p) => { write!(f, "Can't communicate with peer {}", p) }
+            RSyncError::ErrorFetchingPeerFiles => { write!(f, "Can't fetch peer file list")}
+            RSyncError::ErrorSendingFile => { write!(f, "Error sending file")}
+            RSyncError::ErrorWritingFile(reason) => {write!(f, "Error writing file: {}", reason)}
+            RSyncError::ErrorParsingCommands => { write!(f, "Error parsing command from peer")}
         }
     }
 }
@@ -39,24 +47,20 @@ impl Display for RSyncError {
 impl Error for RSyncError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match *self {
-            RSyncError::InvalidConfigPath => { None }
-            RSyncError::InvalidConfigFile => { None }
-            RSyncError::InvalidAlias(_) => { None }
-            RSyncError::ErrorReadingLocalFiles => { None }
-            RSyncError::CantStartServer(_) => { None }
-            RSyncError::CantConnectToPeer(_) => { None }
-            RSyncError::CantCommunicateWithPeer(_) => { None }
+            _ => { None }
         }
     }
 }
 
 type AliasHashFiles<'a> = (&'a str, u64, Vec<FileInfo>);
 
-pub fn start_server(config: config::Config) -> JoinHandle<()>{
-    thread::spawn(move || {
-        let server = network::server::Server::new(&config);
-        match server.wait_commands() {
-            Ok(_) => {}
+pub fn start_server<'a>(config: &'a config::Config) -> JoinHandle<()> {
+    let config = config.clone();
+
+    tokio::spawn(async move {
+        let mut server = Server::new(&config);
+        match server.wait_commands().await {
+            Ok(_) => { println!("Server listening on port {}", &config.port.unwrap_or_else(|| DEFAULT_PORT)); }
             Err(err) => { eprintln!("{}", err) }
         }
     })
@@ -69,10 +73,10 @@ fn need_to_send_file<'a>(alias: &'a str, file: &FileInfo, peer: &Peer) -> bool {
     }
 }
 
-pub fn full_sync_available_peers(config: &config::Config) -> Result<(), RSyncError>{
+pub async fn full_sync_available_peers(config: &config::Config) -> Result<(), RSyncError>{
     let mut sync_folders: Vec<AliasHashFiles> = Vec::new();
     for (path_alias, path)  in &config.paths {
-        let (hash, local_files) = match fs::get_files_with_hash(path) {
+        let (hash, local_files) = match fs::get_files_with_hash(path).await {
             Ok(files) => files,
             Err(_) => return Err(RSyncError::ErrorReadingLocalFiles)
         };
@@ -84,15 +88,15 @@ pub fn full_sync_available_peers(config: &config::Config) -> Result<(), RSyncErr
     {
         let alias_hash: Vec<(String, u64)> = sync_folders.iter().map(|(alias, hash, _)| (alias.to_string(), *hash)).collect();
         for peer_address in &config.peers {
-            let mut peer = match Peer::new(peer_address) {
+            let mut peer = match Peer::new(peer_address).await {
                 Ok(peer) => peer,
                 Err(e) => {
-                    eprintln!("Peer {} is not available", peer_address);
+                    eprintln!("{}: {}", peer_address, e);
                     continue;
                 }
             };
 
-            match peer.fetch_unsynced_file_list(&alias_hash) {
+            match peer.fetch_unsynced_file_list(&alias_hash).await {
                 Ok(_) => { peers.push(peer) }
                 Err(e) => { 
                     eprintln!("{}", e);
@@ -117,7 +121,7 @@ pub fn full_sync_available_peers(config: &config::Config) -> Result<(), RSyncErr
     }
 
     for peer in &mut peers {
-        peer.sync()
+        peer.sync().await
     }
 
     Ok(())

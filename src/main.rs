@@ -8,7 +8,8 @@ fn print_error(e: r_sync::RSyncError) -> ! {
     exit(-1);
 }
 
-fn main() {
+#[tokio::main(flavor="current_thread")]
+async fn main() {
     let mut args = std::env::args();
     args.next();
 
@@ -23,12 +24,11 @@ fn main() {
         Err(e) => { print_error(e) }
     };
 
-    // let server_handle = r_sync::start_server(config.clone());
-    match r_sync::full_sync_available_peers(&config) {
+    let server = r_sync::start_server(&config);
+    match r_sync::full_sync_available_peers(&config).await {
         Ok(_) => { println!("Sync completed! ") }
         Err(e) => { print_error(e) }
     }
 
-    // server_handle.join().unwrap();
-
+    server.await;
 }

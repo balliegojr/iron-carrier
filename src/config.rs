@@ -19,7 +19,7 @@ impl Config {
         }
     }
 
-    pub fn parse_content(content: String) -> Result<Self, RSyncError> {
+    pub(crate) fn parse_content(content: String) -> Result<Self, RSyncError> {
         match from_str(&content) {
             Ok(config) => Ok(config),
             Err(_) => Err(RSyncError::InvalidConfigFile)
