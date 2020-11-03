@@ -1,19 +1,24 @@
-use std::{
-    cmp::Ord, 
-    time::SystemTime,
-    path::{PathBuf, Path},
-    hash::Hash
-};
+use std::{cmp::Ord, collections::HashMap, hash::Hash, path::{PathBuf, Path}, time::SystemTime};
 use serde::{Serialize, Deserialize };
 use tokio::fs;
 
+use crate::RSyncError;
 
-#[derive(Hash, Debug, Serialize, Deserialize, Clone)]
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileInfo {
     pub path: PathBuf,
     pub modified_at: SystemTime,
     pub created_at: SystemTime,
     pub size: u64
+}
+
+impl Hash for FileInfo {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.path.hash(state);
+        self.modified_at.hash(state);
+        self.size.hash(state);
+    }
 }
 
 impl Eq for FileInfo {}
@@ -67,11 +72,22 @@ pub async fn walk_path<'a >(root_path: &'a str) -> Result<Vec<FileInfo>, Box<dyn
     return Ok(files);
 }
 
-pub async fn get_files_with_hash(path: &str) -> Result<(u64, Vec<FileInfo>), Box<dyn std::error::Error>>{
-    let files = walk_path(path).await?;
+pub async fn get_files_with_hash(path: &str) -> Result<(u64, Vec<FileInfo>), RSyncError>{
+    let files = walk_path(path).await.map_err(|_| RSyncError::ErrorReadingLocalFiles)?;
     let hash = crate::crypto::calculate_hash(&files);
 
     return Ok((hash, files));
+}
+
+pub async fn get_hash_for_alias(alias_path: &HashMap<String, String>) -> Result<HashMap<String, u64>, RSyncError> {
+    let mut result = HashMap::new();
+    
+    for (alias, path) in alias_path {
+        let (hash, _) = get_files_with_hash(path).await?;
+        result.insert(alias.to_string(), hash);
+    }
+
+    Ok(result)
 }
 
 

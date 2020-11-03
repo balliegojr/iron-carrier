@@ -23,6 +23,6 @@ mod tests {
         };
 
         let files = vec![file];
-        assert_eq!(calculate_hash(&files), 8269395793225122601);
+        assert_eq!(calculate_hash(&files), 7142228073880149007);
     }
 }

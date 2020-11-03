@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+
 use serde::{Serialize, Deserialize};
 use tokio::{io::AsyncRead, io::AsyncWrite, io::BufReader};
 use bytes::{ BytesMut, Buf, };
 use tokio::io::{AsyncReadExt, AsyncWriteExt };
 
 use crate::{RSyncError, fs::FileInfo};
+
+use super::server::ServerStatus;
 
 const BUFFER_SIZE: usize = 8 * 1024;
 const COMMAND_SIZE: usize = 8;
@@ -14,12 +18,20 @@ const COMMAND_SIZE: usize = 8;
 pub(crate) enum Command {
     Ping,
     Pong,
-    FetchUnsyncedFileList(Vec<(String, u64)>),
-    FileList(Vec<(String, Vec<FileInfo>)>),
+    CommandSuccess,
+    CommandFailed,
+    QueryFileList(String),
+    ReplyFileList(String, Vec<FileInfo>),
     InitFileTransfer(String, FileInfo),
     FileTransferSuccess,
-    FileTransferFailed
-}
+    FileTransferFailed,
+    QueryServerSyncHash,
+    ReplyServerSyncHash(HashMap<String, u64>),
+    TryInitSync,
+    SyncFinished(HashMap<String, u64>),
+}   
+
+//TODO: break CommandStream into CommandReader and CommandWriter
 
 /// Receive or send parsed Command using a TcpStream
 pub(crate) struct CommandStream<T: AsyncRead + AsyncWrite + Unpin> {

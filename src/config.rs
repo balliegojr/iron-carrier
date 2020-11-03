@@ -4,7 +4,7 @@ use toml::from_str;
 
 use crate::RSyncError;
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize)]
 pub struct Config {
     pub paths: HashMap<String, String>,
     pub peers: Vec<String>,

@@ -1,39 +1,33 @@
-use std::path::PathBuf;
-use tokio::{fs::File, net::TcpListener, net::TcpStream, prelude::*};
+use serde::{Serialize, Deserialize};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use tokio::{fs::File, net::TcpListener, net::TcpStream, prelude::*, sync::mpsc::Receiver, sync::mpsc::Sender};
 
-use crate::{
-    DEFAULT_PORT, 
-    RSyncError, 
-    config::Config, 
-    fs::FileInfo,
-    network::stream::CommandStream
-};
+use crate::{DEFAULT_PORT, RSyncError, config::Config, fs::FileInfo, network::stream::CommandStream, sync::SyncEvent};
 
 use super::stream::Command;
 
 
+#[derive(Serialize,Deserialize, Debug, PartialEq, Clone)]
 pub enum ServerStatus {
     Idle,
-    Listening
+    SyncInProgress(String)
 }
-
-pub struct Server<'a> {
+pub struct Server {
     port: u32,
     status: ServerStatus,
-    config: &'a Config
+    config: Arc<Config>
 }
 
-struct ServerPeerHandler<'a>  {
-    config: &'a Config,
-    stream: CommandStream<TcpStream>
+struct ServerPeerHandler  {
+    config: Arc<Config>,
+    stream: CommandStream<TcpStream>,
+    socket_addr: String,
+    sync_in_progress: bool
 }
 
-impl <'a> Server<'a> {
-    pub fn new(config: &'a Config) -> Self {
-        let port = match config.port {
-            Some(port) => port,
-            None => DEFAULT_PORT
-        };
+impl Server {
+    pub fn new(config: Arc<Config>) -> Self {
+        let port = config.port.unwrap_or_else(|| DEFAULT_PORT);
 
         Server {
             port,
@@ -42,40 +36,62 @@ impl <'a> Server<'a> {
         }
     }
 
+    pub fn get_status(&self) -> ServerStatus {
+        self.status.clone()
+    }
 
-    pub async fn wait_commands(&mut self) -> Result<(), RSyncError> {
+    pub fn set_status(&mut self, status: ServerStatus) {
+        self.status = status
+    }
+
+    pub async fn start(&mut self, sync_events: Sender<SyncEvent> ) -> Result<(), RSyncError> {
+        let listener = TcpListener::bind(format!("0.0.0.0:{}", self.port))
+            .await
+            .map_err(|err| RSyncError::CantStartServer(format!("{}", err)))?;
+
+        println!("Server listening on port: {}", self.port);
+
+        let config = self.config.clone();
+        tokio::spawn(async move {
+            loop {
+
+                let sync_events = sync_events.clone();
+
+                match listener.accept().await {
+                    Ok((stream, socket)) => { 
+                        let config = config.clone();
+                        
+                        let socket_addr = socket.ip().to_string();
+                        let socket_addr = config.peers.iter().find(|p| p.starts_with(&socket_addr)).unwrap_or_else(|| &socket_addr).to_owned();
+
+                        println!("New connection from {}", &socket_addr);
         
-        let listener = match TcpListener::bind(format!("127.0.0.1:{}", self.port)).await {
-            Ok(listener) => listener,
-            Err(err) => return Err(RSyncError::CantStartServer(format!("{}", err)))
-        };
-
-        self.status = ServerStatus::Listening;
-        while let ServerStatus::Listening = self.status  {
-            match listener.accept().await {
-                Ok((stream, _socket)) => { 
-                    let config = self.config.clone();
-                    println!("New connection from {}", stream.peer_addr().unwrap());
-
-                    tokio::spawn(async move {
-                        let mut handler = ServerPeerHandler::new(&config, CommandStream::new(stream));
-                        handler.handle_events().await
-                    });
-                    
+                        tokio::spawn(async move {
+                            let mut handler = ServerPeerHandler::new(
+                                config, 
+                                CommandStream::new(stream), 
+                                socket_addr
+                            );
+                            handler.handle_events(sync_events.clone()).await
+                        });
+                        
+                    }
+                    Err(_) => {}
                 }
-                Err(_) => {}
             }
-        }
+        });      
 
         Ok(())
     }
 }
 
-impl <'a> ServerPeerHandler<'a> {
-    fn new(config: &'a Config, stream: CommandStream<TcpStream>) -> Self {
+impl <'a> ServerPeerHandler {
+    fn new(config: Arc<Config>, stream: CommandStream<TcpStream>, socket_addr: String) -> Self {
         ServerPeerHandler {
             config,
-            stream
+            stream,
+            socket_addr,
+            sync_in_progress: false
         }
     }
 
@@ -123,30 +139,19 @@ impl <'a> ServerPeerHandler<'a> {
         Ok(())
     }
 
-    async fn get_file_list(&self, alias_hash: Vec<(String, u64)>) -> Vec<(String, Vec<FileInfo>)> {
-        let mut response = Vec::new();
-        for ( alias, hash) in alias_hash {
-            let path = match self.config.paths.get(&alias) {
-                Some(path) => path,
-                None => { continue; }
-            };
+    async fn get_file_list(&self, alias: &str) -> Option<Vec<FileInfo>> {
+        let path = match self.config.paths.get(alias) {
+            Some(path) => path,
+            None => { return None; }
+        };
 
-            match crate::fs::get_files_with_hash(path).await {
-                Ok((local_hash, files)) => { 
-                    if local_hash != hash {
-                        response.push((alias, files)); 
-                    }
-                }
-                Err(_) => {
-
-                }
-            }
+        match crate::fs::get_files_with_hash(path).await {
+            Ok((_, files)) => Some(files),
+            Err(_) => None
         }
-
-        return response;
     }
 
-    async fn handle_events(&mut self) {
+    async fn handle_events(&mut self, sync_events: Sender<SyncEvent> ) {
         loop { 
             match self.stream.next_command().await  {
                 Ok(command) => {
@@ -154,9 +159,12 @@ impl <'a> ServerPeerHandler<'a> {
                         Some(cmd) => {
                             match cmd {
                                 super::stream::Command::Ping => { self.reply(Command::Pong).await }
-                                super::stream::Command::FetchUnsyncedFileList(alias_hash) => {
-                                    let response = self.get_file_list(alias_hash).await;
-                                    self.reply(Command::FileList(response)).await;
+                                super::stream::Command::QueryFileList(alias) => {
+                                    let response = self.get_file_list(&alias).await;
+                                    match response {
+                                        Some(files) => { self.reply(Command::ReplyFileList(alias, files)).await }
+                                        None => {  self.reply(Command::CommandFailed).await }
+                                    }
                                 }
                                 super::stream::Command::InitFileTransfer(alias, file_info) => {
                                     match self.write_file(alias, file_info).await {
@@ -164,12 +172,41 @@ impl <'a> ServerPeerHandler<'a> {
                                         Err(_) => { self.reply(Command::FileTransferFailed).await; }
                                     };
                                 }
+                                Command::QueryServerSyncHash => {
+                                    //TODO: cache sync_hash into server
+                                    let sync_hash = crate::fs::get_hash_for_alias(&self.config.paths).await;
+                                    let command = match sync_hash {
+                                        Ok(sync_hash) => { Command::ReplyServerSyncHash(sync_hash) }
+                                        Err(_) => { Command::CommandFailed }
+                                    };
+                                    
+                                    self.reply(command).await;
+                                }
+                                Command::TryInitSync => {
+                                    let notify = Arc::new(tokio::sync::Notify::new());
+                                    sync_events.send(SyncEvent::PeerRequestedSync(self.socket_addr.clone(), notify.clone())).await;
+                                    
+                                    notify.notified().await;
+
+                                    self.sync_in_progress = true;
+                                    self.reply(Command::CommandSuccess).await;
+                                }
+                                Command::SyncFinished(peer_sync_hash) => {
+                                    self.sync_in_progress = false;
+
+                                    sync_events.send(SyncEvent::SyncFromPeerFinished(self.socket_addr.clone(), peer_sync_hash)).await;
+                                    self.reply(Command::CommandSuccess).await;
+                                }
                                 _ => {
                                     println!("server invalid command");
                                 }
                             }
                         }
                         None => {
+                            if self.sync_in_progress {
+                                sync_events.send(SyncEvent::SyncFromPeerFinished(self.socket_addr.clone(), HashMap::new())).await;
+                            }
+
                             break;
                         }
                     }
@@ -188,15 +225,18 @@ impl <'a> ServerPeerHandler<'a> {
 mod tests {
     use std::error::Error;
     use super::*;
-    use tokio::net::TcpStream;
+    use tokio::{net::TcpStream, sync::mpsc::Receiver};
     
-    fn init_server(cfg: &str) {
-        let config = Config::parse_content(cfg.to_owned()).unwrap();
+    fn init_server(cfg: &str) -> Receiver<SyncEvent> {
+        let config = Arc::new(Config::parse_content(cfg.to_owned()).unwrap());
+        let (sender, receiver) = tokio::sync::mpsc::channel(10);
+
         tokio::spawn(async move {
-            let mut server = Server::new(&config);
-            server.wait_commands().await.unwrap();
+            let mut server = Server::new(config);
+            server.start(sender).await.unwrap();
         });
 
+        receiver
     }
 
     #[tokio::test()]
@@ -235,16 +275,13 @@ mod tests {
         a = \"./samples/peer_b\"");
 
         let mut client = CommandStream::new( TcpStream::connect("localhost:8091").await? );
-        let command_payload  = vec![("a".to_owned(), 0u64), ("b".to_owned(), 0)];
 
-        client.send_command(&Command::FetchUnsyncedFileList(command_payload)).await?;
+        client.send_command(&Command::QueryFileList("a".to_owned())).await?;
         let response = client.next_command().await?.unwrap();
         
         match response {
-            Command::FileList(path_files) => {
-                assert_eq!(path_files.len(), 1);
-                let (name, files) = path_files.get(0).unwrap();
-                assert_eq!(name, "a");
+            Command::ReplyFileList(alias, files) => {
+                assert_eq!(alias, "a");
                 assert_eq!(files.len(), 1);
 
             },
@@ -285,6 +322,50 @@ mod tests {
         assert_eq!(file_meta.len(), file_size);
         std::fs::remove_dir_all("./samples/peer_a/subpath")?;
         
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_enqueue_sync() -> Result<(), Box<dyn Error>> {
+        let mut receiver = init_server("port = 8093
+        peers = []
+        
+        [paths]
+        a = \"./samples/peer_a\"");
+
+        let client_one = tokio::spawn(async {
+            let mut client = CommandStream::new( TcpStream::connect("localhost:8093").await.unwrap());
+            client.send_command(&Command::TryInitSync).await.unwrap();
+            assert_eq!(client.next_command().await.unwrap().unwrap(), Command::CommandSuccess);
+
+            client.send_command(&Command::SyncFinished(HashMap::new())).await.unwrap();
+            assert_eq!(client.next_command().await.unwrap().unwrap(), Command::CommandSuccess);
+        });
+        
+        let client_two = tokio::spawn(async {
+            let mut client = CommandStream::new( TcpStream::connect("localhost:8093").await.unwrap());
+            client.send_command(&Command::TryInitSync).await.unwrap();
+            assert_eq!(client.next_command().await.unwrap().unwrap(), Command::CommandSuccess);
+
+            client.send_command(&Command::SyncFinished(HashMap::new())).await.unwrap();
+            assert_eq!(client.next_command().await.unwrap().unwrap(), Command::CommandSuccess);
+        });
+
+        tokio::spawn(async move {
+            while let Some(x) = receiver.recv().await {
+                match x {
+                    SyncEvent::PeerRequestedSync(_, notify) => {
+                        notify.notify_one()
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+
+        client_one.await.unwrap();
+        client_two.await.unwrap();
+
         Ok(())
     }
 
