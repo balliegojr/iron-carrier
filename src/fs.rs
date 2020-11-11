@@ -1,4 +1,4 @@
-use std::{cmp::Ord, collections::HashMap, hash::Hash, path::{PathBuf, Path}, time::SystemTime};
+use std::{cmp::Ord, collections::HashMap, hash::Hash, path::{PathBuf}, time::SystemTime};
 use serde::{Serialize, Deserialize };
 use tokio::fs;
 
@@ -41,8 +41,7 @@ impl Ord for FileInfo {
     }
 }
 
-pub async fn walk_path<'a >(root_path: &'a str) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
-    let root_path = Path::new(root_path).to_path_buf();
+pub async fn walk_path<'a >(root_path: PathBuf) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
     let mut paths = vec![root_path.clone()];
     let mut files = Vec::new();
     
@@ -72,18 +71,18 @@ pub async fn walk_path<'a >(root_path: &'a str) -> Result<Vec<FileInfo>, Box<dyn
     return Ok(files);
 }
 
-pub async fn get_files_with_hash(path: &str) -> Result<(u64, Vec<FileInfo>), RSyncError>{
+pub async fn get_files_with_hash(path: PathBuf) -> Result<(u64, Vec<FileInfo>), RSyncError>{
     let files = walk_path(path).await.map_err(|_| RSyncError::ErrorReadingLocalFiles)?;
     let hash = crate::crypto::calculate_hash(&files);
 
     return Ok((hash, files));
 }
 
-pub async fn get_hash_for_alias(alias_path: &HashMap<String, String>) -> Result<HashMap<String, u64>, RSyncError> {
+pub async fn get_hash_for_alias(alias_path: &HashMap<String, PathBuf>) -> Result<HashMap<String, u64>, RSyncError> {
     let mut result = HashMap::new();
     
     for (alias, path) in alias_path {
-        let (hash, _) = get_files_with_hash(path).await?;
+        let (hash, _) = get_files_with_hash(path.clone()).await?;
         result.insert(alias.to_string(), hash);
     }
 
@@ -97,7 +96,7 @@ mod tests {
 
     #[tokio::test]
     async fn can_read_local_files() {
-        let files = walk_path("./samples").await.unwrap();
+        let files = walk_path(PathBuf::from("./samples")).await.unwrap();
         
 
         assert_eq!(files[0].path.to_str(), Some("config_peer_a.toml"));

@@ -1,12 +1,28 @@
-use std::collections::{HashMap, VecDeque};
+use std::{collections::{HashMap, VecDeque}, path::Path, path::PathBuf, time::Duration};
 use std::sync::Arc;
-use fs::FileInfo;
 use tokio::sync::{Notify, RwLock, mpsc, mpsc::Receiver, mpsc::Sender};
+use notify::{DebouncedEvent, RecursiveMode, Watcher, watcher};
 
-use crate::{RSyncError, config::Config, fs, network::peer::Peer, network::peer::SyncAction, network::server::Server, network::server::ServerStatus};
+use crate::{
+    RSyncError, 
+    config::Config, 
+    fs, 
+    fs::FileInfo,
+    network::peer::{Peer, SyncAction}, 
+    network::server::{Server, ServerStatus}, 
+};
 
+const EVENT_DEBOUNCE_SECS: u64 = 30;
 type PeerAddress = String;
-pub enum SyncEvent {
+
+#[derive(Debug)]
+pub(crate) enum FileAction {
+    Create(PathBuf),
+    Update(PathBuf),
+    Move(PathBuf, PathBuf),
+    Remove(PathBuf)
+}
+pub(crate) enum SyncEvent {
     EnqueueSyncToPeer(PeerAddress),
     SyncToPeerStarted(PeerAddress),
     SyncToPeerFailed(PeerAddress),
@@ -16,11 +32,13 @@ pub enum SyncEvent {
     SyncFromPeerStarted(PeerAddress),
     SyncFromPeerFinished(PeerAddress, HashMap<String, u64>),
 
+    BroadcastToAllPeers(String, FileAction),
 }
 
 enum SyncQueue {
     SyncToPeer(PeerAddress),
-    SyncFromPeer(PeerAddress, Arc<Notify>)
+    SyncFromPeer(PeerAddress, Arc<Notify>),
+    BroadcastToAllPeers(String, FileAction)
 }
 pub struct Synchronizer {
     config: Arc<Config>,
@@ -60,6 +78,7 @@ impl <'a> Synchronizer {
         let (tx, rx) = mpsc::channel(10);
         self.server.start(tx.clone()).await?;
         
+        self.start_watcher(tx.clone());
         self.load_peers(tx).await;
         self.sync_events(rx).await;
 
@@ -103,6 +122,10 @@ impl <'a> Synchronizer {
                     self.server.set_status(ServerStatus::SyncInProgress(peer_address));
                     notify.notify_one();
                 }
+                SyncQueue::BroadcastToAllPeers(alias, file_action) => {
+                    println!("broadcast: {} {:?}", alias, file_action);
+                    todo!()
+                }
             }
         }
     }
@@ -116,10 +139,7 @@ impl <'a> Synchronizer {
                             self.sync_queue.push_back(SyncQueue::SyncToPeer(peer_address));
                         }
                         SyncEvent::SyncToPeerStarted(_) => {}
-                        SyncEvent::SyncToPeerFailed(_) => {
-                            self.server.set_status(ServerStatus::Idle);
-                        }
-                        SyncEvent::SyncToPeerSuccess(_) => { 
+                        SyncEvent::SyncToPeerFailed(_) | SyncEvent::SyncToPeerSuccess(_) => {
                             self.server.set_status(ServerStatus::Idle);
                         }
                         SyncEvent::PeerRequestedSync(peer_address, notify) => {
@@ -139,6 +159,9 @@ impl <'a> Synchronizer {
 
                             self.server.set_status(ServerStatus::Idle);
                         }
+                        SyncEvent::BroadcastToAllPeers(alias, action) => {
+                            self.sync_queue.push_back(SyncQueue::BroadcastToAllPeers(alias, action));
+                        }
                     }
                 }
                 None => { break; }
@@ -146,7 +169,6 @@ impl <'a> Synchronizer {
 
             self.work_on_queue().await;
         }
-
     }
 
     async fn sync_peer(&'a mut self, peer_address: &str) -> Result<(), RSyncError> {
@@ -169,7 +191,7 @@ impl <'a> Synchronizer {
                 continue;
             }
 
-            let local_files = fs::walk_path(&self.config.paths.get(alias).unwrap())
+            let local_files = fs::walk_path(self.config.paths.get(alias).unwrap().clone())
                 .await
                 .map_err(|_| RSyncError::ErrorReadingLocalFiles)?;
 
@@ -177,7 +199,7 @@ impl <'a> Synchronizer {
 
             for file_info in local_files.iter() {
                 if need_to_sync_file(file_info, &mut peer_files){
-                    peer.sync_action(SyncAction::Send(alias, &self.config.paths.get(alias).unwrap(), file_info.clone())).await?
+                    peer.sync_action(SyncAction::Send(alias, self.config.paths.get(alias).unwrap().clone(), file_info.clone())).await?
                 }
             }
         }
@@ -185,7 +207,94 @@ impl <'a> Synchronizer {
         peer.finish_sync(self.sync_hash.clone()).await
     }
 
-    pub fn start_watcher(&self) {
-        todo!()
+    
+
+    fn start_watcher(&self, sync_event_sender: Sender<SyncEvent>) {
+        let config = self.config.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let (tx, rx) = std::sync::mpsc::channel();
+    
+            let mut watcher = match watcher(tx, Duration::from_secs(EVENT_DEBOUNCE_SECS)) {
+                Ok(watcher) => { watcher }
+                Err(_) => {
+                    eprintln!("Cannot start watcher");
+                    return;
+                }
+            };
+            
+            for (_, path) in config.paths.iter() {
+                if let Err(_) = watcher.watch(path, RecursiveMode::Recursive) {
+                    eprintln!("Cannot watch path");
+                }
+            }
+
+            loop {
+                match rx.recv() {
+                   Ok(event) => {
+                        let event= get_sync_event(event, &config.paths);
+                        event.and_then(|event| { sync_event_sender.blocking_send(event).ok() });
+                   },
+                   Err(e) => println!("watch error: {:?}", e),
+                }
+            }
+        });
     }
+}
+
+
+fn get_alias_for_path(file_path: &Path, paths: &HashMap<String, PathBuf>) -> Option<(String, PathBuf)>{
+    let file_path = file_path.canonicalize().ok()?;
+
+    for (alias, config_path) in paths.iter() {
+         let config_path = match config_path.canonicalize() {
+             Ok(config_path) => { config_path }
+             Err(_) => { return None }
+         };
+
+         if file_path.starts_with(&config_path) {
+            return Some((alias.clone(), config_path.clone()));
+         }
+    }
+
+    return None;
+}
+
+fn get_sync_event(event: DebouncedEvent, paths: &HashMap<String, PathBuf>) -> Option<SyncEvent> {
+    match event {
+        notify::DebouncedEvent::Create(file_path) => {
+            let (alias, root) = get_alias_for_path(&file_path, paths)?;
+            let file_path = file_path.canonicalize().ok()?;
+            let file_path = file_path.strip_prefix(&root).ok()?;
+
+            Some(SyncEvent::BroadcastToAllPeers(alias, FileAction::Create(file_path.to_owned())))
+        }
+
+        notify::DebouncedEvent::Write(file_path) => {
+            let (alias, root) = get_alias_for_path(&file_path, paths)?;
+            let file_path = file_path.canonicalize().ok()?;
+            let file_path = file_path.strip_prefix(&root).ok()?;
+
+            Some(SyncEvent::BroadcastToAllPeers(alias, FileAction::Update(file_path.to_owned())))
+        }
+        notify::DebouncedEvent::Remove(file_path) => {
+            let (alias, root) = get_alias_for_path(&file_path, paths)?;
+            let file_path = file_path.canonicalize().ok()?;
+            let file_path = file_path.strip_prefix(&root).ok()?;
+
+            Some(SyncEvent::BroadcastToAllPeers(alias, FileAction::Remove(file_path.to_owned())))
+        }
+        notify::DebouncedEvent::Rename(src_path, dest_path) => {
+            let (alias, root) = get_alias_for_path(&src_path, paths)?;
+            let src_path = src_path.canonicalize().ok()?;
+            let src_path = src_path.strip_prefix(&root).ok()?;
+
+            let dest_path = dest_path.canonicalize().ok()?;
+            let dest_path = dest_path.strip_prefix(&root).ok()?;
+
+            Some(SyncEvent::BroadcastToAllPeers(alias, FileAction::Move(src_path.to_owned(), dest_path.to_owned())))
+        }
+        _ => { None }
+    }
+
 }

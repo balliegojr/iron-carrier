@@ -7,8 +7,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt };
 
 use crate::{RSyncError, fs::FileInfo};
 
-use super::server::ServerStatus;
-
 const BUFFER_SIZE: usize = 8 * 1024;
 const COMMAND_SIZE: usize = 8;
 

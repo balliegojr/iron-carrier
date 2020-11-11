@@ -1,8 +1,8 @@
 use serde::{Serialize, Deserialize};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use tokio::{fs::File, net::TcpListener, net::TcpStream, prelude::*, sync::mpsc::Receiver, sync::mpsc::Sender};
+use tokio::{fs::File, net::TcpListener, net::TcpStream, prelude::*, sync::mpsc::Sender};
 
-use crate::{DEFAULT_PORT, RSyncError, config::Config, fs::FileInfo, network::stream::CommandStream, sync::SyncEvent};
+use crate::{RSyncError, config::Config, fs::FileInfo, network::stream::CommandStream, sync::SyncEvent};
 
 use super::stream::Command;
 
@@ -12,7 +12,7 @@ pub enum ServerStatus {
     Idle,
     SyncInProgress(String)
 }
-pub struct Server {
+pub(crate) struct Server {
     port: u32,
     status: ServerStatus,
     config: Arc<Config>
@@ -27,10 +27,8 @@ struct ServerPeerHandler  {
 
 impl Server {
     pub fn new(config: Arc<Config>) -> Self {
-        let port = config.port.unwrap_or_else(|| DEFAULT_PORT);
-
         Server {
-            port,
+            port: config.port,
             config,
             status: ServerStatus::Idle
         }
@@ -145,7 +143,7 @@ impl <'a> ServerPeerHandler {
             None => { return None; }
         };
 
-        match crate::fs::get_files_with_hash(path).await {
+        match crate::fs::get_files_with_hash(path.clone()).await {
             Ok((_, files)) => Some(files),
             Err(_) => None
         }

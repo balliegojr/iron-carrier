@@ -1,14 +1,20 @@
 use serde::Deserialize;
-use std::{collections::HashMap, fs::read_to_string};
+use std::{collections::HashMap, fs::read_to_string, path::PathBuf};
 use toml::from_str;
 
 use crate::RSyncError;
+const DEFAULT_PORT: u32 = 8090;
+
+pub fn default_port() -> u32 {
+    DEFAULT_PORT
+}
 
 #[derive(Deserialize)]
 pub struct Config {
-    pub paths: HashMap<String, String>,
+    pub paths: HashMap<String, PathBuf>,
     pub peers: Vec<String>,
-    pub port: Option<u32>
+    #[serde(default="default_port")]
+    pub port: u32
 }
 
 impl Config {
@@ -51,8 +57,9 @@ mod tests {
 
         let paths = config.paths;
         assert_eq!(2, paths.len());
-        assert_eq!("some/path", paths["a"]);
-        assert_eq!("some/other/path", paths["b"]);
+        
+        assert_eq!(PathBuf::from("some/path"), paths["a"]);
+        assert_eq!(PathBuf::from("some/other/path"), paths["b"]);
 
         Ok(())
 

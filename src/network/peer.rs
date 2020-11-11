@@ -1,11 +1,11 @@
-use std::{collections::HashMap};
+use std::{collections::HashMap, path::PathBuf};
 use tokio::{fs::File, net::{TcpStream}, sync::mpsc::Sender};
 use super::stream::{Command, CommandStream};
 use crate::{RSyncError, fs::FileInfo, sync::SyncEvent};
 
 
 pub enum SyncAction<'a> {
-    Send(&'a str, &'a str, FileInfo),
+    Send(&'a str, PathBuf, FileInfo),
 }
 
 #[derive(PartialEq)]
@@ -15,7 +15,7 @@ enum PeerStatus {
     Syncing
 }
 
-pub struct Peer {
+pub(crate) struct Peer {
     address: String,
     status: PeerStatus,
     stream: Option<CommandStream<TcpStream>>,
@@ -67,8 +67,6 @@ impl Peer {
         if let Some(cmd) = stream.next_command().await? {
             match cmd {
                 Command::ReplyServerSyncHash(sync_hash) => {
-                    println!("Received peer hash");
-                    println!("{:?}", sync_hash);
                     self.peer_sync_hash = sync_hash;
                 }
                 _ => {
@@ -121,7 +119,7 @@ impl Peer {
         Ok(())
     }
 
-    async fn send_file(&mut self, alias: &str, root_folder: &str, file_info: &FileInfo) -> Result<(), RSyncError> {
+    async fn send_file(&mut self, alias: &str, root_folder: PathBuf, file_info: &FileInfo) -> Result<(), RSyncError> {
         if self.status == PeerStatus::Disconnected {
             return Err(RSyncError::CantCommunicateWithPeer(self.address.to_owned()));
         }
@@ -139,7 +137,7 @@ impl Peer {
         
         match stream.send_data_from_buffer(file_info.size, &mut file).await {
             Ok(_) => { match stream.next_command().await? {
-                Some(cmd) => { Ok(()) }
+                Some(_) => { Ok(()) }
                 None => Err(RSyncError::ErrorSendingFile)
             }}
             Err(_) => Err(RSyncError::ErrorSendingFile)
@@ -157,7 +155,6 @@ impl Peer {
         match command {
             Some(command) => {
                 if let Command::CommandSuccess = command {
-                    println!("Server Accepted Sync, starting...");
                     self.status = PeerStatus::Syncing;
                     self.fetch_peer_status().await
                 } else {
@@ -174,7 +171,6 @@ impl Peer {
     }
 
     pub async fn finish_sync(&mut self, sync_hash: HashMap<String, u64>) -> Result<(), RSyncError> {
-        println!("Finishing sync");
         self.send_command(&Command::SyncFinished(sync_hash)).await?;
         self.sync_events.send(SyncEvent::SyncToPeerSuccess(self.address.clone())).await;
 

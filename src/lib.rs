@@ -6,8 +6,6 @@ mod crypto;
 mod network;
 pub mod sync;
 
-const DEFAULT_PORT: u32 = 8090;
-
 #[derive(Debug)]
 pub enum RSyncError {
     InvalidConfigPath,
