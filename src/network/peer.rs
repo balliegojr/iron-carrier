@@ -1,7 +1,88 @@
 use std::{collections::HashMap, path::PathBuf};
 use tokio::{fs::File, net::{TcpStream}, sync::mpsc::Sender};
-use super::stream::{Command, CommandStream};
+use super::streaming::{DirectStream, FrameMessage, FrameReader, FrameWriter, frame_stream, get_streamers};
 use crate::{RSyncError, fs::FileInfo, sync::SyncEvent};
+
+
+macro_rules! send_message {
+    ($self:expr, $func:ident()) => {
+        if $self.status == PeerStatus::Disconnected {
+            return Err(RSyncError::CantCommunicateWithPeer($self.address.to_owned()));
+        }
+
+        let message = FrameMessage::new(stringify!($func).to_string());
+        $self.frame_writer.as_mut().unwrap().write_frame(message).await?;
+    };
+    
+    ($self:expr, $func:ident($($arg:expr),+)) => {
+        if $self.status == PeerStatus::Disconnected {
+            return Err(RSyncError::CantCommunicateWithPeer($self.address.to_owned()));
+        }
+
+        let mut message = FrameMessage::new(stringify!($func).to_string());
+        $(
+            message.append_arg(&$arg)?;
+        )+
+    
+        $self.frame_writer.as_mut().unwrap().write_frame(message).await?;
+    };
+}
+
+macro_rules! rpc_call {
+    ($self:expr, $func:ident($($arg:expr),*)) => {{
+        send_message!($self, $func($($arg),*));
+
+        let response_message = $self.frame_reader.as_mut().unwrap().next_frame().await?;
+        match response_message {
+            Some(message) => {
+                if message.frame_name() == stringify!($func) {
+                    Ok(())
+                } else {
+                    Err(RSyncError::ErrorParsingCommands)
+                }
+            }
+            None => {
+                Err(RSyncError::ErrorParsingCommands)
+            }
+        }
+    }};
+
+    ($self:expr, $func:ident($($arg:expr),*), $t:ty) => {{
+        send_message!($self, $func($($arg),*));
+
+        let response_message = $self.frame_reader.as_mut().unwrap().next_frame().await?;
+        match response_message {
+            Some(mut message) => {
+                if message.frame_name() == stringify!($func) {
+                    Ok(message.next_arg::<$t>()?)
+                } else {
+                    Err(RSyncError::ErrorParsingCommands)
+                }
+            }
+            None => {
+                Err(RSyncError::ErrorParsingCommands)
+            }
+        }
+    }};
+    ($self:expr, $func:ident($($arg:expr),*), [$t:ty],+) => {{
+        send_message!($self, $func($($arg),*))
+
+        let response_message = $self.frame_reader.as_mut().unwrap().next_frame().await?;
+        match response_message {
+            Some(message) => {
+                if message.is_same_message(stringify!($func)) {
+                    let result = ;
+                    Ok($( message.next_arg::<$t>()?, )*)
+                } else {
+                    Err(RSyncError::ErrorParsingCommands)
+                }
+            }
+            None => {
+                Err(RSyncError::ErrorParsingCommands)
+            }
+        }
+    }}
+}
 
 
 pub enum SyncAction<'a> {
@@ -18,7 +99,9 @@ enum PeerStatus {
 pub(crate) struct Peer {
     address: String,
     status: PeerStatus,
-    stream: Option<CommandStream<TcpStream>>,
+    frame_writer: Option<FrameWriter<TcpStream>>,
+    frame_reader: Option<FrameReader<TcpStream>>,
+    direct_stream: Option<DirectStream<TcpStream>>,
     
     peer_sync_hash: HashMap<String, u64>,
     sync_events: Sender<SyncEvent>
@@ -29,7 +112,9 @@ impl Peer {
         
         Peer {
             address: address,
-            stream: None,
+            frame_writer: None,
+            frame_reader: None,
+            direct_stream: None,
             peer_sync_hash: HashMap::new(),
             status: PeerStatus::Disconnected,
             sync_events: sync_events
@@ -39,15 +124,21 @@ impl Peer {
     pub async fn connect(&mut self) {
         match TcpStream::connect(&self.address).await {
             Ok(stream) => {
-                self.stream = Some(CommandStream::new(stream));
+                let (direct_stream, reader, writer) = get_streamers(stream);
+                self.frame_reader = Some(reader);
+                self.frame_writer = Some(writer);
+                self.direct_stream = Some(direct_stream);
                 self.status = PeerStatus::Connected;
             }
-            Err(_) => self.status = PeerStatus::Disconnected
+            Err(err) => self.status = PeerStatus::Disconnected
         };
     }
 
     pub async fn disconnect(&mut self) {
-        self.stream = None;
+        self.frame_reader = None;
+        self.frame_writer = None;
+        self.direct_stream = None;
+
         if self.status == PeerStatus::Syncing {
             self.sync_events.send(SyncEvent::SyncToPeerFailed(self.address.clone())).await;
         }
@@ -57,23 +148,13 @@ impl Peer {
     }
 
     async fn fetch_peer_status(&mut self) -> Result<(), RSyncError>{
-        if self.status == PeerStatus::Disconnected {
-            return Err(RSyncError::CantCommunicateWithPeer(self.address.to_owned()));
-        }
-        
-        self.send_command(&Command::QueryServerSyncHash).await?;
+        let sync_hash = rpc_call!(
+            self,
+            server_sync_hash(),
+            Result<HashMap<String,u64>, RSyncError>
+        )?;
 
-        let stream = self.stream.as_mut().unwrap();
-        if let Some(cmd) = stream.next_command().await? {
-            match cmd {
-                Command::ReplyServerSyncHash(sync_hash) => {
-                    self.peer_sync_hash = sync_hash;
-                }
-                _ => {
-                    println!("Received other command");
-                }
-            }
-        }
+        self.peer_sync_hash = sync_hash?;
 
         Ok(())
     }
@@ -82,27 +163,15 @@ impl Peer {
         self.peer_sync_hash.get(alias).map(|h| *h != hash).unwrap_or(false)
     }
 
-    async fn send_command(&mut self, cmd: &Command) -> Result<(), RSyncError> {
-        if self.status == PeerStatus::Disconnected {
-            return Err(RSyncError::CantCommunicateWithPeer(self.address.to_owned()));
-        }
-
-        let stream = self.stream.as_mut().unwrap();
-        if let Err(e) = stream.send_command(cmd).await {
-            eprintln!("{}", e);
-            return Err(RSyncError::CantCommunicateWithPeer(self.address.to_string()));
-        };
-
-        Ok(())
-    }
-
     pub async fn fetch_files_for_alias(&mut self, alias: &str) -> Result<Vec<FileInfo>, RSyncError> {
-        self.send_command(&Command::QueryFileList(alias.to_owned())).await?;
-        if let Some(cmd) = self.stream.as_mut().unwrap().next_command().await? {
-            match cmd {
-                Command::ReplyFileList(_alias, files) => { return Ok(files) }
-                _ => {}
-            }
+        let files = rpc_call!(
+            self,
+            query_file_list(alias),
+            Option<Vec<FileInfo>>
+        )?;
+        
+        if let Some(files) = files {
+            return Ok(files);
         }
 
         return Err(RSyncError::ErrorParsingCommands);
@@ -120,64 +189,48 @@ impl Peer {
     }
 
     async fn send_file(&mut self, alias: &str, root_folder: PathBuf, file_info: &FileInfo) -> Result<(), RSyncError> {
-        if self.status == PeerStatus::Disconnected {
-            return Err(RSyncError::CantCommunicateWithPeer(self.address.to_owned()));
-        }
-        
         let mut path = std::path::PathBuf::from(root_folder);
         path.push(&file_info.path);
         
         let mut file = File::open(path).await.map_err(| e| RSyncError::ErrorReadingFile(e.to_string()))?;
-        
-        let stream = self.stream.as_mut().unwrap();
+        rpc_call!(
+            self,
+            prepare_file_transfer(alias, &file_info)
+        )?;
 
-        stream.send_command(&Command::InitFileTransfer(alias.to_string(), file_info.clone()))
+        println!("peer: sending file");
+        self.direct_stream.as_mut().unwrap().write_to_stream(file_info.size, &mut file)
             .await
-            .map_err(|_| RSyncError::ErrorParsingCommands)?;
-        
-        match stream.send_data_from_buffer(file_info.size, &mut file).await {
-            Ok(_) => { match stream.next_command().await? {
-                Some(_) => { Ok(()) }
-                None => Err(RSyncError::ErrorSendingFile)
-            }}
-            Err(_) => Err(RSyncError::ErrorSendingFile)
-        }
+            .map_err(|e| RSyncError::ErrorSendingFile)
     }
 
     pub async fn start_sync(&mut self) -> Result<(), RSyncError> {
-        self.send_command(&Command::TryInitSync).await?;
-        let stream = match self.stream.as_mut() {
-            Some(stream) => { stream}
-            None => { return Err(RSyncError::CantConnectToPeer(self.address.clone())) }
-        };
+        let result = rpc_call!(
+            self,
+            init_sync()
+        );
 
-        let command = stream.next_command().await?;
-        match command {
-            Some(command) => {
-                if let Command::CommandSuccess = command {
-                    self.status = PeerStatus::Syncing;
-                    self.fetch_peer_status().await
-                } else {
-                    self.sync_events.send(SyncEvent::SyncToPeerFailed(self.address.clone())).await;
-                    return Err(RSyncError::CantCommunicateWithPeer(self.address.clone()));
-                }
+        match result {
+            Ok(()) => {
+                self.status = PeerStatus::Syncing;
+                self.fetch_peer_status().await
             }
-            None => {
+            Err(err) => {
                 self.disconnect().await;
                 self.sync_events.send(SyncEvent::SyncToPeerFailed(self.address.clone())).await;
-                return Err(RSyncError::CantCommunicateWithPeer(self.address.clone()));
+                Err(err)
             }
         }
     }
 
     pub async fn finish_sync(&mut self, sync_hash: HashMap<String, u64>) -> Result<(), RSyncError> {
-        self.send_command(&Command::SyncFinished(sync_hash)).await?;
+        rpc_call!(
+            self,
+            finish_sync(sync_hash)
+        )?;
+
         self.sync_events.send(SyncEvent::SyncToPeerSuccess(self.address.clone())).await;
-
         self.status = PeerStatus::Connected;
-
-        let stream = self.stream.as_mut().unwrap();
-        let _command = stream.next_command().await?;
 
         self.disconnect().await;
         Ok(())

@@ -1,4 +1,5 @@
 use std::{error::Error, fmt::Display};
+use serde::{Serialize, Deserialize };
 
 pub mod config;
 mod fs;
@@ -6,7 +7,7 @@ mod crypto;
 mod network;
 pub mod sync;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum RSyncError {
     InvalidConfigPath,
     InvalidConfigFile,
@@ -50,3 +51,15 @@ impl Error for RSyncError {
         }
     }
 }
+
+impl From<bincode::Error> for RSyncError {
+    fn from(_: bincode::Error) -> Self {
+        RSyncError::ErrorParsingCommands
+    }
+}
+
+// impl From<tokio::io::Error> for RSyncError {
+//     fn from(_: tokio::io::Error) -> Self {
+//         RSyncError::
+//     }
+// }
