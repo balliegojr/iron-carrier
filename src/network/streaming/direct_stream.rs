@@ -32,6 +32,8 @@ impl <T : AsyncRead + AsyncWrite + Unpin> DirectStream<T> {
             buf_size -= size;
         }
 
+        buf_write.flush().await?;
+
         Ok(())
     }
 

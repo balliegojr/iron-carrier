@@ -3,18 +3,20 @@ use std::{collections::HashMap, fs::read_to_string, path::PathBuf};
 use toml::from_str;
 
 use crate::RSyncError;
-const DEFAULT_PORT: u32 = 8090;
 
-pub fn default_port() -> u32 {
-    DEFAULT_PORT
-}
+fn default_port() -> u32 { 8090 }
+fn default_enable_watcher() -> bool { true }
 
 #[derive(Deserialize)]
 pub struct Config {
     pub paths: HashMap<String, PathBuf>,
     pub peers: Vec<String>,
+    
     #[serde(default="default_port")]
-    pub port: u32
+    pub port: u32,
+
+    #[serde(default="default_enable_watcher")]
+    pub enable_file_watcher: bool
 }
 
 impl Config {

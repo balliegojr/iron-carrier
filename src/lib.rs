@@ -21,7 +21,9 @@ pub enum RSyncError {
     ErrorSendingFile,
     ErrorWritingFile(String),
     ErrorParsingCommands,
-    ErrorReadingFile(String)
+    ErrorReadingFile(String),
+    ErrorRemovingFile(String),
+    ErrorMovingFile(String)
 }
 
 impl Display for RSyncError {
@@ -40,6 +42,8 @@ impl Display for RSyncError {
             RSyncError::ErrorParsingCommands => { write!(f, "Error parsing command from peer")}
             RSyncError::ErrorReadingFile(file) => { write!(f, "Error reading file {}", file)}
             RSyncError::InvalidPeerAddress => { write!(f, "Invalid Peer Configuration")}
+            RSyncError::ErrorRemovingFile(reason) => { write!(f, "Error removing file: {}", reason)}
+            RSyncError::ErrorMovingFile(reason) => { write!(f, "Error moving file: {}", reason)}
         }
     }
 }

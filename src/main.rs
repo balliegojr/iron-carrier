@@ -1,9 +1,9 @@
 use std::process::exit;
 
-use r_sync::config::Config;
+use iron_carrier::config::Config;
 
 
-fn print_error(e: r_sync::RSyncError) -> ! {
+fn print_error(e: iron_carrier::RSyncError) -> ! {
     eprintln!("{}", e);
     exit(-1);
 }
@@ -21,7 +21,7 @@ async fn main() {
     };
 
     
-    let mut s = r_sync::sync::Synchronizer::new(config);
+    let mut s = iron_carrier::sync::Synchronizer::new(config);
     if let Err(e) = s.start().await {
         eprint!("{}", e);
     };

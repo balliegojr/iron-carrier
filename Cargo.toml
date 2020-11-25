@@ -1,5 +1,5 @@
 [package]
-name = "r-sync"
+name = "iron-carrier"
 version = "0.1.0"
 authors = ["Ilson Roberto Balliego Junior"]
 edition = "2018"
