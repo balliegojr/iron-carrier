@@ -1,7 +1,7 @@
 use std::{collections::HashMap};
 use tokio::{fs::File, net::{TcpStream}};
 use super::streaming::{DirectStream, FrameMessage, FrameReader, FrameWriter, get_streamers};
-use crate::{RSyncError, fs::{LocalFile, RemoteFile}};
+use crate::{RSyncError, config::Config, fs::FileInfo};
 
 
 macro_rules! send_message {
@@ -86,9 +86,9 @@ macro_rules! rpc_call {
 
 
 pub enum SyncAction<'a> {
-    Send(&'a str, &'a LocalFile),
-    Move(&'a str, &'a LocalFile, &'a LocalFile),
-    Delete(&'a str, &'a LocalFile)
+    Send(&'a FileInfo),
+    Move(&'a FileInfo, &'a FileInfo),
+    Delete(&'a FileInfo)
 }
 
 #[derive(PartialEq)]
@@ -100,6 +100,7 @@ enum PeerStatus {
 
 pub(crate) struct Peer<'a> {
     address: &'a str,
+    config: &'a Config,
     status: PeerStatus,
     frame_writer: Option<FrameWriter<TcpStream>>,
     frame_reader: Option<FrameReader<TcpStream>>,
@@ -109,7 +110,7 @@ pub(crate) struct Peer<'a> {
 }
 
 impl <'a> Peer<'a> {
-    pub fn new(address: &'a str) -> Self {
+    pub fn new(address: &'a str, config: &'a Config) -> Self {
         
         Peer {
             address: address,
@@ -118,6 +119,7 @@ impl <'a> Peer<'a> {
             direct_stream: None,
             peer_sync_hash: HashMap::new(),
             status: PeerStatus::Disconnected,
+            config
         }
     }
 
@@ -167,11 +169,11 @@ impl <'a> Peer<'a> {
         self.peer_sync_hash.get(alias).map(|h| *h != hash).unwrap_or(false)
     }
 
-    pub async fn fetch_files_for_alias(&mut self, alias: &str) -> Result<Vec<RemoteFile>, RSyncError> {
+    pub async fn fetch_files_for_alias(&mut self, alias: &str) -> Result<Vec<FileInfo>, RSyncError> {
         let files = rpc_call!(
             self,
             query_file_list(alias),
-            Option<Vec<RemoteFile>>
+            Option<Vec<FileInfo>>
         )?;
 
         return files.ok_or_else(|| RSyncError::ErrorParsingCommands);
@@ -179,19 +181,19 @@ impl <'a> Peer<'a> {
 
     pub async fn sync_action<'b>(&mut self, action: &'b SyncAction<'b>) -> Result<(), RSyncError>{
         match action {
-            SyncAction::Send(alias, file_info) => { 
-                self.send_file(alias, &file_info).await?
+            SyncAction::Send(file_info) => { 
+                self.send_file(file_info).await?
             }
-            SyncAction::Move(alias, src, dest) => {
+            SyncAction::Move(src, dest) => {
                 rpc_call!(
                     self,
-                    move_file(alias, RemoteFile::from(*src), RemoteFile::from(*dest))
+                    move_file(src, dest)
                 )?
             }
-            SyncAction::Delete(alias, file_info) => {
+            SyncAction::Delete(file) => {
                 rpc_call!(
                     self,
-                    delete_file(alias, RemoteFile::from(*file_info))
+                    delete_file(file)
                 )?
             }
         }
@@ -199,19 +201,23 @@ impl <'a> Peer<'a> {
         Ok(())
     }
 
-    async fn send_file(&mut self, alias: &str, file_info: &LocalFile) -> Result<(), RSyncError> {
-        
-        let mut file = File::open(&file_info.absolute_path).await.map_err(| e| RSyncError::ErrorReadingFile(e.to_string()))?;
-        rpc_call!(
+    async fn send_file(&mut self, file_info: &FileInfo) -> Result<(), RSyncError> {
+        let should_sync = rpc_call!(
             self,
-            prepare_file_transfer(alias, RemoteFile::from(file_info))
+            prepare_file_transfer(file_info),
+            bool
         )?;
+        
+        if should_sync {
+            let file_path = file_info.get_absolute_path(&self.config)?;
 
-        self.direct_stream.as_mut().unwrap().write_to_stream(file_info.size, &mut file)
-            .await
-            .map_err(|_| RSyncError::ErrorSendingFile)?;
-
-        self.frame_reader.as_mut().unwrap().next_frame().await?.unwrap().frame_name();
+            let mut file = File::open(file_path).await.map_err(| e| RSyncError::ErrorReadingFile(e.to_string()))?;
+            self.direct_stream.as_mut().unwrap().write_to_stream(file_info.size.unwrap(), &mut file)
+                .await
+                .map_err(|_| RSyncError::ErrorSendingFile)?;
+    
+            self.frame_reader.as_mut().unwrap().next_frame().await?.unwrap().frame_name();
+        }
         Ok(())
     }
 

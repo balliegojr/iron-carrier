@@ -6,6 +6,7 @@ use crate::RSyncError;
 
 fn default_port() -> u32 { 8090 }
 fn default_enable_watcher() -> bool { true }
+fn default_watcher_debounce() -> u64 { 10 }
 
 #[derive(Deserialize)]
 pub struct Config {
@@ -16,7 +17,10 @@ pub struct Config {
     pub port: u32,
 
     #[serde(default="default_enable_watcher")]
-    pub enable_file_watcher: bool
+    pub enable_file_watcher: bool,
+
+    #[serde(default="default_watcher_debounce")]
+    pub debounce_watcher_events: u64
 }
 
 impl Config {

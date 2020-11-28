@@ -1,8 +1,8 @@
 use serde::{Serialize, Deserialize};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use tokio::{fs::File, net::TcpListener, prelude::*, sync::mpsc::Sender};
 
-use crate::{RSyncError, config::Config, fs::{RemoteFile}, sync::SyncEvent};
+use crate::{RSyncError, config::Config, fs::FileInfo, sync::SyncEvent};
 
 use super::streaming::{DirectStream, FrameMessage, FrameReader, FrameWriter, get_streamers};
 
@@ -102,24 +102,10 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
     }
 
 
-    async fn write_file<'b>(&mut self, alias: &'b str, file_info: &'b RemoteFile) -> Result<(), RSyncError> {
-        let mut temp_path = PathBuf::new();
-        let mut final_path = PathBuf::new();
-
-        match self.config.paths.get(alias) {
-            Some(path) => { 
-                temp_path.push(path);
-                final_path.push(path);
-            }
-            None => { 
-                eprintln!("invalid alias");
-                return Err(RSyncError::InvalidAlias(alias.to_owned()));
-            }
-        }
+    async fn write_file<'b>(&mut self, file_info: &'b FileInfo) -> Result<(), RSyncError> {
+        let final_path = file_info.get_absolute_path(&self.config)?;
+        let mut temp_path = file_info.get_absolute_path(&self.config)?;
         
-        final_path.push(&file_info.path);
-        temp_path.push(&file_info.path);
-
         temp_path.set_extension("iron-carrier");
 
         if let Some(parent) = temp_path.parent() {
@@ -129,50 +115,50 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
         }
 
         let mut file = File::create(&temp_path).await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
-        self.direct_stream.read_stream(file_info.size as usize, &mut file).await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
+        self.direct_stream.read_stream(file_info.size.unwrap() as usize, &mut file).await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
         
         file.flush().await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
 
         tokio::fs::rename(&temp_path, &final_path).await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
-        filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(file_info.modified_at)).map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
+        filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(file_info.modified_at.unwrap())).map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
 
         Ok(())
     }
 
-    async fn delete_file<'b>(&mut self, alias: &'b str, file_info: &'b RemoteFile) -> Result<(), RSyncError> {
-        let mut path = self.config.paths.get(alias)
-            .and_then(|p| p.canonicalize().ok())
-            .ok_or_else(|| RSyncError::InvalidAlias(alias.to_owned()))?;
-
-        path.extend(&file_info.path);
-
-        tokio::fs::remove_file(path).await
-            .map_err(|e| RSyncError::ErrorRemovingFile(format!("{}", e)))
+    fn should_sync_file(&self, remote_file: &FileInfo) -> bool {
+        remote_file.to_local_file(&self.config)
+            .and_then(|local_file| Some(!crate::fs::is_local_file_newer_than_remote(&local_file, remote_file)))
+            .unwrap_or_else(|| true)
     }
 
-    async fn move_file<'b>(&mut self, alias: &'b str, src_file: &'b RemoteFile, dest_file: &'b RemoteFile) -> Result<(), RSyncError> {
-        let mut path = self.config.paths.get(alias)
-            .and_then(|p| p.canonicalize().ok())
-            .ok_or_else(|| RSyncError::InvalidAlias(alias.to_owned()))?;
+    async fn delete_file<'b>(&self, file_info: &'b FileInfo) -> Result<(), RSyncError> {
+        let path = file_info.get_absolute_path(&self.config)?;
+        if path.is_dir() {
+            tokio::fs::remove_dir(path).await
+                .map_err(|e| RSyncError::ErrorRemovingFile(format!("{}", e)))
+        } else {
+            tokio::fs::remove_file(path).await
+                .map_err(|e| RSyncError::ErrorRemovingFile(format!("{}", e)))
+        }
+    }
 
-        let mut src_path = path.clone();
-        let mut dest_path = path.clone();
-
-        src_path.extend(&src_file.path);
-        dest_path.extend(&dest_file.path);
+    async fn move_file<'b>(&self, src_file: &'b FileInfo, dest_file: &'b FileInfo) -> Result<(), RSyncError> {
+        
+        let src_path = src_file.get_absolute_path(&self.config)?;
+        let dest_path = dest_file.get_absolute_path(&self.config)?;
 
         tokio::fs::rename(src_path, dest_path).await
             .map_err(|e| RSyncError::ErrorMovingFile(format!("{}", e)))
     }
 
-    async fn get_file_list(&'a self, alias: &str) -> Option<Vec<RemoteFile>> {
+    async fn get_file_list(&self, alias: &str) -> Option<Vec<FileInfo>> {
         let path = match self.config.paths.get(alias) {
             Some(path) => path,
             None => { return None; }
         };
 
-        match crate::fs::walk_path(path).await {
-            Ok(files) => Some(files.iter().map(RemoteFile::from).collect()),
+        match crate::fs::walk_path(path, alias).await {
+            Ok(files) => Some(files),
             Err(_) => None
         }
     }
@@ -202,29 +188,47 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                                 }
                                 
                                 "prepare_file_transfer" => {
-                                    let alias: Result<String, RSyncError> = message.next_arg();
-                                    let file_info: Result<RemoteFile, RSyncError> = message.next_arg();
-                                    
-                                    self.frame_writer.write_frame("prepare_file_transfer".into()).await;
-                                    if let Err(_) = self.write_file(&alias.unwrap(), &file_info.unwrap()).await {
-                                        println!("failed to write file");
+                                    let remote_file = message.next_arg::<FileInfo>().unwrap();
+
+                                    println!("update file {:?} request", remote_file.path);
+
+                                    let should_sync = self.should_sync_file(&remote_file);
+
+                                    let mut response = FrameMessage::new("prepare_file_transfer".to_owned());
+                                    response.append_arg(&should_sync);
+                                    self.frame_writer.write_frame(response).await;
+
+                                    if should_sync {
+                                        println!("updating file {:?} request", remote_file.path);
+
+                                        sync_events.send(SyncEvent::CompletedFileAction(remote_file.get_absolute_path(&self.config).unwrap(), self.socket_addr.clone())).await;
+                                        if let Err(_) = self.write_file(&remote_file).await {
+                                            println!("failed to write file");
+                                        }
+                                        self.frame_writer.write_frame("file_transfer_complete".into()).await;
                                     }
-                                    self.frame_writer.write_frame("file_transfer_complete".into()).await;
                                 }
 
                                 "delete_file" => {
-                                    let alias: Result<String, RSyncError> = message.next_arg();
-                                    let file_info: Result<RemoteFile, RSyncError> = message.next_arg();
+                                    let remote_file = message.next_arg::<FileInfo>().unwrap();
 
-                                    self.delete_file(&alias.unwrap(), &file_info.unwrap()).await;
+                                    println!("deleting file {:?}", remote_file.path);
+
+                                    self.delete_file(&remote_file).await;
+                                    sync_events.send(SyncEvent::CompletedFileAction(remote_file.get_absolute_path(&self.config).unwrap(), self.socket_addr.clone())).await;
+                                    self.frame_writer.write_frame("delete_file".into()).await;
                                 }
 
                                 "move_file" => {
-                                    let alias: Result<String, RSyncError> = message.next_arg();
-                                    let src_file: Result<RemoteFile, RSyncError> = message.next_arg();
-                                    let dest_file: Result<RemoteFile, RSyncError> = message.next_arg();
+                                    let src_file = message.next_arg::<FileInfo>().unwrap();
+                                    let dest_file = message.next_arg::<FileInfo>().unwrap();
 
-                                    self.move_file(&alias.unwrap(), &src_file.unwrap(), &dest_file.unwrap()).await;
+                                    sync_events.send(SyncEvent::CompletedFileAction(src_file.get_absolute_path(&self.config).unwrap(), self.socket_addr.clone())).await;
+                                    sync_events.send(SyncEvent::CompletedFileAction(dest_file.get_absolute_path(&self.config).unwrap(), self.socket_addr.clone())).await;
+
+                                    self.move_file(&src_file, &dest_file).await;
+
+                                    self.frame_writer.write_frame("move_file".into()).await;
                                 }
                                 
                                 "init_sync" => {
@@ -270,11 +274,11 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
 
 #[cfg(test)] 
 mod tests {
-    use std::error::Error;
+    use std::{error::Error, path::PathBuf};
     use crate::network::streaming::frame_stream;
 
     use super::*;
-    use tokio::{net::TcpStream, sync::mpsc::Receiver};
+    use tokio::{sync::mpsc::Receiver};
     
     
     fn sample_config() -> Arc<Config> {
@@ -285,16 +289,16 @@ mod tests {
         a = \"./samples/peer_a\"".to_owned()).unwrap())
     }
 
-    fn init_server(cfg: &str) -> Receiver<SyncEvent> {
-        let (sender, receiver) = tokio::sync::mpsc::channel(10);
+    // fn init_server(cfg: &str) -> Receiver<SyncEvent> {
+    //     let (sender, receiver) = tokio::sync::mpsc::channel(10);
 
-        tokio::spawn(async move {
-            let mut server = Server::new(sample_config());
-            server.start(sender).await.unwrap();
-        });
+    //     tokio::spawn(async move {
+    //         let mut server = Server::new(sample_config());
+    //         server.start(sender).await.unwrap();
+    //     });
 
-        receiver
-    }
+    //     receiver
+    // }
 
     #[tokio::test()]
     async fn server_handler_can_reply_messages() { 
@@ -333,7 +337,7 @@ mod tests {
         let mut response = reader.next_frame().await?.unwrap();
         assert_eq!(response.frame_name(), "query_file_list");
         
-        let files: Option<Vec<RemoteFile>> = response.next_arg()?;
+        let files: Option<Vec<FileInfo>> = response.next_arg()?;
         assert_eq!(files.unwrap().len(), 1);
 
         
@@ -343,7 +347,7 @@ mod tests {
 
 
         let mut response = reader.next_frame().await?.unwrap();
-        let files: Option<Vec<RemoteFile>> = response.next_arg()?;
+        let files: Option<Vec<FileInfo>> = response.next_arg()?;
         assert!(files.is_none());
 
         Ok(())
@@ -365,16 +369,16 @@ mod tests {
 
         {
             let (mut direct, mut reader, mut writer ) = get_streamers(client_stream);
-            let file_info = RemoteFile { 
+            let file_info = FileInfo { 
+                alias: "a".to_owned(),
                 path: PathBuf::from("subpath/new_file.txt"),
-                size: file_size,
-                created_at: std::time::SystemTime::UNIX_EPOCH,
-                modified_at: std::time::SystemTime::UNIX_EPOCH
+                size: Some(file_size),
+                created_at: Some(std::time::SystemTime::UNIX_EPOCH),
+                modified_at: Some(std::time::SystemTime::UNIX_EPOCH)
             };
 
             
             let mut message = FrameMessage::new("prepare_file_transfer".to_owned());
-            message.append_arg(&"a")?;
             message.append_arg(&file_info)?;
             writer.write_frame(message).await?;
             

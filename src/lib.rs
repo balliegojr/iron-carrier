@@ -7,6 +7,7 @@ mod crypto;
 mod network;
 pub mod sync;
 
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RSyncError {
     InvalidConfigPath,
