@@ -4,17 +4,9 @@ use tokio::sync::mpsc::Sender;
 use notify::{DebouncedEvent, Error, INotifyWatcher, RecursiveMode, Watcher, watcher};
 
 use crate::{config::Config, fs::FileInfo};
+use super::{SyncEvent, FileAction};
 
-use super::SyncEvent;
 
-
-#[derive(Debug)]
-pub(crate) enum FileAction {
-    Create(FileInfo),
-    Update(FileInfo),
-    Move(FileInfo, FileInfo),
-    Remove(FileInfo)
-}
 
 pub(crate) struct FileWatcher {
     event_sender: Sender<SyncEvent>,
@@ -57,7 +49,7 @@ impl FileWatcher {
                        let event= map_to_sync_event(event, &config.paths);
                        event.and_then(|event| { sync_event_sender.blocking_send(event).ok() });
                    },
-                   Err(e) => break
+                   Err(_) => break
                 }
             }
         });

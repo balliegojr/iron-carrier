@@ -3,7 +3,7 @@ use std::process::exit;
 use iron_carrier::config::Config;
 
 
-fn print_error(e: iron_carrier::RSyncError) -> ! {
+fn print_error(e: iron_carrier::IronCarrierError) -> ! {
     eprintln!("{}", e);
     exit(-1);
 }

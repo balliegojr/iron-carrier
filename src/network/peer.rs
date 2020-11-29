@@ -1,13 +1,13 @@
 use std::{collections::HashMap};
 use tokio::{fs::File, net::{TcpStream}};
 use super::streaming::{DirectStream, FrameMessage, FrameReader, FrameWriter, get_streamers};
-use crate::{RSyncError, config::Config, fs::FileInfo};
+use crate::{IronCarrierError, config::Config, sync::FileAction, fs::FileInfo};
 
 
 macro_rules! send_message {
     ($self:expr, $func:ident()) => {
         if $self.status == PeerStatus::Disconnected {
-            return Err(RSyncError::CantCommunicateWithPeer($self.address.to_owned()));
+            return Err(IronCarrierError::PeerDisconectedError($self.address.to_owned()));
         }
 
         let message = FrameMessage::new(stringify!($func).to_string());
@@ -16,7 +16,7 @@ macro_rules! send_message {
     
     ($self:expr, $func:ident($($arg:expr),+)) => {
         if $self.status == PeerStatus::Disconnected {
-            return Err(RSyncError::CantCommunicateWithPeer($self.address.to_owned()));
+            return Err(IronCarrierError::PeerDisconectedError($self.address.to_owned()));
         }
 
         let mut message = FrameMessage::new(stringify!($func).to_string());
@@ -38,11 +38,11 @@ macro_rules! rpc_call {
                 if message.frame_name() == stringify!($func) {
                     Ok(())
                 } else {
-                    Err(RSyncError::ErrorParsingCommands)
+                    Err(IronCarrierError::ParseCommandError)
                 }
             }
             None => {
-                Err(RSyncError::ErrorParsingCommands)
+                Err(IronCarrierError::ParseCommandError)
             }
         }
     }};
@@ -56,11 +56,11 @@ macro_rules! rpc_call {
                 if message.frame_name() == stringify!($func) {
                     Ok(message.next_arg::<$t>()?)
                 } else {
-                    Err(RSyncError::ErrorParsingCommands)
+                    Err(IronCarrierError::ParseCommandError)
                 }
             }
             None => {
-                Err(RSyncError::ErrorParsingCommands)
+                Err(IronCarrierError::ParseCommandError)
             }
         }
     }};
@@ -74,21 +74,14 @@ macro_rules! rpc_call {
                     let result = ;
                     Ok($( message.next_arg::<$t>()?, )*)
                 } else {
-                    Err(RSyncError::ErrorParsingCommands)
+                    Err(IronCarrierError::ParseCommandError)
                 }
             }
             None => {
-                Err(RSyncError::ErrorParsingCommands)
+                Err(IronCarrierError::ParseCommandError)
             }
         }
     }}
-}
-
-
-pub enum SyncAction<'a> {
-    Send(&'a FileInfo),
-    Move(&'a FileInfo, &'a FileInfo),
-    Delete(&'a FileInfo)
 }
 
 #[derive(PartialEq)]
@@ -127,21 +120,16 @@ impl <'a> Peer<'a> {
         &self.address
     }
     
-    pub async fn connect(&mut self) -> Result<(), RSyncError> {
-        match TcpStream::connect(&self.address).await {
-            Ok(stream) => {
-                let (direct_stream, reader, writer) = get_streamers(stream);
-                self.frame_reader = Some(reader);
-                self.frame_writer = Some(writer);
-                self.direct_stream = Some(direct_stream);
-                self.status = PeerStatus::Connected;
-                Ok(())
-            }
-            Err(_) => {
-                self.status = PeerStatus::Disconnected;
-                Err(RSyncError::CantConnectToPeer(self.address.to_owned()))
-            }
-        }
+    pub async fn connect(&mut self) -> crate::Result<()> {
+        let stream = TcpStream::connect(&self.address).await.map_err(|_| IronCarrierError::PeerDisconectedError(self.address.to_owned()))?;
+        let (direct_stream, reader, writer) = get_streamers(stream);
+
+        self.frame_reader = Some(reader);
+        self.frame_writer = Some(writer);
+        self.direct_stream = Some(direct_stream);
+        self.status = PeerStatus::Connected;
+        
+        Ok(())
     }
 
     pub async fn disconnect(&mut self) {
@@ -153,11 +141,11 @@ impl <'a> Peer<'a> {
         self.peer_sync_hash = HashMap::new();
     }
 
-    async fn fetch_peer_status(&mut self) -> Result<(), RSyncError>{
+    async fn fetch_peer_status(&mut self) -> crate::Result<()>{
         let sync_hash = rpc_call!(
             self,
             server_sync_hash(),
-            Result<HashMap<String,u64>, RSyncError>
+            Result<HashMap<String,u64>, IronCarrierError>
         )?;
 
         self.peer_sync_hash = sync_hash?;
@@ -169,28 +157,26 @@ impl <'a> Peer<'a> {
         self.peer_sync_hash.get(alias).map(|h| *h != hash).unwrap_or(false)
     }
 
-    pub async fn fetch_files_for_alias(&mut self, alias: &str) -> Result<Vec<FileInfo>, RSyncError> {
-        let files = rpc_call!(
+    pub async fn fetch_files_for_alias(&mut self, alias: &str) -> crate::Result<Vec<FileInfo>> {
+        rpc_call!(
             self,
             query_file_list(alias),
-            Option<Vec<FileInfo>>
-        )?;
-
-        return files.ok_or_else(|| RSyncError::ErrorParsingCommands);
+            Vec<FileInfo>
+        )
     }
 
-    pub async fn sync_action<'b>(&mut self, action: &'b SyncAction<'b>) -> Result<(), RSyncError>{
+    pub async fn sync_action<'b>(&mut self, action: &'b FileAction) -> crate::Result<()>{
         match action {
-            SyncAction::Send(file_info) => { 
-                self.send_file(file_info).await?
+            FileAction::Create(file_info) | FileAction::Update(file_info)=> { 
+                self.send_file(&file_info).await?
             }
-            SyncAction::Move(src, dest) => {
+            FileAction::Move(src, dest) => {
                 rpc_call!(
                     self,
                     move_file(src, dest)
                 )?
             }
-            SyncAction::Delete(file) => {
+            FileAction::Remove(file) => {
                 rpc_call!(
                     self,
                     delete_file(file)
@@ -201,7 +187,7 @@ impl <'a> Peer<'a> {
         Ok(())
     }
 
-    async fn send_file(&mut self, file_info: &FileInfo) -> Result<(), RSyncError> {
+    async fn send_file(&mut self, file_info: &FileInfo) -> crate::Result<()> {
         let should_sync = rpc_call!(
             self,
             prepare_file_transfer(file_info),
@@ -211,17 +197,17 @@ impl <'a> Peer<'a> {
         if should_sync {
             let file_path = file_info.get_absolute_path(&self.config)?;
 
-            let mut file = File::open(file_path).await.map_err(| e| RSyncError::ErrorReadingFile(e.to_string()))?;
+            let mut file = File::open(file_path).await.map_err(|_| IronCarrierError::IOReadingError)?;
             self.direct_stream.as_mut().unwrap().write_to_stream(file_info.size.unwrap(), &mut file)
                 .await
-                .map_err(|_| RSyncError::ErrorSendingFile)?;
+                .map_err(|_| IronCarrierError::NetworkIOWritingError)?;
     
             self.frame_reader.as_mut().unwrap().next_frame().await?.unwrap().frame_name();
         }
         Ok(())
     }
 
-    pub async fn start_sync(&mut self) -> Result<(), RSyncError> {
+    pub async fn start_sync(&mut self) -> crate::Result<()> {
         rpc_call!(
             self,
             init_sync()
@@ -231,7 +217,7 @@ impl <'a> Peer<'a> {
         self.fetch_peer_status().await
     }
 
-    pub async fn finish_sync(&mut self, sync_hash: HashMap<String, u64>) -> Result<(), RSyncError> {
+    pub async fn finish_sync(&mut self, sync_hash: HashMap<String, u64>) -> crate::Result<()> {
         rpc_call!(
             self,
             finish_sync(sync_hash)

@@ -3,13 +3,8 @@ use std::{collections::{HashMap}, path::PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, mpsc::Receiver, mpsc::Sender};
 
-
-use crate::{RSyncError, config::Config, fs, fs::FileInfo, network::peer::{Peer, SyncAction}, network::server::{Server, ServerStatus}};
-
-use super::{file_watcher::{FileAction, FileWatcher}, SyncEvent};
-
-
-
+use crate::{config::Config, fs, fs::FileInfo, network::peer::Peer, network::server::{Server, ServerStatus}};
+use super::{file_watcher::FileWatcher, SyncEvent, FileAction};
 
 pub struct Synchronizer {
     config: Arc<Config>,
@@ -43,7 +38,7 @@ impl Synchronizer {
         }
     }
     
-    pub async fn start(&mut self) -> Result<(), RSyncError> {
+    pub async fn start(&mut self) -> crate::Result<()> {
         self.load_sync_hash().await?;
         
         let (tx, rx) = mpsc::channel(50);
@@ -61,7 +56,7 @@ impl Synchronizer {
         Ok(())
     }
 
-    async fn load_sync_hash(&mut self) -> Result<(), RSyncError> {
+    async fn load_sync_hash(&mut self) -> crate::Result<()> {
         self.sync_hash = fs::get_hash_for_alias(&self.config.paths).await?;
         Ok(())
     }
@@ -72,11 +67,11 @@ impl Synchronizer {
         }
     }
 
-    fn send_event_for_this_peer(&self, sync_action: &SyncAction, peer_address: &str) -> bool {
-        let absolute_path = match sync_action {
-            SyncAction::Send(file) => { file.get_absolute_path(&self.config) }
-            SyncAction::Move(file, _) => { file.get_absolute_path(&self.config) }
-            SyncAction::Delete(file) => { file.get_absolute_path(&self.config) }
+    fn send_event_for_this_peer(&self, file_action: &FileAction, peer_address: &str) -> bool {
+        let absolute_path = match file_action {
+            FileAction::Create(file) | FileAction::Update(file)=> { file.get_absolute_path(&self.config) }
+            FileAction::Move(file, _) => { file.get_absolute_path(&self.config) }
+            FileAction::Remove(file) => { file.get_absolute_path(&self.config) }
         };
 
         let absolute_path = match absolute_path {
@@ -130,15 +125,9 @@ impl Synchronizer {
                         SyncEvent::BroadcastToAllPeers(action) => {
                             println!("file changed on disk: {:?}", action);
 
-                            let sync_action = match &action {
-                                FileAction::Create(file) | FileAction::Update(file) => SyncAction::Send(file),
-                                FileAction::Move(src, dest) => SyncAction::Move(src, dest),
-                                FileAction::Remove(file) => SyncAction::Delete(file)
-                            };
-
-                            for peer in  self.config.peers.iter().filter(|p|self.send_event_for_this_peer(&sync_action, p)).map(|p| Peer::new(p, &self.config)) {
+                            for peer in  self.config.peers.iter().filter(|p|self.send_event_for_this_peer(&action, p)).map(|p| Peer::new(p, &self.config)) {
                                 println!("sending file to {}", peer.get_address());
-                                self.sync_peer_single_action(peer, &sync_action).await;
+                                self.sync_peer_single_action(peer, &action).await;
                             }
 
                         }
@@ -155,13 +144,13 @@ impl Synchronizer {
         }
     }
 
-    async fn sync_peer_single_action<'b>(&self, mut peer: Peer<'b>, action: &'b SyncAction<'b>) -> Result<(), RSyncError> {
+    async fn sync_peer_single_action<'b>(&self, mut peer: Peer<'b>, action: &'b FileAction) -> crate::Result<()> {
         peer.connect().await?;
         peer.start_sync().await?;
         peer.sync_action(action).await
     }
 
-    async fn sync_peer<'b>(&'b mut self, peer_address: String) -> Result<(), RSyncError> {
+    async fn sync_peer<'b>(&'b mut self, peer_address: String) -> crate::Result<()> {
         let mut peer = Peer::new(&peer_address, &self.config);
         println!("Peer full synchronization started: {}", peer.get_address());
         
@@ -175,15 +164,12 @@ impl Synchronizer {
                 continue;
             }
 
-            let local_files = fs::walk_path(self.config.paths.get(alias).unwrap(), alias)
-                .await
-                .map_err(|_| RSyncError::ErrorReadingLocalFiles)?;
-
+            let mut local_files = fs::walk_path(self.config.paths.get(alias).unwrap(), alias).await?;
             let mut peer_files = peer.fetch_files_for_alias(alias).await?;
 
-            for file_info in local_files.iter() {
-                if need_to_sync_file(file_info, &mut peer_files){
-                    peer.sync_action(&SyncAction::Send(file_info)).await?
+            while let Some(file_info) = local_files.pop() {
+                if need_to_sync_file(&file_info, &mut peer_files){
+                    peer.sync_action(&FileAction::Update(file_info)).await?
                 }
             }
         }

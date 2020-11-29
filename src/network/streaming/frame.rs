@@ -4,7 +4,7 @@ use serde::{Deserialize, de::DeserializeOwned, Serialize};
 use tokio::{io::AsyncRead, io::AsyncWrite, sync::Mutex, io::AsyncReadExt, io::AsyncWriteExt};
 use bytes::{ BytesMut, Buf, };
 
-use crate::RSyncError;
+use crate::IronCarrierError;
 
 const BUFFER_SIZE: usize = 8 * 1024;
 const COMMAND_SIZE: usize = 8;
@@ -43,7 +43,7 @@ impl FrameMessage {
     /// Add an argument of type `T` to this frame
     /// 
     /// Returns [Ok] if successful
-    pub fn append_arg<T : Serialize>(&mut self, arg: &T) -> Result<(), RSyncError> {
+    pub fn append_arg<T : Serialize>(&mut self, arg: &T) -> crate::Result<()> {
         let ser_value = bincode::serialize(arg)?;
         let ser_size = bincode::serialize(&ser_value.len())?;
 
@@ -59,16 +59,16 @@ impl FrameMessage {
     /// or if there isn't an argument to be retrieved
     /// 
     /// [`OK`]`(`[T]`)` if the argument is correct
-    pub fn next_arg<T : DeserializeOwned>(&mut self) -> Result<T, RSyncError> {
+    pub fn next_arg<T : DeserializeOwned>(&mut self) -> crate::Result<T> {
         let size = std::mem::size_of::<usize>();
 
-        if self.data.len() < size { return Err(RSyncError::ErrorParsingCommands); }
+        if self.data.len() < size { return Err(IronCarrierError::ParseCommandError); }
 
         let bytes: Vec<u8> = self.data.drain(0..size).collect();
         
         let size: usize = bincode::deserialize(&bytes)?;
         
-        if self.data.len() < size { return Err(RSyncError::ErrorParsingCommands); }
+        if self.data.len() < size { return Err(IronCarrierError::ParseCommandError); }
 
         let bytes: Vec<u8> = self.data.drain(0..size).collect();
         let result = bincode::deserialize::<T>(&bytes)?;
@@ -119,7 +119,7 @@ impl <T: AsyncRead + Unpin> FrameReader<T> {
     /// 
     /// Returns [Ok]`(`[Some]`(`[FrameMessage]`)` `)` if success  
     /// Returns [Ok]`(`[None]`)` if there is not enough information to parse a frame
-    fn parse_frame(& mut self) -> Result<Option<FrameMessage>, Box<dyn std::error::Error>> {
+    fn parse_frame(& mut self) -> crate::Result<Option<FrameMessage>> {
         if self.buffer.remaining() < COMMAND_SIZE {
             return Ok(None);
         }
@@ -149,21 +149,21 @@ impl <T: AsyncRead + Unpin> FrameReader<T> {
     /// Returns [Ok]`(`[None]`) if there is no information in the buffer or the stream  
     ///
     /// Returns [Err] if there isn't enought information for a full [FrameMessage] to be parsed  
-    pub async fn next_frame(&mut self) -> Result<Option<FrameMessage>, RSyncError> {
+    pub async fn next_frame(&mut self) -> crate::Result<Option<FrameMessage>> {
         
         loop {
-            if let Some(frame) = self.parse_frame().map_err(|_| RSyncError::ErrorParsingCommands)? {
+            if let Some(frame) = self.parse_frame().map_err(|_| IronCarrierError::ParseCommandError)? {
                 return Ok(Some(frame));
             }
 
             let mut buf = [0u8; BUFFER_SIZE];
             let mut stream = self.socket_stream.lock().await;
-            let read = stream.read(&mut buf).await.map_err(|_| RSyncError::ErrorParsingCommands)?;
+            let read = stream.read(&mut buf).await.map_err(|_| IronCarrierError::NetworkIOReadingError)?;
             if 0 == read {
                 if self.buffer.is_empty() {
                     return Ok(None);
                 } else {
-                    return Err(RSyncError::ErrorParsingCommands);
+                    return Err(IronCarrierError::NetworkIOReadingError);
                 }
             } else {
                 self.buffer.extend(&buf[..read]);
@@ -183,14 +183,14 @@ impl <T: AsyncWrite + Unpin> FrameWriter<T> {
     /// Writes a [FrameMessage] to stream  
     ///
     /// It may fail if stream can't be written
-    pub async fn write_frame(&mut self, frame: FrameMessage) -> Result<(), RSyncError> {
+    pub async fn write_frame(&mut self, frame: FrameMessage) -> crate::Result<()> {
         let ser_value = bincode::serialize(&frame)?;
         let ser_size = bincode::serialize(&ser_value.len())?;
         
         let mut stream = self.socket_stream.lock().await;
         
-        stream.write_all(&ser_size[..]).await.map_err(|_| RSyncError::ErrorParsingCommands)?;
-        stream.write_all(&ser_value[..]).await.map_err(|_| RSyncError::ErrorParsingCommands)?;
+        stream.write_all(&ser_size[..]).await.map_err(|_| IronCarrierError::NetworkIOWritingError)?;
+        stream.write_all(&ser_value[..]).await.map_err(|_| IronCarrierError::NetworkIOWritingError)?;
 
         Ok(())
     }   

@@ -2,7 +2,7 @@ use std::{cmp::Ord, collections::HashMap, hash::Hash, path::{Path, PathBuf}, tim
 use serde::{Serialize, Deserialize };
 use tokio::fs;
 
-use crate::{config::Config, RSyncError};
+use crate::{config::Config, IronCarrierError};
 
 /// Represents a local file
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,10 +47,10 @@ impl FileInfo {
         Some(Self::new(self.alias.clone(), self.path.clone(), metadata))
     }
 
-    pub fn get_absolute_path(&self, config: &Config) -> Result<PathBuf, RSyncError> {
+    pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
         let root_path = config.paths.get(&self.alias)
             .and_then(|p| p.canonicalize().ok())
-            .ok_or_else(|| RSyncError::InvalidAlias(self.alias.clone()))?;
+            .ok_or_else(|| IronCarrierError::AliasNotAvailable(self.alias.to_owned()))?;
 
         Ok(root_path.join(&self.path))
     }
@@ -85,14 +85,15 @@ impl Ord for FileInfo {
 }
 
 
-pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Vec<FileInfo>> {
     let mut paths = vec![root_path.to_owned()];
     let mut files = Vec::new();
     
     
     while let Some(path) = paths.pop() {
-        let mut entries = fs::read_dir(path).await?;
-        while let Some(entry) = entries.next_entry().await? {
+        let mut entries = fs::read_dir(path).await
+            .map_err(|_| IronCarrierError::IOReadingError)?;
+        while let Some(entry) = entries.next_entry().await.map_err(|_| IronCarrierError::IOReadingError)? {
             let path = entry.path();
             
             if is_temp_file(&path) { continue; }
@@ -108,7 +109,7 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> Result<Vec<FileI
             // let relative_path = path.strip_prefix(root_path)?.to_owned();
             files.push(FileInfo::new(
                 alias.to_owned(), 
-                path.strip_prefix(root_path)?.to_owned(), 
+                path.strip_prefix(root_path).map_err(|_| IronCarrierError::IOReadingError)?.to_owned(), 
                 metadata
             ));
         }
@@ -119,14 +120,14 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> Result<Vec<FileI
     return Ok(files);
 }
 
-pub async fn get_files_with_hash<'a>(path: &Path, alias: &'a str) -> Result<(u64, Vec<FileInfo>), RSyncError>{
-    let files = walk_path(path, alias).await.map_err(|_| RSyncError::ErrorReadingLocalFiles)?;
+pub async fn get_files_with_hash<'a>(path: &Path, alias: &'a str) -> crate::Result<(u64, Vec<FileInfo>)>{
+    let files = walk_path(path, alias).await?;
     let hash = crate::crypto::calculate_hash(&files);
 
     return Ok((hash, files));
 }
 
-pub async fn get_hash_for_alias(alias_path: &HashMap<String, PathBuf>) -> Result<HashMap<String, u64>, RSyncError> {
+pub async fn get_hash_for_alias(alias_path: &HashMap<String, PathBuf>) -> crate::Result<HashMap<String, u64>> {
     let mut result = HashMap::new();
     
     for (alias, path) in alias_path {

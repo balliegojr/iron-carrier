@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tokio::{prelude::*, io::AsyncRead, io::AsyncReadExt, io::AsyncWrite, sync::Mutex};
-use crate::RSyncError;
+use crate::IronCarrierError;
 
 const BUFFER_SIZE: usize = 8 * 1024;
 
@@ -18,31 +18,30 @@ impl <T : AsyncRead + AsyncWrite + Unpin> DirectStream<T> {
     }
 
     /// Read `buf_size` bytes from internal buffer and write into `buf_write`
-    pub async fn read_stream<R: AsyncWrite + Unpin>(&mut self, buf_size: usize, buf_write: &mut R) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn read_stream<R: AsyncWrite + Unpin>(&mut self, buf_size: usize, buf_write: &mut R) -> crate::Result<()> {
         let mut buf_size = buf_size;
 
         
-
         let mut buf = [0u8; BUFFER_SIZE];
         let mut stream = self.socket_stream.lock().await;
         while buf_size > 0 {
             let size = std::cmp::min(BUFFER_SIZE, buf_size);
-            stream.read_exact(&mut buf[..size]).await?;
-            buf_write.write(&buf[..size]).await?;
+            stream.read_exact(&mut buf[..size]).await.map_err(|_| IronCarrierError::NetworkIOReadingError)?;
+            buf_write.write(&buf[..size]).await.map_err(|_| IronCarrierError::NetworkIOReadingError)?;
             buf_size -= size;
         }
 
-        buf_write.flush().await?;
+        buf_write.flush().await.map_err(|_| IronCarrierError::NetworkIOReadingError)?;
 
         Ok(())
     }
 
     /// read `buf_size` from `buf_read` and write into internal stream
-    pub async fn write_to_stream<R: AsyncRead + Unpin>(&mut self, buf_size: u64, buf_read: &mut R) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn write_to_stream<R: AsyncRead + Unpin>(&mut self, buf_size: u64, buf_read: &mut R) -> crate::Result<()> {
         // TODO: fix implementation to actually use buf_size
         let mut stream = self.socket_stream.lock().await;
-        if buf_size != tokio::io::copy( buf_read, &mut ( *stream)).await? {
-            Err(Box::new(RSyncError::ErrorSendingFile))
+        if buf_size != tokio::io::copy( buf_read, &mut ( *stream)).await.map_err(|_| IronCarrierError::NetworkIOWritingError)? {
+            Err(IronCarrierError::NetworkIOWritingError)
         } else {
             Ok(())
         }

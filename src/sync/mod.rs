@@ -3,8 +3,8 @@ pub mod synchronizer;
 
 use std::{collections::HashMap, sync::Arc, path::PathBuf};
 use tokio::sync::Notify;
+use crate::fs::FileInfo;
 
-use self::file_watcher::FileAction;
 pub use synchronizer::Synchronizer;
 
 type PeerAddress = String;
@@ -20,3 +20,10 @@ pub(crate) enum SyncEvent {
 }
 
 
+#[derive(Debug)]
+pub(crate) enum FileAction {
+    Create(FileInfo),
+    Update(FileInfo),
+    Move(FileInfo, FileInfo),
+    Remove(FileInfo)
+}

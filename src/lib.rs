@@ -7,49 +7,55 @@ mod crypto;
 mod network;
 pub mod sync;
 
+pub type Result<T> = std::result::Result<T, IronCarrierError>;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum RSyncError {
-    InvalidConfigPath,
-    InvalidConfigFile,
-    InvalidAlias(String),
+pub enum IronCarrierError {
+    /// Configuration file was not found
+    ConfigFileNotFound,
+    /// Configfuration file is not a valid yaml file  
+    /// Or it contains invalid configuration
+    ConfigFileIsInvalid,
+    /// Peer Address is not correct  
+    /// A valid ip:port string should be provided
     InvalidPeerAddress,
-    ErrorReadingLocalFiles,
-    ErrorFetchingPeerFiles,
-    CantStartServer(String),
-    CantConnectToPeer(String),
-    CantCommunicateWithPeer(String),
-    ErrorSendingFile,
-    ErrorWritingFile(String),
-    ErrorParsingCommands,
-    ErrorReadingFile(String),
-    ErrorRemovingFile(String),
-    ErrorMovingFile(String)
+    /// Provided alias was not configurated for current peer
+    AliasNotAvailable(String),
+    /// It wasn't possible to read a file
+    IOReadingError,
+    /// It wasn't possible to write a file
+    IOWritingError,
+    /// It wasn't possible to start the server    
+    ServerStartError(String),
+    /// The target peer is disconnected
+    PeerDisconectedError(String),
+    /// It wasn't possible to read from network socket
+    NetworkIOReadingError,
+    /// It wans't possible to write to network socket
+    NetworkIOWritingError,
+    // It wasn't possible to parse command frame
+    ParseCommandError,
 }
 
-impl Display for RSyncError {
+impl Display for IronCarrierError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RSyncError::InvalidConfigPath => { write!(f, "Configuration file not found") }
-            RSyncError::InvalidConfigFile => { write!(f, "Provided configuration file is not valid")}
-            RSyncError::InvalidAlias(alias) => { write!(f, "Provided alias is invalid for this peer {}", alias) }
-            RSyncError::ErrorReadingLocalFiles => { write!(f, "There was an error reading files") }
-            RSyncError::CantStartServer(_) => { write!(f, "Can't start server") }
-            RSyncError::CantConnectToPeer(_) => { write!(f, "Can't connect to peer") }
-            RSyncError::CantCommunicateWithPeer(p) => { write!(f, "Can't communicate with peer {}", p) }
-            RSyncError::ErrorFetchingPeerFiles => { write!(f, "Can't fetch peer file list")}
-            RSyncError::ErrorSendingFile => { write!(f, "Error sending file")}
-            RSyncError::ErrorWritingFile(reason) => {write!(f, "Error writing file: {}", reason)}
-            RSyncError::ErrorParsingCommands => { write!(f, "Error parsing command from peer")}
-            RSyncError::ErrorReadingFile(file) => { write!(f, "Error reading file {}", file)}
-            RSyncError::InvalidPeerAddress => { write!(f, "Invalid Peer Configuration")}
-            RSyncError::ErrorRemovingFile(reason) => { write!(f, "Error removing file: {}", reason)}
-            RSyncError::ErrorMovingFile(reason) => { write!(f, "Error moving file: {}", reason)}
+            IronCarrierError::ConfigFileNotFound => { write!(f, "Configuration file not found on provided path")}
+            IronCarrierError::ConfigFileIsInvalid => { write!(f, "Configuration file has invalid configuration")}
+            IronCarrierError::InvalidPeerAddress => { write!(f, "Invalid Peer Address")}
+            IronCarrierError::AliasNotAvailable(alias) => { write!(f, "Alias {} not available on this node", alias)}
+            IronCarrierError::IOReadingError => { write!(f, "There was an error reading information from disk")}
+            IronCarrierError::IOWritingError => { write!(f, "There was an error writing information to disk")}
+            IronCarrierError::ServerStartError(reason) => { write!(f, "There was an error starting the server: {}", reason)}
+            IronCarrierError::NetworkIOReadingError => { write!(f, "There was an error reading information from network stream")}
+            IronCarrierError::NetworkIOWritingError => { write!(f, "There was an error writing information to network stream")}
+            IronCarrierError::ParseCommandError => { write!(f, "There was an error parsing the provide command")}
+            IronCarrierError::PeerDisconectedError(peer_address) => { write!(f, "The target peer is not available: {}", peer_address)}
         }
     }
 }
 
-impl Error for RSyncError {
+impl Error for IronCarrierError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match *self {
             _ => { None }
@@ -57,14 +63,8 @@ impl Error for RSyncError {
     }
 }
 
-impl From<bincode::Error> for RSyncError {
+impl From<bincode::Error> for IronCarrierError {
     fn from(_: bincode::Error) -> Self {
-        RSyncError::ErrorParsingCommands
+        IronCarrierError::ParseCommandError
     }
 }
-
-// impl From<tokio::io::Error> for RSyncError {
-//     fn from(_: tokio::io::Error) -> Self {
-//         RSyncError::
-//     }
-// }

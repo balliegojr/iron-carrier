@@ -2,7 +2,7 @@ use serde::{Serialize, Deserialize};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{fs::File, net::TcpListener, prelude::*, sync::mpsc::Sender};
 
-use crate::{RSyncError, config::Config, fs::FileInfo, sync::SyncEvent};
+use crate::{IronCarrierError, config::Config, fs::FileInfo, sync::SyncEvent};
 
 use super::streaming::{DirectStream, FrameMessage, FrameReader, FrameWriter, get_streamers};
 
@@ -37,18 +37,14 @@ impl Server {
         }
     }
 
-    pub fn get_status(&self) -> ServerStatus {
-        self.status.clone()
-    }
-
     pub fn set_status(&mut self, status: ServerStatus) {
         self.status = status
     }
 
-    pub async fn start(&mut self, sync_events: Sender<SyncEvent> ) -> Result<(), RSyncError> {
+    pub async fn start(&mut self, sync_events: Sender<SyncEvent> ) -> crate::Result<()> {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", self.port))
             .await
-            .map_err(|err| RSyncError::CantStartServer(format!("{}", err)))?;
+            .map_err(|err| IronCarrierError::ServerStartError(format!("{}", err)))?;
 
         println!("Server listening on port: {}", self.port);
 
@@ -73,7 +69,11 @@ impl Server {
                                 stream,
                                 socket_addr
                             );
-                            handler.handle_events(sync_events.clone()).await
+                            
+                            match handler.handle_events(sync_events.clone()).await {
+                                Ok(()) => { println!("Peer connection closed: {}", handler.socket_addr)}
+                                Err(err) => { eprintln!("Some error ocurred:{}", err) }
+                            }
                         });
                         
                     }
@@ -102,7 +102,7 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
     }
 
 
-    async fn write_file<'b>(&mut self, file_info: &'b FileInfo) -> Result<(), RSyncError> {
+    async fn write_file<'b>(&mut self, file_info: &'b FileInfo) -> crate::Result<()> {
         let final_path = file_info.get_absolute_path(&self.config)?;
         let mut temp_path = file_info.get_absolute_path(&self.config)?;
         
@@ -110,17 +110,17 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
 
         if let Some(parent) = temp_path.parent() {
             if !parent.exists() {
-                tokio::fs::create_dir_all(parent).await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
+                tokio::fs::create_dir_all(parent).await.map_err(|_| IronCarrierError::IOWritingError)?;
             }
         }
 
-        let mut file = File::create(&temp_path).await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
-        self.direct_stream.read_stream(file_info.size.unwrap() as usize, &mut file).await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
+        let mut file = File::create(&temp_path).await.map_err(|_| IronCarrierError::IOWritingError)?;
+        self.direct_stream.read_stream(file_info.size.unwrap() as usize, &mut file).await.map_err(|_| IronCarrierError::NetworkIOReadingError)?;
         
-        file.flush().await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
+        file.flush().await.map_err(|_| IronCarrierError::IOWritingError)?;
 
-        tokio::fs::rename(&temp_path, &final_path).await.map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
-        filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(file_info.modified_at.unwrap())).map_err(|e| RSyncError::ErrorWritingFile(format!("{}", e)))?;
+        tokio::fs::rename(&temp_path, &final_path).await.map_err(|_| IronCarrierError::IOWritingError)?;
+        filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(file_info.modified_at.unwrap())).map_err(|_| IronCarrierError::IOWritingError)?;
 
         Ok(())
     }
@@ -131,140 +131,123 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
             .unwrap_or_else(|| true)
     }
 
-    async fn delete_file<'b>(&self, file_info: &'b FileInfo) -> Result<(), RSyncError> {
+    async fn delete_file<'b>(&self, file_info: &'b FileInfo) -> crate::Result<()> {
         let path = file_info.get_absolute_path(&self.config)?;
         if path.is_dir() {
             tokio::fs::remove_dir(path).await
-                .map_err(|e| RSyncError::ErrorRemovingFile(format!("{}", e)))
+                .map_err(|_| IronCarrierError::IOWritingError)
         } else {
             tokio::fs::remove_file(path).await
-                .map_err(|e| RSyncError::ErrorRemovingFile(format!("{}", e)))
+                .map_err(|_| IronCarrierError::IOWritingError)
         }
     }
 
-    async fn move_file<'b>(&self, src_file: &'b FileInfo, dest_file: &'b FileInfo) -> Result<(), RSyncError> {
+    async fn move_file<'b>(&self, src_file: &'b FileInfo, dest_file: &'b FileInfo) -> crate::Result<()> {
         
         let src_path = src_file.get_absolute_path(&self.config)?;
         let dest_path = dest_file.get_absolute_path(&self.config)?;
 
         tokio::fs::rename(src_path, dest_path).await
-            .map_err(|e| RSyncError::ErrorMovingFile(format!("{}", e)))
+            .map_err(|_| IronCarrierError::IOWritingError)
     }
 
-    async fn get_file_list(&self, alias: &str) -> Option<Vec<FileInfo>> {
-        let path = match self.config.paths.get(alias) {
-            Some(path) => path,
-            None => { return None; }
-        };
-
-        match crate::fs::walk_path(path, alias).await {
-            Ok(files) => Some(files),
-            Err(_) => None
-        }
+    async fn get_file_list(&self, alias: &str) -> crate::Result<Vec<FileInfo>> {
+        let path = self.config.paths.get(alias).ok_or_else(|| IronCarrierError::AliasNotAvailable(alias.to_owned()))?;
+        crate::fs::walk_path(path, alias).await
     }
 
-    async fn server_sync_hash(&self) -> Result<HashMap<String, u64>, RSyncError> {
+    async fn server_sync_hash(&self) -> crate::Result<HashMap<String, u64>> {
         crate::fs::get_hash_for_alias(&self.config.paths).await
     }
 
-    async fn handle_events(&mut self, sync_events: Sender<SyncEvent> ) {
+    async fn handle_events(&mut self, sync_events: Sender<SyncEvent> ) -> crate::Result<()> {
         loop { 
-            match self.frame_reader.next_frame().await  {
-                Ok(command) => {
-                    match command {
-                        Some(mut message) => {
-                            match message.frame_name() {
-                                "server_sync_hash" => {
-                                    let mut response = FrameMessage::new("server_sync_hash".to_owned());
-                                    response.append_arg(&self.server_sync_hash().await);
-                                    self.frame_writer.write_frame(response).await;
+            match self.frame_reader.next_frame().await?  {
+                Some(mut message) => {
+                    match message.frame_name() {
+                        "server_sync_hash" => {
+                            let mut response = FrameMessage::new("server_sync_hash".to_owned());
+                            response.append_arg(&self.server_sync_hash().await)?;
+                            self.frame_writer.write_frame(response).await?;
+                        }
+
+                        "query_file_list" => {
+                            let alias = message.next_arg::<String>()?;
+                            let mut response = FrameMessage::new("query_file_list".to_owned());
+                            response.append_arg(&self.get_file_list(&alias).await)?;
+                            self.frame_writer.write_frame(response).await?;
+                        }
+                        
+                        "prepare_file_transfer" => {
+                            let remote_file = message.next_arg::<FileInfo>()?;
+                            let should_sync = self.should_sync_file(&remote_file);
+
+                            let mut response = FrameMessage::new("prepare_file_transfer".to_owned());
+                            response.append_arg(&should_sync)?;
+                            self.frame_writer.write_frame(response).await?;
+
+                            if should_sync {
+                                sync_events.send(SyncEvent::CompletedFileAction(remote_file.get_absolute_path(&self.config)?, self.socket_addr.clone())).await;
+                                if let Err(_) = self.write_file(&remote_file).await {
+                                    println!("failed to write file");
                                 }
-
-                                "query_file_list" => {
-                                    let alias: Result<String, RSyncError> = message.next_arg();
-                                    let mut response = FrameMessage::new("query_file_list".to_owned());
-                                    response.append_arg(&self.get_file_list(&alias.unwrap()).await);
-                                    self.frame_writer.write_frame(response).await;
-                                }
-                                
-                                "prepare_file_transfer" => {
-                                    let remote_file = message.next_arg::<FileInfo>().unwrap();
-
-                                    println!("update file {:?} request", remote_file.path);
-
-                                    let should_sync = self.should_sync_file(&remote_file);
-
-                                    let mut response = FrameMessage::new("prepare_file_transfer".to_owned());
-                                    response.append_arg(&should_sync);
-                                    self.frame_writer.write_frame(response).await;
-
-                                    if should_sync {
-                                        println!("updating file {:?} request", remote_file.path);
-
-                                        sync_events.send(SyncEvent::CompletedFileAction(remote_file.get_absolute_path(&self.config).unwrap(), self.socket_addr.clone())).await;
-                                        if let Err(_) = self.write_file(&remote_file).await {
-                                            println!("failed to write file");
-                                        }
-                                        self.frame_writer.write_frame("file_transfer_complete".into()).await;
-                                    }
-                                }
-
-                                "delete_file" => {
-                                    let remote_file = message.next_arg::<FileInfo>().unwrap();
-
-                                    println!("deleting file {:?}", remote_file.path);
-
-                                    self.delete_file(&remote_file).await;
-                                    sync_events.send(SyncEvent::CompletedFileAction(remote_file.get_absolute_path(&self.config).unwrap(), self.socket_addr.clone())).await;
-                                    self.frame_writer.write_frame("delete_file".into()).await;
-                                }
-
-                                "move_file" => {
-                                    let src_file = message.next_arg::<FileInfo>().unwrap();
-                                    let dest_file = message.next_arg::<FileInfo>().unwrap();
-
-                                    sync_events.send(SyncEvent::CompletedFileAction(src_file.get_absolute_path(&self.config).unwrap(), self.socket_addr.clone())).await;
-                                    sync_events.send(SyncEvent::CompletedFileAction(dest_file.get_absolute_path(&self.config).unwrap(), self.socket_addr.clone())).await;
-
-                                    self.move_file(&src_file, &dest_file).await;
-
-                                    self.frame_writer.write_frame("move_file".into()).await;
-                                }
-                                
-                                "init_sync" => {
-                                    let notify = Arc::new(tokio::sync::Notify::new());
-                                    sync_events.send(SyncEvent::PeerRequestedSync(self.socket_addr.clone(), notify.clone())).await;
-                                    
-                                    notify.notified().await;
-                                    if self.frame_writer.write_frame("init_sync".into()).await.is_ok() {
-                                        self.sync_in_progress = true;
-                                    }
-                                }
-                                "finish_sync" => {
-                                    self.sync_in_progress = false;
-                                    sync_events.send(SyncEvent::SyncFromPeerFinished(self.socket_addr.clone(), message.next_arg().unwrap())).await;
-                                    self.frame_writer.write_frame("finish_sync".into()).await;
-                                }
-                                message_name => {
-                                    println!("invalid message: {}", message_name);
-                                    if self.bounce_invalid_messages {
-                                        self.frame_writer.write_frame(message_name.into()).await;
-                                    }
-                                }
+                                self.frame_writer.write_frame("file_transfer_complete".into()).await?;
                             }
                         }
-                        None => {
-                            if self.sync_in_progress {
-                                sync_events.send(SyncEvent::SyncFromPeerFinished(self.socket_addr.clone(), HashMap::new())).await;
-                            }
 
-                            break;
+                        "delete_file" => {
+                            let remote_file = message.next_arg::<FileInfo>()?;
+
+                            println!("deleting file {:?}", remote_file.path);
+
+                            self.delete_file(&remote_file).await?;
+                            sync_events.send(SyncEvent::CompletedFileAction(remote_file.get_absolute_path(&self.config)?, self.socket_addr.clone())).await;
+                            self.frame_writer.write_frame("delete_file".into()).await?;
+                        }
+
+                        "move_file" => {
+                            let src_file = message.next_arg::<FileInfo>()?;
+                            let dest_file = message.next_arg::<FileInfo>()?;
+
+                            sync_events.send(SyncEvent::CompletedFileAction(src_file.get_absolute_path(&self.config)?, self.socket_addr.clone())).await;
+                            sync_events.send(SyncEvent::CompletedFileAction(dest_file.get_absolute_path(&self.config)?, self.socket_addr.clone())).await;
+
+                            self.move_file(&src_file, &dest_file).await?;
+
+                            self.frame_writer.write_frame("move_file".into()).await?;
+                        }
+                        
+                        "init_sync" => {
+                            let notify = Arc::new(tokio::sync::Notify::new());
+                            sync_events.send(SyncEvent::PeerRequestedSync(self.socket_addr.clone(), notify.clone())).await;
+                            
+                            notify.notified().await;
+                            if self.frame_writer.write_frame("init_sync".into()).await.is_ok() {
+                                self.sync_in_progress = true;
+                            }
+                        }
+                        "finish_sync" => {
+                            self.sync_in_progress = false;
+                            sync_events.send(SyncEvent::SyncFromPeerFinished(self.socket_addr.clone(), message.next_arg().unwrap())).await;
+                            self.frame_writer.write_frame("finish_sync".into()).await?;
+                        }
+                        message_name => {
+                            if self.bounce_invalid_messages {
+                                self.frame_writer.write_frame(message_name.into()).await?;
+                            } else {
+                                return Err(IronCarrierError::ParseCommandError)
+                            }
                         }
                     }
                 }
-                Err(_) => {
-                    eprintln!("error reading stream");
+                None => {
+                    if self.sync_in_progress {
+                        sync_events.send(SyncEvent::SyncFromPeerFinished(self.socket_addr.clone(), HashMap::new())).await;
+                    }
+
+                    return Ok(());
                 }
+                
             }
         }
     }

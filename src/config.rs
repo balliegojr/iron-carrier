@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::{collections::HashMap, fs::read_to_string, path::PathBuf};
 use toml::from_str;
 
-use crate::RSyncError;
+use crate::IronCarrierError;
 
 fn default_port() -> u32 { 8090 }
 fn default_enable_watcher() -> bool { true }
@@ -24,17 +24,17 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new(config_path: String) -> Result<Self, RSyncError> {
+    pub fn new(config_path: String) -> crate::Result<Self> {
         match read_to_string(config_path) {
             Ok(config_content) => Config::parse_content(config_content),
-            Err(_) => Err(RSyncError::InvalidConfigPath)
+            Err(_) => Err(IronCarrierError::ConfigFileNotFound)
         }
     }
 
-    pub(crate) fn parse_content(content: String) -> Result<Self, RSyncError> {
+    pub(crate) fn parse_content(content: String) -> crate::Result<Self> {
         match from_str(&content) {
             Ok(config) => Ok(config),
-            Err(_) => Err(RSyncError::InvalidConfigFile)
+            Err(_) => Err(IronCarrierError::ConfigFileIsInvalid)
         }
     }
 }
@@ -44,7 +44,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn can_parse_config() -> Result<(), RSyncError>{
+    fn can_parse_config() -> crate::Result<()>{
         let config_content = "
         peers = [
             \"127.0.0.1:8888\"
