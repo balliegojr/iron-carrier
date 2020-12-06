@@ -1,22 +1,26 @@
-pub mod file_watcher;
+//! Handle synchronization
+
+mod file_watcher;
 pub mod synchronizer;
 
-use std::{collections::HashMap, sync::Arc, path::PathBuf};
-use tokio::sync::Notify;
+use std::{sync::Arc};
+use tokio::sync::{ Notify }; 
 use crate::fs::FileInfo;
 
 pub use synchronizer::Synchronizer;
 
 type PeerAddress = String;
 
+/// Synchronization Event Types
 pub(crate) enum SyncEvent {
-    EnqueueSyncToPeer(PeerAddress),
+    /// Add peer to synchronization list
+    EnqueueSyncToPeer(PeerAddress, bool),
 
-    PeerRequestedSync(PeerAddress, Arc<Notify>),
-    SyncFromPeerFinished(PeerAddress, HashMap<String, u64>),
+    /// Peer signaled to start synchronization
+    PeerRequestedSync(PeerAddress, Arc<Notify>, Arc<Notify>),
 
+    /// Broadcast event to all configurated peers
     BroadcastToAllPeers(FileAction),
-    CompletedFileAction(PathBuf, String)
 }
 
 

@@ -58,6 +58,7 @@ impl FileInfo {
 
 impl Hash for FileInfo {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.alias.hash(state);
         self.path.hash(state);
         self.modified_at.hash(state);
         self.size.hash(state);
@@ -169,12 +170,15 @@ mod tests {
 
     #[test]
     fn calc_hash() {
-        let file_path = Path::new("./samples/peer_a/sample_file_a").to_owned();
-        let metadata = file_path.metadata().ok();
-
-        let file = FileInfo::new("a".to_owned(), file_path, metadata);
+        let file = FileInfo{
+            alias: "a".to_owned(),
+            created_at: Some(SystemTime::UNIX_EPOCH),
+            modified_at: Some(SystemTime::UNIX_EPOCH),
+            path: Path::new("./samples/peer_a/sample_file_a").to_owned(),
+            size: Some(100)
+        };
         let files = vec![file];
-        assert_eq!(calculate_hash(&files), 17626586277459498626);
+        assert_eq!(calculate_hash(&files), 1185603756799400450);
     }
 
     #[test]

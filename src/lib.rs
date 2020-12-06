@@ -1,3 +1,10 @@
+#![warn(missing_docs)]
+#![warn(missing_doc_code_examples)]
+
+//! Keep your files in sync!
+//!
+//! Synchronize your files in differents machines on the same network
+
 use std::{error::Error, fmt::Display};
 use serde::{Serialize, Deserialize };
 
@@ -7,8 +14,10 @@ mod crypto;
 mod network;
 pub mod sync;
 
+/// Result<T, IronCarrierError> alias
 pub type Result<T> = std::result::Result<T, IronCarrierError>;
 
+/// Error types
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IronCarrierError {
     /// Configuration file was not found
@@ -33,7 +42,7 @@ pub enum IronCarrierError {
     NetworkIOReadingError,
     /// It wans't possible to write to network socket
     NetworkIOWritingError,
-    // It wasn't possible to parse command frame
+    /// It wasn't possible to parse command frame
     ParseCommandError,
 }
 

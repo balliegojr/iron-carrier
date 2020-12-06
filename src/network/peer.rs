@@ -145,7 +145,7 @@ impl <'a> Peer<'a> {
         let sync_hash = rpc_call!(
             self,
             server_sync_hash(),
-            Result<HashMap<String,u64>, IronCarrierError>
+            crate::Result<HashMap<String,u64>>
         )?;
 
         self.peer_sync_hash = sync_hash?;
@@ -161,8 +161,8 @@ impl <'a> Peer<'a> {
         rpc_call!(
             self,
             query_file_list(alias),
-            Vec<FileInfo>
-        )
+            crate::Result<Vec<FileInfo>>
+        )?
     }
 
     pub async fn sync_action<'b>(&mut self, action: &'b FileAction) -> crate::Result<()>{
@@ -190,7 +190,7 @@ impl <'a> Peer<'a> {
     async fn send_file(&mut self, file_info: &FileInfo) -> crate::Result<()> {
         let should_sync = rpc_call!(
             self,
-            prepare_file_transfer(file_info),
+            create_or_update_file(file_info),
             bool
         )?;
         
@@ -217,10 +217,10 @@ impl <'a> Peer<'a> {
         self.fetch_peer_status().await
     }
 
-    pub async fn finish_sync(&mut self, sync_hash: HashMap<String, u64>) -> crate::Result<()> {
+    pub async fn finish_sync(&mut self, two_way_sync: bool) -> crate::Result<()> {
         rpc_call!(
             self,
-            finish_sync(sync_hash)
+            finish_sync(two_way_sync)
         )?;
 
         self.status = PeerStatus::Connected;
