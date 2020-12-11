@@ -1,7 +1,7 @@
 use std::{time::Duration, collections::HashMap, path::Path, path::PathBuf, sync::Arc};
 
 use tokio::sync::mpsc::Sender;
-use notify::{DebouncedEvent, Error, INotifyWatcher, RecursiveMode, Watcher, watcher};
+use notify::{DebouncedEvent, Error, RecursiveMode, Watcher, watcher, RecommendedWatcher};
 
 use crate::{config::Config, fs::FileInfo};
 use super::{SyncEvent, FileAction};
@@ -11,7 +11,7 @@ use super::{SyncEvent, FileAction};
 pub(crate) struct FileWatcher {
     event_sender: Sender<SyncEvent>,
     config: Arc<Config>,
-    notify_watcher: INotifyWatcher
+    notify_watcher: RecommendedWatcher
 }
 
 impl FileWatcher {
