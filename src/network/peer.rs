@@ -1,7 +1,7 @@
 use std::{collections::HashMap};
 use tokio::{fs::File, net::{TcpStream}};
 use super::streaming::{DirectStream, FrameMessage, FrameReader, FrameWriter, get_streamers};
-use crate::{IronCarrierError, config::Config, sync::FileAction, fs::FileInfo};
+use crate::{IronCarrierError, config::Config, fs::FileInfo, sync::FileAction, fs};
 
 
 macro_rules! send_message {
@@ -176,11 +176,14 @@ impl <'a> Peer<'a> {
                     move_file(src, dest)
                 )?
             }
-            FileAction::Remove(file) => {
+            FileAction::Remove(file_info) => {
                 rpc_call!(
                     self,
-                    delete_file(file)
+                    delete_file(file_info)
                 )?
+            },
+            FileAction::Request(file_info) => {
+                self.request_file(&file_info).await?
             }
         }
 
@@ -207,6 +210,20 @@ impl <'a> Peer<'a> {
         Ok(())
     }
 
+    async fn request_file(&mut self, file_info: &FileInfo) -> crate::Result<()> {
+        rpc_call!(
+            self,
+            request_file(file_info)
+        )?;
+
+        if let Err(_) = fs::write_file(&file_info, &self.config, self.direct_stream.as_mut().unwrap()).await {
+            println!("failed to write file");
+        }
+        self.frame_writer.as_mut().unwrap().write_frame("request_file_complete".into()).await?;
+        
+        Ok(())
+    }
+    
     pub async fn start_sync(&mut self) -> crate::Result<()> {
         rpc_call!(
             self,

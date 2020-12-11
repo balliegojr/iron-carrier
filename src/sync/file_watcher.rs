@@ -83,10 +83,10 @@ fn get_alias_for_path(file_path: &Path, paths: &HashMap<String, PathBuf>) -> Opt
 fn map_to_sync_event(event: DebouncedEvent, paths: &HashMap<String, PathBuf>) -> Option<SyncEvent> {
     match event {
         notify::DebouncedEvent::Create(file_path) => {
-            if crate::fs::is_temp_file(&file_path) || file_path.is_dir() { return None }
+            if crate::fs::is_special_file(&file_path) || file_path.is_dir() { return None }
 
             let (alias, root) = get_alias_for_path(&file_path, paths)?;
-            let metadata = file_path.metadata().ok();
+            let metadata = file_path.metadata().ok()?;
             let relative_path = file_path.strip_prefix(&root).ok()?;
 
             let file = FileInfo::new(alias, relative_path.to_owned(), metadata);
@@ -94,34 +94,34 @@ fn map_to_sync_event(event: DebouncedEvent, paths: &HashMap<String, PathBuf>) ->
         }
 
         notify::DebouncedEvent::Write(file_path) => {
-            if crate::fs::is_temp_file(&file_path) || file_path.is_dir() { return None }
+            if crate::fs::is_special_file(&file_path) || file_path.is_dir() { return None }
 
             let (alias, root) = get_alias_for_path(&file_path, paths)?;
-            let metadata = file_path.metadata().ok();
+            let metadata = file_path.metadata().ok()?;
             let relative_path = file_path.strip_prefix(&root).ok()?;
 
             let file = FileInfo::new(alias, relative_path.to_owned(), metadata);
             Some(SyncEvent::BroadcastToAllPeers(FileAction::Update(file)))
         }
         notify::DebouncedEvent::Remove(file_path) => {
-            if crate::fs::is_temp_file(&file_path) { return None }
+            if crate::fs::is_special_file(&file_path) { return None }
 
             let (alias, root) = get_alias_for_path(&file_path, paths)?;
             let relative_path = file_path.strip_prefix(&root).ok()?;
 
-            let file = FileInfo::new(alias, relative_path.to_owned(), None);
+            let file = FileInfo::new_deleted(alias, relative_path.to_owned(), None);
             Some(SyncEvent::BroadcastToAllPeers(FileAction::Remove(file)))
         }
         notify::DebouncedEvent::Rename(src_path, dest_path) => {
-            if crate::fs::is_temp_file(&src_path) || crate::fs::is_temp_file(&dest_path) { return None }
+            if crate::fs::is_special_file(&src_path) || crate::fs::is_special_file(&dest_path) { return None }
 
             let (alias, root) = get_alias_for_path(&src_path, paths)?;
             let relative_path = src_path.strip_prefix(&root).ok()?;
-            let src_file = FileInfo::new(alias.clone(), relative_path.to_owned(), None);
+            let src_file = FileInfo::new_deleted(alias.clone(), relative_path.to_owned(), None);
 
             let metadata = dest_path.metadata().ok();
             let relative_path = dest_path.strip_prefix(&root).ok()?;
-            let dest_file = FileInfo::new(alias, relative_path.to_owned(), metadata);
+            let dest_file = FileInfo::new(alias, relative_path.to_owned(), metadata?);
 
             Some(SyncEvent::BroadcastToAllPeers(FileAction::Move(src_file, dest_file)))
         }

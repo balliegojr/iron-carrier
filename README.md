@@ -55,7 +55,6 @@ a = "./samples/peer_a"
 ```
 
 # Planned features
-- track deleted files for a given period of time, or sincronization with all peers
 - Cron for sincronization
 - rsync protocol for file transfer
 - zero-conf for network sincronization

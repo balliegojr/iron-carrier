@@ -29,5 +29,6 @@ pub(crate) enum FileAction {
     Create(FileInfo),
     Update(FileInfo),
     Move(FileInfo, FileInfo),
-    Remove(FileInfo)
+    Remove(FileInfo),
+    Request(FileInfo)
 }

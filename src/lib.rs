@@ -13,6 +13,7 @@ mod fs;
 mod crypto;
 mod network;
 pub mod sync;
+mod deletion_tracker;
 
 /// Result<T, IronCarrierError> alias
 pub type Result<T> = std::result::Result<T, IronCarrierError>;
@@ -44,6 +45,8 @@ pub enum IronCarrierError {
     NetworkIOWritingError,
     /// It wasn't possible to parse command frame
     ParseCommandError,
+    /// It wasn't possible to parse the log file
+    ParseLogError
 }
 
 impl Display for IronCarrierError {
@@ -60,6 +63,7 @@ impl Display for IronCarrierError {
             IronCarrierError::NetworkIOWritingError => { write!(f, "There was an error writing information to network stream")}
             IronCarrierError::ParseCommandError => { write!(f, "There was an error parsing the provide command")}
             IronCarrierError::PeerDisconectedError(peer_address) => { write!(f, "The target peer is not available: {}", peer_address)}
+            IronCarrierError::ParseLogError => { write!(f, "There was an error parsing the log")}
         }
     }
 }
