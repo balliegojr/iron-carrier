@@ -135,8 +135,7 @@ impl <'a> Peer<'a> {
     }
 
     async fn send_peer_address(&mut self) -> crate::Result<()> {
-        send_message!(self, set_peer_address(self.address));
-        Ok(())
+        rpc_call!(self, set_peer_address(self.address))
     }
 
     pub async fn disconnect(&mut self) {

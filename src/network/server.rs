@@ -120,6 +120,7 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                     match message.frame_name() {
                         "set_peer_address" => {
                             self.socket_addr = message.next_arg::<String>()?;
+                            self.frame_writer.write_frame("set_peer_address".into()).await?;
                         }
                         "server_sync_hash" => {
                             let mut response = FrameMessage::new("server_sync_hash".to_owned());

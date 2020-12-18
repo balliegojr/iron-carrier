@@ -8,18 +8,26 @@
             "type": "lldb",
             "request": "launch",
             "name": "Launch a",
-            "program": "${workspaceFolder}/target/debug/r-sync",
+            "program": "${workspaceFolder}/target/debug/iron-carrier",
             "args": ["./samples/config_peer_a.toml"],
             "cwd": "${workspaceFolder}",
+            // "preLaunchTask": "build-dev"
         },
         {
             "type": "lldb",
             "request": "launch",
             "name": "Launch b",
-            "program": "${workspaceFolder}/target/debug/r-sync",
+            "program": "${workspaceFolder}/target/debug/iron-carrier",
             "args": ["./samples/config_peer_b.toml"],
-            "cwd": "${workspaceFolder}"
+            "cwd": "${workspaceFolder}",
+            // "preLaunchTask": "build-dev"
+        },
+    ],
+    "compounds": [
+        {
+            "name": "Launch a+b",
+            "configurations": ["Launch a", "Launch b"],
+            "preLaunchTask": "build-dev"
         }
-        
     ]
 }
