@@ -131,11 +131,11 @@ impl <'a> Peer<'a> {
         self.direct_stream = Some(direct_stream);
         self.status = PeerStatus::Connected;
         
-        self.send_peer_address().await
+        self.send_server_port().await
     }
 
-    async fn send_peer_address(&mut self) -> crate::Result<()> {
-        rpc_call!(self, set_peer_address(self.address))
+    async fn send_server_port(&mut self) -> crate::Result<()> {
+        rpc_call!(self, set_peer_port(self.config.port))
     }
 
     pub async fn disconnect(&mut self) {

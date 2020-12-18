@@ -73,6 +73,11 @@ impl Server {
                                 Ok(()) => { println!("Peer connection closed: {}", handler.socket_addr)}
                                 Err(err) => { eprintln!("Some error ocurred:{}", err) }
                             }
+
+                            if handler.sync_notifier.is_some() {
+                                handler.sync_notifier.as_ref().unwrap().notify_one();
+                                handler.sync_notifier = None;
+                            }
                         });
                         
                     }
@@ -118,9 +123,10 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
             match self.frame_reader.next_frame().await?  {
                 Some(mut message) => {
                     match message.frame_name() {
-                        "set_peer_address" => {
-                            self.socket_addr = message.next_arg::<String>()?;
-                            self.frame_writer.write_frame("set_peer_address".into()).await?;
+                        "set_peer_port" => {
+                            let port = message.next_arg::<u32>()?;
+                            self.socket_addr = format!("{}:{}", self.socket_addr, port);
+                            self.frame_writer.write_frame("set_peer_port".into()).await?;
                         }
                         "server_sync_hash" => {
                             let mut response = FrameMessage::new("server_sync_hash".to_owned());
@@ -154,16 +160,21 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
 
                         "request_file" => {
                             let remote_file = message.next_arg::<FileInfo>()?;
-
+                            
+                            println!("peer request file {:?}", remote_file.path);
                             self.frame_writer.write_frame("request_file".into()).await?;
 
                             let file_path = remote_file.get_absolute_path(&self.config)?;
+
+                            println!("sending file to peer: {}", remote_file.size.unwrap());
                             let mut file = File::open(file_path).await.map_err(|_| IronCarrierError::IOReadingError)?;
                             self.direct_stream.write_to_stream(remote_file.size.unwrap(), &mut file)
                             .await
                             .map_err(|_| IronCarrierError::NetworkIOWritingError)?;
 
-                            self.frame_reader.next_frame().await?.unwrap().frame_name();
+                            println!("finishing task for file: {:?}", remote_file.path);
+                            let _frame = self.frame_reader.next_frame().await?;
+                            println!("task finished file: {:?}", remote_file.path);
                         }
 
                         "delete_file" => {

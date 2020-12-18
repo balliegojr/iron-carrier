@@ -182,8 +182,6 @@ impl Synchronizer {
                     self.events_buffer.add_event(peer_file.get_absolute_path(&self.config)?, &peer_address);
                     fs::delete_file(&peer_file, &self.config).await?;
                 } else {
-                    // local file, doesn't exist on remote
-                    // create file
                     self.events_buffer.add_event(peer_file.get_absolute_path(&self.config)?, &peer_address);
                     peer.sync_action(&FileAction::Request(peer_file)).await?;
                 }
