@@ -1,13 +1,23 @@
+//! This module is responsible for handling file system operations
+
 use std::{cmp::Ord, collections::HashMap, hash::Hash, path::{Path, PathBuf}, time::SystemTime};
 use serde::{Serialize, Deserialize };
 use tokio::{fs::{self, File}, io::{AsyncRead, AsyncWrite, AsyncWriteExt}};
 
 use crate::{IronCarrierError, config::Config, deletion_tracker::DeletionTracker, network::streaming::DirectStream};
 
-/// Represents a local file
+/// Holds the information for a file inside a mapped folder  
+///
+/// If the file exists, `modified_at`, `created_at` and `size` will be [Some]  
+/// Otherwise, only `deleted_at` will be [Some]
+/// 
+/// The `path` will always be relative to the alias root folder
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileInfo {
+    /// Root folder alias
     pub alias: String,
+    /// File path, it is always relative to the alias root  
+    /// The relative path will always be the same, no matter the machine
     pub path: PathBuf,
     
     pub modified_at: Option<SystemTime>,
@@ -17,7 +27,6 @@ pub struct FileInfo {
 }
 
 impl FileInfo {
-    /// constructs a [FileInfo] from a relative [PathBuf]
     pub fn new(alias: String, relative_path: PathBuf, metadata: std::fs::Metadata) -> Self {
         FileInfo {
             alias,
@@ -42,13 +51,20 @@ impl FileInfo {
         }
     }
 
-    pub fn to_local_file(&self, config: &Config) -> Option<FileInfo> {
-        let path = self.get_absolute_path(config).ok()?;
-        let metadata = path.metadata().ok()?;
-
-        Some(Self::new(self.alias.clone(), self.path.clone(), metadata))
+    pub fn is_local_file_newer(&self, config: &Config) -> bool {
+        if self.deleted_at.is_some() {
+            true
+        } else {
+            self.get_absolute_path(config).ok()
+                .and_then(|path| path.metadata().ok())
+                .and_then(|metadata| metadata.created().ok())
+                .and_then(|created_at| Some(created_at > self.created_at.unwrap()))
+                .unwrap_or(false)
+        }
     }
 
+    /// Returns the absolute path of the file for this file system  
+    /// Using the provided root path for the alias in [Config]
     pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
         let root_path = config.paths.get(&self.alias)
             .and_then(|p| p.canonicalize().ok())
@@ -87,6 +103,10 @@ impl Ord for FileInfo {
     }
 }
 
+/// Returns a sorted vector with the entire folder structure for the given path
+///
+/// This function will look for deletes files in the [DeletionTracker] log and append all entries to the return list  
+/// files with name or extension `.ironcarrier` will be ignored
 pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Vec<FileInfo>> {
     let mut paths = vec![root_path.to_owned()];
     
@@ -113,9 +133,6 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Ve
             }
 
             let metadata = path.metadata().map_err(|_| IronCarrierError::IOReadingError)?;
-
-            // let absolute_path = path.canonicalize()?;
-            // let relative_path = path.strip_prefix(root_path)?.to_owned();
             files.push(FileInfo::new(
                 alias.to_owned(), 
                 path.strip_prefix(root_path).map_err(|_| IronCarrierError::IOReadingError)?.to_owned(), 
@@ -129,6 +146,7 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Ve
     return Ok(files);
 }
 
+/// This function returns the result of [walk_path] along with the hash for the file list
 pub async fn get_files_with_hash<'a>(path: &Path, alias: &'a str) -> crate::Result<(u64, Vec<FileInfo>)>{
     let files = walk_path(path, alias).await?;
     let hash = crate::crypto::calculate_hash(&files);
@@ -136,6 +154,7 @@ pub async fn get_files_with_hash<'a>(path: &Path, alias: &'a str) -> crate::Resu
     return Ok((hash, files));
 }
 
+/// This function will return a [HashMap] containing the alias as key and the hash as value
 pub async fn get_hash_for_alias(alias_path: &HashMap<String, PathBuf>) -> crate::Result<HashMap<String, u64>> {
     let mut result = HashMap::new();
     
@@ -168,6 +187,7 @@ pub async fn move_file<'b>(src_file: &'b FileInfo, dest_file: &'b FileInfo, conf
         .map_err(|_| IronCarrierError::IOWritingError)
 }
 
+/// Reads file content from [DirectStream] and writes it to [FileInfo] path
 pub async fn write_file<T : AsyncRead + AsyncWrite + Unpin>(file_info: &FileInfo, config: &Config, direct_stream: &mut DirectStream<T>) -> crate::Result<()> {
     let final_path = file_info.get_absolute_path(config)?;
     let mut temp_path = final_path.clone();
@@ -191,6 +211,7 @@ pub async fn write_file<T : AsyncRead + AsyncWrite + Unpin>(file_info: &FileInfo
     Ok(())
 }
 
+/// Returns true if `path` name or extension are .ironcarrier
 pub fn is_special_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|ext| ext.to_str())
@@ -198,26 +219,25 @@ pub fn is_special_file(path: &Path) -> bool {
         .unwrap_or_default()
 }
 
-pub fn is_local_file_newer_than_remote(local_file: &FileInfo, remote_file: &FileInfo) -> bool {
-    local_file.modified_at > remote_file.modified_at
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::calculate_hash;
 
     #[tokio::test]
-    async fn can_read_local_files() {
-        let files = walk_path(&PathBuf::from("./samples"), "a").await.unwrap();
+    async fn can_read_local_files() -> Result<(), Box<dyn std::error::Error>> {
+        fs::create_dir_all("./tmp/fs_read_local_files").await?;
+        File::create("./tmp/fs_read_local_files/file_1").await?;
+        File::create("./tmp/fs_read_local_files/file_2").await?;
 
-        assert_eq!(files[0].path.to_str(), Some("config_peer_a.toml"));
-        assert_eq!(files[1].path.to_str(), Some("config_peer_b.toml"));
+        let files = walk_path(&PathBuf::from("./tmp/fs_read_local_files"), "a").await.unwrap();
 
-        assert_eq!(files[2].path.to_str(), Some("peer_a/sample_file_a"));
-        assert_eq!(files[3].path.to_str(), Some("peer_b/sample_file_b"));
+        assert_eq!(files[0].path.to_str(), Some("file_1"));
+        assert_eq!(files[1].path.to_str(), Some("file_2"));
         
+        fs::remove_dir_all("./tmp/fs_read_local_files").await?;
+
+        Ok(())
     }
 
     #[test]
@@ -226,16 +246,16 @@ mod tests {
             alias: "a".to_owned(),
             created_at: Some(SystemTime::UNIX_EPOCH),
             modified_at: Some(SystemTime::UNIX_EPOCH),
-            path: Path::new("./samples/peer_a/sample_file_a").to_owned(),
+            path: Path::new("./some_file_path").to_owned(),
             size: Some(100),
             deleted_at: None
         };
         let files = vec![file];
-        assert_eq!(calculate_hash(&files), 1185603756799400450);
+        assert_eq!(calculate_hash(&files), 18253378458919941112);
     }
 
     #[test]
-    fn test_is_temp_file() {
+    fn test_is_special_file() {
         assert!(!is_special_file(Path::new("some_file.txt")));
         assert!(is_special_file(Path::new("some_file.ironcarrier")));
         assert!(is_special_file(Path::new(".ironcarrier")));

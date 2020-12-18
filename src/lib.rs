@@ -25,7 +25,7 @@ pub enum IronCarrierError {
     ConfigFileNotFound,
     /// Configfuration file is not a valid yaml file  
     /// Or it contains invalid configuration
-    ConfigFileIsInvalid,
+    ConfigFileIsInvalid(String),
     /// Peer Address is not correct  
     /// A valid ip:port string should be provided
     InvalidPeerAddress,
@@ -53,7 +53,7 @@ impl Display for IronCarrierError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IronCarrierError::ConfigFileNotFound => { write!(f, "Configuration file not found on provided path")}
-            IronCarrierError::ConfigFileIsInvalid => { write!(f, "Configuration file has invalid configuration")}
+            IronCarrierError::ConfigFileIsInvalid(reason) => { write!(f, "Configuration file has invalid configuration, {}", reason)}
             IronCarrierError::InvalidPeerAddress => { write!(f, "Invalid Peer Address")}
             IronCarrierError::AliasNotAvailable(alias) => { write!(f, "Alias {} not available on this node", alias)}
             IronCarrierError::IOReadingError => { write!(f, "There was an error reading information from disk")}

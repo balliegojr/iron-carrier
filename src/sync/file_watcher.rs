@@ -18,7 +18,7 @@ impl FileWatcher {
     pub fn new(event_sender: Sender<SyncEvent>, config: Arc<Config>) -> Result<Self, Box<Error>> {
         let (tx, rx) = std::sync::mpsc::channel();
     
-        let mut notify_watcher = watcher(tx, Duration::from_secs(config.debounce_events_seconds))?;
+        let mut notify_watcher = watcher(tx, Duration::from_secs(config.delay_watcher_events))?;
         for (_, path) in config.paths.iter() {
             let path = path.canonicalize().unwrap();
             if let Err(_) = notify_watcher.watch(path, RecursiveMode::Recursive) {

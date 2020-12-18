@@ -124,11 +124,18 @@ impl <'a> Peer<'a> {
         let stream = TcpStream::connect(&self.address).await.map_err(|_| IronCarrierError::PeerDisconectedError(self.address.to_owned()))?;
         let (direct_stream, reader, writer) = get_streamers(stream);
 
+        
+
         self.frame_reader = Some(reader);
         self.frame_writer = Some(writer);
         self.direct_stream = Some(direct_stream);
         self.status = PeerStatus::Connected;
         
+        self.send_peer_address().await
+    }
+
+    async fn send_peer_address(&mut self) -> crate::Result<()> {
+        send_message!(self, set_peer_address(self.address));
         Ok(())
     }
 

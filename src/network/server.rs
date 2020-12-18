@@ -51,7 +51,7 @@ impl Server {
                         let file_events = file_events.clone();
                         
                         let socket_addr = socket.ip().to_string();
-                        let socket_addr = config.peers.iter().find(|p| p.starts_with(&socket_addr)).unwrap_or_else(|| &socket_addr).to_owned();
+                        // let socket_addr = config.peers.iter().find(|p| p.starts_with(&socket_addr)).unwrap_or_else(|| &socket_addr).to_owned();
 
                         println!("New connection from {}", &socket_addr);
 
@@ -94,9 +94,7 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
     }
 
     fn should_sync_file(&self, remote_file: &FileInfo) -> bool {
-        remote_file.to_local_file(&self.config)
-            .and_then(|local_file| Some(!crate::fs::is_local_file_newer_than_remote(&local_file, remote_file)))
-            .unwrap_or_else(|| true)
+        !remote_file.is_local_file_newer(&self.config)
     }
 
     async fn get_file_list(&self, alias: &str) -> crate::Result<Vec<FileInfo>> {
@@ -113,6 +111,9 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
             match self.frame_reader.next_frame().await?  {
                 Some(mut message) => {
                     match message.frame_name() {
+                        "set_peer_address" => {
+                            self.socket_addr = message.next_arg::<String>()?;
+                        }
                         "server_sync_hash" => {
                             let mut response = FrameMessage::new("server_sync_hash".to_owned());
                             response.append_arg(&self.server_sync_hash().await)?;
@@ -234,29 +235,25 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
 
 #[cfg(test)] 
 mod tests {
-    use std::{error::Error, path::PathBuf};
+    use std::{error::Error, path::{ PathBuf, Path }};
     use crate::network::streaming::frame_stream;
 
     use super::*;
     
-    fn sample_config() -> Arc<Config> {
-        Arc::new(Config::parse_content("port = 8090
-        peers = []
-        
+    fn sample_config(test_folder: &str) -> Arc<Config> {
+        Arc::new(Config::parse_content(format!("port = 8090
+       
         [paths]
-        a = \"./samples/peer_a\"".to_owned()).unwrap())
+        a = \"./tmp/{}\"", test_folder)).unwrap())
     }
 
-    // fn init_server(cfg: &str) -> Receiver<SyncEvent> {
-    //     let (sender, receiver) = tokio::sync::mpsc::channel(10);
+    fn create_tmp_file(path: &Path, contents: &str) {
+        if !path.parent().unwrap().exists() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
 
-    //     tokio::spawn(async move {
-    //         let mut server = Server::new(sample_config());
-    //         server.start(sender).await.unwrap();
-    //     });
-
-    //     receiver
-    // }
+        std::fs::write(path, contents).unwrap();
+    }
 
     #[tokio::test()]
     async fn server_handler_can_reply_messages() { 
@@ -264,11 +261,11 @@ mod tests {
 
         tokio::spawn(async move {
             let (events_tx, _) = tokio::sync::mpsc::channel(10);
-            let files_event_buffer = Arc::new(FileEventsBuffer::new(sample_config()));
+            let files_event_buffer = Arc::new(FileEventsBuffer::new(sample_config("server_handler_can_reply_messages")));
 
-            let mut server_peer_handler = ServerPeerHandler::new(sample_config(), server_stream, "".to_owned());
+            let mut server_peer_handler = ServerPeerHandler::new(sample_config("server_handler_can_reply_messages"), server_stream, "".to_owned());
             server_peer_handler.bounce_invalid_messages = true;
-            server_peer_handler.handle_events(events_tx, files_event_buffer).await;
+            server_peer_handler.handle_events(events_tx, files_event_buffer).await.unwrap();
         });
 
         let (mut reader, mut writer) = frame_stream(client_stream);
@@ -277,17 +274,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_reply_files() -> Result<(), Box<dyn Error>> {
+    async fn server_reply_query_file_list() -> Result<(), Box<dyn Error>> {
         let (client_stream, server_stream) = tokio::io::duplex(10);
+
+        create_tmp_file(Path::new("./tmp/server_reply_query_file_list/file_1"), "some content");
 
         tokio::spawn(async move {
             let (events_tx, _) = tokio::sync::mpsc::channel(10);
-            let files_event_buffer = Arc::new(FileEventsBuffer::new(sample_config()));
+            let files_event_buffer = Arc::new(FileEventsBuffer::new(sample_config("server_reply_query_file_list")));
 
-            let mut server_peer_handler = ServerPeerHandler::new(sample_config(), server_stream, "".to_owned());
+            let mut server_peer_handler = ServerPeerHandler::new(sample_config("server_reply_query_file_list"), server_stream, "".to_owned());
             server_peer_handler.bounce_invalid_messages = true;
-            server_peer_handler.handle_events(events_tx, files_event_buffer).await;
+            server_peer_handler.handle_events(events_tx, files_event_buffer).await.unwrap();
         });
+
+        
 
         let (mut reader, mut writer) = frame_stream(client_stream);
         let mut message = FrameMessage::new("query_file_list".to_owned());
@@ -297,8 +298,9 @@ mod tests {
         let mut response = reader.next_frame().await?.unwrap();
         assert_eq!(response.frame_name(), "query_file_list");
         
-        let files: crate::Result<Vec<FileInfo>> = response.next_arg()?;
-        assert_eq!(files.unwrap().len(), 1);
+        let files= response.next_arg::<crate::Result<Vec<FileInfo>>>()??;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, Path::new("file_1"));
 
         
         let mut message = FrameMessage::new("query_file_list".to_owned());
@@ -307,8 +309,10 @@ mod tests {
 
 
         let mut response = reader.next_frame().await?.unwrap();
-        let files: crate::Result<Vec<FileInfo>> = response.next_arg()?;
+        let files= response.next_arg::<crate::Result<Vec<FileInfo>>>()?;
         assert!(files.is_err());
+
+        std::fs::remove_dir_all("./tmp/server_reply_query_file_list")?;
 
         Ok(())
     }
@@ -316,13 +320,15 @@ mod tests {
     #[tokio::test]
     async fn server_can_receive_files() -> Result<(), Box<dyn Error>> {
         let (client_stream, server_stream) = tokio::io::duplex(10);
+        
+        create_tmp_file(Path::new("./tmp/server_can_receive_files/file_1"), "");
 
         tokio::spawn(async move {
             let (events_tx, _) = tokio::sync::mpsc::channel(10);
-            let files_event_buffer = Arc::new(FileEventsBuffer::new(sample_config()));
+            let files_event_buffer = Arc::new(FileEventsBuffer::new(sample_config("server_can_receive_files")));
 
-            let mut server_peer_handler = ServerPeerHandler::new(sample_config(), server_stream, "".to_owned());
-            server_peer_handler.handle_events(events_tx, files_event_buffer).await;
+            let mut server_peer_handler = ServerPeerHandler::new(sample_config("server_can_receive_files"), server_stream, "".to_owned());
+            server_peer_handler.handle_events(events_tx, files_event_buffer).await.unwrap();
         });
 
         let mut file_content: &[u8] = b"Some file content";
@@ -353,55 +359,146 @@ mod tests {
             assert_eq!(response.frame_name(), "create_or_update_file_complete");
         }
 
-        let file_meta = std::fs::metadata("./samples/peer_a/subpath/new_file.txt")?;
+        let file_meta = std::fs::metadata("./tmp/server_can_receive_files/subpath/new_file.txt")?;
         assert_eq!(file_meta.len(), file_size);
-        std::fs::remove_dir_all("./samples/peer_a/subpath")?;
+        std::fs::remove_dir_all("./tmp/server_can_receive_files")?;
         
         Ok(())
     }
 
-    // #[tokio::test]
-    // async fn server_enqueue_sync() -> Result<(), Box<dyn Error>> {
-    //     let mut receiver = init_server("port = 8093
-    //     peers = []
+    #[tokio::test]
+    async fn server_can_delete_files() -> Result<(), Box<dyn Error>> {
+        let (client_stream, server_stream) = tokio::io::duplex(10);
         
-    //     [paths]
-    //     a = \"./samples/peer_a\"");
+        create_tmp_file(Path::new("./tmp/server_can_delete_files/file_1"), "");
 
-    //     let client_one = tokio::spawn(async {
-    //         let mut client = CommandStream::new( TcpStream::connect("localhost:8093").await.unwrap());
-    //         client.send_command(&Command::TryInitSync).await.unwrap();
-    //         assert_eq!(client.next_command().await.unwrap().unwrap(), Command::CommandSuccess);
+        tokio::spawn(async move {
+            let (events_tx, _) = tokio::sync::mpsc::channel(10);
+            let files_event_buffer = Arc::new(FileEventsBuffer::new(sample_config("server_can_delete_files")));
 
-    //         client.send_command(&Command::SyncFinished(HashMap::new())).await.unwrap();
-    //         assert_eq!(client.next_command().await.unwrap().unwrap(), Command::CommandSuccess);
-    //     });
+            let mut server_peer_handler = ServerPeerHandler::new(sample_config("server_can_delete_files"), server_stream, "".to_owned());
+            server_peer_handler.handle_events(events_tx, files_event_buffer).await.unwrap();
+        });
+
+        {
+            let (_, mut reader, mut writer ) = get_streamers(client_stream);
+            let file_info = FileInfo { 
+                alias: "a".to_owned(),
+                path: PathBuf::from("file_1"),
+                size: None,
+                created_at: None,
+                modified_at: None,
+                deleted_at: None
+            };
+
+                
+            let mut message = FrameMessage::new("delete_file".to_owned());
+            message.append_arg(&file_info)?;
+            writer.write_frame(message).await?;
+                
+            let response = reader.next_frame().await?.unwrap();
+            assert_eq!(response.frame_name(), "delete_file");
+
+            assert!(!Path::new("./tmp/server_can_delete_files/file_1").exists());
+            std::fs::remove_dir_all("./tmp/server_can_delete_files")?;
+            
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_can_move_files() -> Result<(), Box<dyn Error>> {
+        let (client_stream, server_stream) = tokio::io::duplex(10);
         
-    //     let client_two = tokio::spawn(async {
-    //         let mut client = CommandStream::new( TcpStream::connect("localhost:8093").await.unwrap());
-    //         client.send_command(&Command::TryInitSync).await.unwrap();
-    //         assert_eq!(client.next_command().await.unwrap().unwrap(), Command::CommandSuccess);
+        create_tmp_file(Path::new("./tmp/server_can_move_files/file_1"), "");
 
-    //         client.send_command(&Command::SyncFinished(HashMap::new())).await.unwrap();
-    //         assert_eq!(client.next_command().await.unwrap().unwrap(), Command::CommandSuccess);
-    //     });
+        tokio::spawn(async move {
+            let (events_tx, _) = tokio::sync::mpsc::channel(10);
+            let files_event_buffer = Arc::new(FileEventsBuffer::new(sample_config("server_can_move_files")));
 
-    //     tokio::spawn(async move {
-    //         while let Some(x) = receiver.recv().await {
-    //             match x {
-    //                 SyncEvent::PeerRequestedSync(_, notify) => {
-    //                     notify.notify_one()
-    //                 }
-    //                 _ => {}
-    //             }
-    //         }
-    //     });
+            let mut server_peer_handler = ServerPeerHandler::new(sample_config("server_can_move_files"), server_stream, "".to_owned());
+            server_peer_handler.handle_events(events_tx, files_event_buffer).await.unwrap();
+        });
 
+        {
+            let (_, mut reader, mut writer ) = get_streamers(client_stream);
+            let src = FileInfo { 
+                alias: "a".to_owned(),
+                path: PathBuf::from("file_1"),
+                size: None,
+                created_at: None,
+                modified_at: None,
+                deleted_at: None
+            };
 
-    //     client_one.await.unwrap();
-    //     client_two.await.unwrap();
+            let dst = FileInfo { 
+                alias: "a".to_owned(),
+                path: PathBuf::from("file_2"),
+                size: None,
+                created_at: None,
+                modified_at: None,
+                deleted_at: None
+            };
 
-    //     Ok(())
-    // }
+                
+            let mut message = FrameMessage::new("move_file".to_owned());
+            message.append_arg(&src)?;
+            message.append_arg(&dst)?;
+            writer.write_frame(message).await?;
+                
+            let response = reader.next_frame().await?.unwrap();
+            assert_eq!(response.frame_name(), "move_file");
 
+            assert!(!Path::new("./tmp/server_can_move_files/file_1").exists());
+            assert!(Path::new("./tmp/server_can_move_files/file_2").exists());
+
+            std::fs::remove_dir_all("./tmp/server_can_move_files")?;
+        }
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_can_send_files() -> Result<(), Box<dyn Error>> {
+        let (client_stream, server_stream) = tokio::io::duplex(10);
+
+        let file_size = b"Some file content".len() as u64;
+        create_tmp_file(Path::new("./tmp/server_can_send_files/file_1"), "Some file content");
+
+        tokio::spawn(async move {
+            let (events_tx, _) = tokio::sync::mpsc::channel(10);
+            let files_event_buffer = Arc::new(FileEventsBuffer::new(sample_config("server_can_send_files")));
+
+            let mut server_peer_handler = ServerPeerHandler::new(sample_config("server_can_send_files"), server_stream, "".to_owned());
+            server_peer_handler.handle_events(events_tx, files_event_buffer).await.unwrap();
+        });
+       
+        {
+            let (mut direct, mut reader, mut writer ) = get_streamers(client_stream);
+            let file_info = FileInfo { 
+                alias: "a".to_owned(),
+                path: PathBuf::from("file_1"),
+                size: Some(file_size),
+                created_at: None,
+                modified_at: None,
+                deleted_at: None
+            };
+    
+            
+            let mut message = FrameMessage::new("request_file".to_owned());
+            message.append_arg(&file_info)?;
+            writer.write_frame(message).await?;
+            
+            let response = reader.next_frame().await?.unwrap();
+            assert_eq!(response.frame_name(), "request_file");
+    
+            let mut sink = tokio::io::sink();
+            direct.read_stream(file_size as usize, &mut sink).await?;
+    
+            writer.write_frame("request_file_complete".into()).await?;
+            std::fs::remove_dir_all("./tmp/server_can_send_files")?;
+        }
+        
+        Ok(())
+    }
 }

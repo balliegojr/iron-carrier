@@ -61,7 +61,7 @@ impl FileEventsBuffer {
             Err(_) => { return false }
         };
 
-        let limit = std::time::Instant::now() - std::time::Duration::from_secs(self.config.debounce_events_seconds * 2);
+        let limit = std::time::Instant::now() - std::time::Duration::from_secs(self.config.delay_watcher_events * 2);
 
         let received_file_events = self.events.read().unwrap();
         match received_file_events.get(&absolute_path) {
@@ -77,7 +77,7 @@ impl FileEventsBuffer {
         received_events_guard.insert(file_path.clone(), (peer_address.to_owned(), std::time::Instant::now()));
 
         let received_events = self.events.clone();
-        let debounce_time = self.config.debounce_events_seconds + 1;
+        let debounce_time = self.config.delay_watcher_events + 1;
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_secs(debounce_time)).await;
 
@@ -120,8 +120,10 @@ impl Synchronizer {
     }
 
     async fn sync_peers(&self, sync_events: Sender<SyncEvent>) {
-        for peer_address in self.config.peers.iter() {
-            sync_events.send(SyncEvent::EnqueueSyncToPeer(peer_address.to_owned(), false)).await;
+        if let Some(peers) = &self.config.peers {
+            for peer_address in peers.iter() {
+                sync_events.send(SyncEvent::EnqueueSyncToPeer(peer_address.to_owned(), false)).await;
+            }
         }
     }
 
@@ -162,13 +164,14 @@ impl Synchronizer {
                                 _ => {}
                             }
 
-                            for peer in  self.config.peers.iter()
-                                .filter(|p|!self.events_buffer.ignore_event(&action, p))
-                                .map(|p| Peer::new(p, &self.config)) {
-                                    println!("sending file to {}", peer.get_address());
-                                    self.sync_peer_single_action(peer, &action).await;
+                            if let Some(peers) = &self.config.peers {
+                                for peer in  peers.iter()
+                                    .filter(|p|!self.events_buffer.ignore_event(&action, p))
+                                    .map(|p| Peer::new(p, &self.config)) {
+                                        println!("sending file to {}", peer.get_address());
+                                        self.sync_peer_single_action(peer, &action).await;
+                                }
                             }
-
                         }
                     }
                 }
