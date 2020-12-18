@@ -1,6 +1,7 @@
 //! Handle synchronization
 
 mod file_watcher;
+pub(crate) mod file_events_buffer;
 pub mod synchronizer;
 
 use std::{sync::Arc};
@@ -20,7 +21,7 @@ pub(crate) enum SyncEvent {
     PeerRequestedSync(PeerAddress, Arc<Notify>, Arc<Notify>),
 
     /// Broadcast event to all configurated peers
-    BroadcastToAllPeers(FileAction),
+    BroadcastToAllPeers(FileAction, Vec<String>),
 }
 
 

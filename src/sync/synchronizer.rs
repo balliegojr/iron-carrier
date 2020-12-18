@@ -1,9 +1,6 @@
 
 use std::{
-    collections::HashMap, 
-    path::PathBuf, 
     sync::{
-        RwLock,
         Arc
     }
 };
@@ -13,8 +10,13 @@ use tokio::sync::{
     mpsc::Sender
 };
 
-use crate::{config::Config, deletion_tracker::DeletionTracker, fs, fs::FileInfo, network::peer::Peer, network::server::Server};
-use super::{file_watcher::FileWatcher, SyncEvent, FileAction};
+use crate::{config::Config, fs, fs::FileInfo, network::peer::Peer, network::server::Server};
+use super::{
+    FileAction, 
+    file_events_buffer::FileEventsBuffer, 
+    SyncEvent, 
+    file_watcher::FileWatcher
+};
 
 pub struct Synchronizer {
     config: Arc<Config>,
@@ -33,66 +35,11 @@ fn get_peer_file(file: &FileInfo, peer_files: &mut Vec<FileInfo>) -> Option<File
     }
 }
 
-
-pub(crate) struct FileEventsBuffer {
-    config: Arc<Config>,
-    events: Arc<RwLock<HashMap<PathBuf, (String, std::time::Instant)>>>,
-}
-
-impl FileEventsBuffer {
-    pub fn new(config: Arc<Config>) -> Self {
-        FileEventsBuffer {
-            events: Arc::new(RwLock::new(HashMap::new())),
-            config
-        }
-    }
-
-    pub fn ignore_event(&self, file_action: &FileAction, peer_address: &str) -> bool {
-        let absolute_path = match file_action {
-            FileAction::Create(file) 
-            | FileAction::Update(file)
-            | FileAction::Remove(file) 
-            | FileAction::Request(file) => { file.get_absolute_path(&self.config) }
-            FileAction::Move(file, _) => { file.get_absolute_path(&self.config) }
-        };
-
-        let absolute_path = match absolute_path {
-            Ok(path) => { path }
-            Err(_) => { return false }
-        };
-
-        let limit = std::time::Instant::now() - std::time::Duration::from_secs(self.config.delay_watcher_events * 2);
-
-        let received_file_events = self.events.read().unwrap();
-        match received_file_events.get(&absolute_path) {
-            Some((event_peer_address, event_time)) => {
-                *event_peer_address == peer_address && event_time > &limit
-            }
-            None => { false }
-        }
-    }
-
-    pub fn add_event(&self, file_path: PathBuf, peer_address: &str) {
-        let mut received_events_guard = self.events.write().unwrap();
-        received_events_guard.insert(file_path.clone(), (peer_address.to_owned(), std::time::Instant::now()));
-
-        let received_events = self.events.clone();
-        let debounce_time = self.config.delay_watcher_events + 1;
-        tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_secs(debounce_time)).await;
-
-            let mut received_events_guard = received_events.write().unwrap();
-            received_events_guard.remove(&file_path);
-
-        });
-    }
-}
-
 impl Synchronizer {
     pub fn new(config: Config) -> Self {
         let config = Arc::new(config);
-        let events_buffer = Arc::new(FileEventsBuffer::new(config.clone()));
         
+        let events_buffer = Arc::new(FileEventsBuffer::new(config.clone()));
         Synchronizer {
             config: config.clone(),
             events_buffer: events_buffer.clone(),
@@ -107,7 +54,7 @@ impl Synchronizer {
         self.server.start(sync_events_sender.clone()).await?;
         
         if self.config.enable_file_watcher {
-            match FileWatcher::new(sync_events_sender.clone(), self.config.clone()) {
+            match FileWatcher::new(sync_events_sender.clone(), self.config.clone(), self.events_buffer.clone()) {
                 Ok(file_watcher) => { self.file_watcher = Some(file_watcher); }
                 Err(err) => { eprintln!("{}", err) }
             }
@@ -149,28 +96,13 @@ impl Synchronizer {
 
                             println!("Peer synchronization ended");
                         }
-                        SyncEvent::BroadcastToAllPeers(action) => {
+                        SyncEvent::BroadcastToAllPeers(action, peers) => {
                             println!("file changed on disk: {:?}", action);
 
-                            match &action {
-                                FileAction::Create(file) => {
-                                    let root_path = self.config.paths.get(&file.alias).unwrap();
-                                    DeletionTracker::new(root_path).remove_entry(&file.path).await;
-                                }
-                                FileAction::Move(file, _) | FileAction::Remove(file) => { 
-                                    let root_path = self.config.paths.get(&file.alias).unwrap();
-                                    DeletionTracker::new(root_path).add_entry(&file.path).await;
-                                }
-                                _ => {}
-                            }
-
-                            if let Some(peers) = &self.config.peers {
-                                for peer in  peers.iter()
-                                    .filter(|p|!self.events_buffer.ignore_event(&action, p))
-                                    .map(|p| Peer::new(p, &self.config)) {
-                                        println!("sending file to {}", peer.get_address());
-                                        self.sync_peer_single_action(peer, &action).await;
-                                }
+                            for peer in peers.iter()
+                                .map(|p| Peer::new(p, &self.config)) {
+                                    println!("sending file to {}", peer.get_address());
+                                    self.sync_peer_single_action(peer, &action).await;
                             }
                         }
                     }

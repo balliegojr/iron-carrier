@@ -1,7 +1,14 @@
-use std::{collections::HashMap, sync::Arc, path::PathBuf};
+use std::{collections::HashMap, sync::Arc };
 use tokio::{fs::File, net::TcpListener, prelude::*, sync::mpsc::Sender};
 
-use crate::{IronCarrierError, config::Config, sync::synchronizer::FileEventsBuffer, fs, fs::FileInfo, sync::SyncEvent};
+use crate::{
+    IronCarrierError, 
+    config::Config, 
+    sync::file_events_buffer::FileEventsBuffer, 
+    fs, 
+    fs::FileInfo, 
+    sync::SyncEvent
+};
 
 use super::streaming::{DirectStream, FrameMessage, FrameReader, FrameWriter, get_streamers};
 
