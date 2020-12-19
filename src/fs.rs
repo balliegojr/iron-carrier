@@ -1,6 +1,6 @@
 //! This module is responsible for handling file system operations
 
-use std::{cmp::Ord, collections::HashMap, hash::Hash, path::{Path, PathBuf}, time::SystemTime};
+use std::{time::Duration, cmp::Ord, collections::HashMap, hash::Hash, path::{Path, PathBuf}, time::SystemTime};
 use serde::{Serialize, Deserialize };
 use tokio::{fs::{self, File}, io::{AsyncRead, AsyncWrite, AsyncWriteExt}};
 
@@ -20,10 +20,16 @@ pub struct FileInfo {
     /// The relative path will always be the same, no matter the machine
     pub path: PathBuf,
     
-    pub modified_at: Option<SystemTime>,
-    pub created_at: Option<SystemTime>,
-    pub deleted_at: Option<SystemTime>,
+    pub modified_at: Option<u64>,
+    pub created_at: Option<u64>,
+    pub deleted_at: Option<u64>,
     pub size: Option<u64>
+}
+
+fn system_time_to_secs(time: SystemTime) -> Option<u64> {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .ok()
 }
 
 impl FileInfo {
@@ -31,8 +37,8 @@ impl FileInfo {
         FileInfo {
             alias,
             path: relative_path,
-            created_at: metadata.created().ok(),
-            modified_at: metadata.modified().ok(),
+            created_at: metadata.created().ok().and_then(system_time_to_secs),
+            modified_at: metadata.modified().ok().and_then(system_time_to_secs),
             size: Some(metadata.len()),
             deleted_at: None
         }
@@ -47,7 +53,7 @@ impl FileInfo {
             created_at: None,
             modified_at: None,
             size: None,
-            deleted_at: deleted_at.or_else(|| Some(SystemTime::now()))
+            deleted_at: deleted_at.or_else(|| Some(SystemTime::now())).and_then(system_time_to_secs)
         }
     }
 
@@ -58,7 +64,8 @@ impl FileInfo {
             self.get_absolute_path(config).ok()
                 .and_then(|path| path.metadata().ok())
                 .and_then(|metadata| metadata.created().ok())
-                .and_then(|created_at| Some(created_at > self.created_at.unwrap()))
+                .and_then(system_time_to_secs)
+                .and_then(|created_at| Some( created_at > self.created_at.unwrap()))
                 .unwrap_or(false)
         }
     }
@@ -66,12 +73,15 @@ impl FileInfo {
     /// Returns the absolute path of the file for this file system  
     /// Using the provided root path for the alias in [Config]
     pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
-        let root_path = config.paths.get(&self.alias)
+        let mut root_path = config.paths.get(&self.alias)
             .and_then(|p| p.canonicalize().ok())
             .ok_or_else(|| IronCarrierError::AliasNotAvailable(self.alias.to_owned()))?;
 
-        Ok(root_path.join(&self.path))
+        root_path.extend(self.path.components());
+
+        Ok(root_path)
     }
+   
 }
 
 impl Hash for FileInfo {
@@ -206,7 +216,10 @@ pub async fn write_file<T : AsyncRead + AsyncWrite + Unpin>(file_info: &FileInfo
     file.flush().await.map_err(|_| IronCarrierError::IOWritingError)?;
 
     tokio::fs::rename(&temp_path, &final_path).await.map_err(|_| IronCarrierError::IOWritingError)?;
-    filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(file_info.modified_at.unwrap())).map_err(|_| IronCarrierError::IOWritingError)?;
+
+    let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.modified_at.unwrap());
+    filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(mod_time)).map_err(|_| IronCarrierError::IOWritingError)?;
+    
 
     Ok(())
 }
@@ -244,14 +257,15 @@ mod tests {
     fn calc_hash() {
         let file = FileInfo{
             alias: "a".to_owned(),
-            created_at: Some(SystemTime::UNIX_EPOCH),
-            modified_at: Some(SystemTime::UNIX_EPOCH),
+            created_at: Some(0),
+            modified_at: Some(0),
             path: Path::new("./some_file_path").to_owned(),
             size: Some(100),
             deleted_at: None
         };
+        
         let files = vec![file];
-        assert_eq!(calculate_hash(&files), 18253378458919941112);
+        assert_eq!(calculate_hash(&files), 1762848629165523426);
     }
 
     #[test]

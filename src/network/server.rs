@@ -359,8 +359,8 @@ mod tests {
                 alias: "a".to_owned(),
                 path: PathBuf::from("subpath/new_file.txt"),
                 size: Some(file_size),
-                created_at: Some(std::time::SystemTime::UNIX_EPOCH),
-                modified_at: Some(std::time::SystemTime::UNIX_EPOCH),
+                created_at: Some(0),
+                modified_at: Some(0),
                 deleted_at: None
             };
 

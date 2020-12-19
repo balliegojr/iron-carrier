@@ -69,7 +69,7 @@ impl Synchronizer {
     async fn sync_peers(&self, sync_events: Sender<SyncEvent>) {
         if let Some(peers) = &self.config.peers {
             for peer_address in peers.iter() {
-                sync_events.send(SyncEvent::EnqueueSyncToPeer(peer_address.to_owned(), false)).await;
+                sync_events.send(SyncEvent::EnqueueSyncToPeer(peer_address.to_owned(), true)).await;
             }
         }
     }
@@ -142,14 +142,14 @@ impl Synchronizer {
                             //remove remote file
                             FileAction::Remove(local_file)
                         } else if local_file.deleted_at.is_none() && peer_file.deleted_at.is_some() {
-                            self.events_buffer.add_event(local_file.get_absolute_path(&self.config)?, &peer_address);
-                            fs::delete_file(&local_file, &self.config).await?;
+                            // self.events_buffer.add_event(local_file.get_absolute_path(&self.config)?, &peer_address);
+                            // fs::delete_file(&local_file, &self.config).await?;
                             continue;
                         } else  {
                             match local_file.modified_at.unwrap().cmp(&peer_file.modified_at.unwrap()) {
                                 std::cmp::Ordering::Less => {
-                                    self.events_buffer.add_event(peer_file.get_absolute_path(&self.config)?, &peer_address);
-                                    FileAction::Request(local_file);
+                                    // self.events_buffer.add_event(peer_file.get_absolute_path(&self.config)?, &peer_address);
+                                    // FileAction::Request(local_file);
                                     continue;
                                 }
                                 std::cmp::Ordering::Equal => {
@@ -177,16 +177,16 @@ impl Synchronizer {
                 peer.sync_action(&peer_action).await?
             }
 
-            while let Some(peer_file) = peer_files.pop() {
-                if peer_file.deleted_at.is_some() {
-                    self.events_buffer.add_event(peer_file.get_absolute_path(&self.config)?, &peer_address);
-                    fs::delete_file(&peer_file, &self.config).await?;
-                } else {
-                    self.events_buffer.add_event(peer_file.get_absolute_path(&self.config)?, &peer_address);
-                    peer.sync_action(&FileAction::Request(peer_file)).await?;
-                }
+            // while let Some(peer_file) = peer_files.pop() {
+            //     if peer_file.deleted_at.is_some() {
+            //         self.events_buffer.add_event(peer_file.get_absolute_path(&self.config)?, &peer_address);
+            //         fs::delete_file(&peer_file, &self.config).await?;
+            //     } else {
+            //         self.events_buffer.add_event(peer_file.get_absolute_path(&self.config)?, &peer_address);
+            //         peer.sync_action(&FileAction::Request(peer_file)).await?;
+            //     }
 
-            }
+            // }
 
         }
 

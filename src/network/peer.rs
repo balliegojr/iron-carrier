@@ -189,7 +189,8 @@ impl <'a> Peer<'a> {
                 )?
             },
             FileAction::Request(file_info) => {
-                self.request_file(&file_info).await?
+                // I must find waht is wrong with this call
+                // self.request_file(&file_info).await?
             }
         }
 
