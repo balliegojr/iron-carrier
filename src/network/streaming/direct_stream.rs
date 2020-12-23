@@ -41,7 +41,7 @@ impl <T : AsyncRead + AsyncWrite + Unpin> DirectStream<T> {
         // TODO: fix implementation to actually use buf_size
         let mut stream = self.socket_stream.lock().await;
         if buf_size != tokio::io::copy( buf_read, &mut ( *stream)).await.map_err(|_| IronCarrierError::NetworkIOWritingError)? {
-            Err(IronCarrierError::NetworkIOWritingError)
+            Err(IronCarrierError::NetworkIOWritingError.into())
         } else {
             Ok(())
         }

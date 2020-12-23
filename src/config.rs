@@ -41,26 +41,31 @@ impl Config {
     /// [IronCarrierError::ConfigFileNotFound] if the provided path doesn't exists   
     /// [IronCarrierError::ConfigFileIsInvalid] if the provided configuration is not valid   
     pub fn new(config_path: String) -> crate::Result<Self> {
-        match read_to_string(config_path) {
-            Ok(config_content) => Config::parse_content(config_content),
-            Err(_) => Err(IronCarrierError::ConfigFileNotFound)
-        }
+        log::debug!("reading config file {}", config_path);
+
+        Config::parse_content(read_to_string(config_path)?)
     }
 
     /// Parses the given content into [Config]
     pub(crate) fn parse_content(content: String) -> crate::Result<Self> {
-        match toml::from_str::<Config>(&content) {
-            Ok(config) => config.validate(),
-            Err(_) => Err(IronCarrierError::ConfigFileIsInvalid("invalid toml file".into()))
-        }
+        toml::from_str::<Config>(&content)?.validate()
     }
 
     fn validate(self) -> crate::Result<Self> {
-        if 0 == self.port || self.port > MAX_PORT { return Err(IronCarrierError::ConfigFileIsInvalid("invalid port number".into())) }
+        if 0 == self.port || self.port > MAX_PORT { 
+            log::error!("Invalid port number");
+            return Err(IronCarrierError::ConfigFileIsInvalid("invalid port number".into()).into()) 
+        }
 
         for (alias, path) in &self.paths {
-            if !path.exists() { std::fs::create_dir_all(path).map_err(|_| IronCarrierError::IOWritingError)?; }
-            if !path.is_dir() { return Err(IronCarrierError::ConfigFileIsInvalid(format!("invalid path: {}", alias))) }
+            if !path.exists() { 
+                log::info!("creating directory for alias {}", alias);
+                std::fs::create_dir_all(path)?; 
+            }
+            if !path.is_dir() { 
+                log::error!("provided path for alias {} is invalid", alias);
+                return Err(IronCarrierError::ConfigFileIsInvalid(format!("invalid path: {}", alias)).into()) 
+            }
         }
 
         Ok(self)

@@ -51,27 +51,34 @@ impl Synchronizer {
     pub async fn start(&mut self) -> crate::Result<()> {
         let (sync_events_sender, sync_events_receiver) = mpsc::channel(50);
 
+        log::debug!("starting syncronizer");
         self.server.start(sync_events_sender.clone()).await?;
         
         if self.config.enable_file_watcher {
             match FileWatcher::new(sync_events_sender.clone(), self.config.clone(), self.events_buffer.clone()) {
                 Ok(file_watcher) => { self.file_watcher = Some(file_watcher); }
-                Err(err) => { eprintln!("{}", err) }
+                Err(err) => { 
+                    log::error!("some error ocurred with the file watcher");
+                    log::error!("{}", err)
+                }
             }
         }
 
-        self.sync_peers(sync_events_sender).await;
+        self.schedule_peers(sync_events_sender).await?;
         self.sync_events(sync_events_receiver).await;
 
         Ok(())
     }
 
-    async fn sync_peers(&self, sync_events: Sender<SyncEvent>) {
+    async fn schedule_peers(&self, sync_events: Sender<SyncEvent>) -> crate::Result<()> {
         if let Some(peers) = &self.config.peers {
             for peer_address in peers.iter() {
-                sync_events.send(SyncEvent::EnqueueSyncToPeer(peer_address.to_owned(), true)).await;
+                log::info!("schedulling peer {} for synchonization", peer_address );
+                sync_events.send(SyncEvent::EnqueueSyncToPeer(peer_address.to_owned(), true)).await?;
             }
         }
+
+        Ok(())
     }
 
     
@@ -82,26 +89,28 @@ impl Synchronizer {
                 Some(event) => {
                     match event {
                         SyncEvent::EnqueueSyncToPeer(peer_address, two_way_sync) => {
-                            match self.sync_peer(peer_address, two_way_sync).await {
-                                Ok(_) => { println!("Peer synchronization successful") }
-                                Err(e) => {
-                                    println!("Peer synchronization failed: {}", e);
+                            let config = self.config.clone();
+                            tokio::spawn(async move {
+                                match Synchronizer::sync_peer(peer_address, two_way_sync, config).await {
+                                    Ok(_) => { log::info!("Peer synchronization successful") }
+                                    Err(e) => {
+                                        log::error!("Peer synchronization failed: {}", e);
+                                    }
                                 }
-                            }
+                            });
                         }
                         SyncEvent::PeerRequestedSync(peer_address, sync_starter, sync_ended) => {
-                            println!("Peer requested synchronization: {}", peer_address);
+                            log::info!("Peer requested synchronization: {}", peer_address);
                             sync_starter.notify_one();
                             sync_ended.notified().await;
 
-                            println!("Peer synchronization ended");
+                            log::info!("Peer synchronization ended");
                         }
                         SyncEvent::BroadcastToAllPeers(action, peers) => {
-                            println!("file changed on disk: {:?}", action);
+                            log::debug!("file changed on disk: {:?}", action);
 
                             for peer in peers.iter()
                                 .map(|p| Peer::new(p, &self.config)) {
-                                    println!("sending file to {}", peer.get_address());
                                     self.sync_peer_single_action(peer, &action).await;
                             }
                         }
@@ -118,14 +127,14 @@ impl Synchronizer {
         peer.sync_action(action).await
     }
 
-    async fn sync_peer<'b>(&'b mut self, peer_address: String, two_way_sync: bool) -> crate::Result<()> {
-        let mut peer = Peer::new(&peer_address, &self.config);
-        println!("Peer full synchronization started: {}", peer.get_address());
+    async fn sync_peer(peer_address: String, two_way_sync: bool, config: Arc<Config>) -> crate::Result<()> {
+        let mut peer = Peer::new(&peer_address, &config);
+        log::info!("Peer full synchronization started: {}", peer.get_address());
         
         peer.connect().await?;
         peer.start_sync().await?;
 
-        for (alias, path) in &self.config.paths {
+        for (alias, path) in &config.paths {
             let (hash, mut local_files) = fs::get_files_with_hash(path, alias).await?;
             if !peer.need_to_sync(&alias, hash) {
                 continue;

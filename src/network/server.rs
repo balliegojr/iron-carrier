@@ -12,6 +12,8 @@ use crate::{
 
 use super::streaming::{DirectStream, FrameMessage, FrameReader, FrameWriter, get_streamers};
 
+type RpcResult<T> = Result<T, IronCarrierError>;
+
 pub(crate) struct Server {
     port: u32,
     config: Arc<Config>,
@@ -39,10 +41,9 @@ impl Server {
 
     pub async fn start(&mut self, sync_events: Sender<SyncEvent> ) -> crate::Result<()> {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", self.port))
-            .await
-            .map_err(|err| IronCarrierError::ServerStartError(format!("{}", err)))?;
+            .await?;
 
-        println!("Server listening on port: {}", self.port);
+        log::info!("Server listening on port: {}", self.port);
 
         let config = self.config.clone();
         let file_events = self.file_events.clone();
@@ -58,9 +59,8 @@ impl Server {
                         let file_events = file_events.clone();
                         
                         let socket_addr = socket.ip().to_string();
-                        // let socket_addr = config.peers.iter().find(|p| p.starts_with(&socket_addr)).unwrap_or_else(|| &socket_addr).to_owned();
 
-                        println!("New connection from {}", &socket_addr);
+                        log::info!("New connection from {}", &socket_addr);
 
                         tokio::spawn(async move {
                             let mut handler = ServerPeerHandler::new(
@@ -70,8 +70,8 @@ impl Server {
                             );
                             
                             match handler.handle_events(sync_events, file_events).await {
-                                Ok(()) => { println!("Peer connection closed: {}", handler.socket_addr)}
-                                Err(err) => { eprintln!("Some error ocurred:{}", err) }
+                                Ok(()) => { log::info!("Peer connection closed: {}", handler.socket_addr)}
+                                Err(err) => { log::error!("Some error ocurred while handling events from peer: {}", err) }
                             }
 
                             if handler.sync_notifier.is_some() {
@@ -109,13 +109,13 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
         !remote_file.is_local_file_newer(&self.config)
     }
 
-    async fn get_file_list(&self, alias: &str) -> crate::Result<Vec<FileInfo>> {
+    async fn get_file_list(&self, alias: &str) -> RpcResult<Vec<FileInfo>> {
         let path = self.config.paths.get(alias).ok_or_else(|| IronCarrierError::AliasNotAvailable(alias.to_owned()))?;
-        crate::fs::walk_path(path, alias).await
+        crate::fs::walk_path(path, alias).await.map_err(|_| IronCarrierError::IOReadingError)
     }
 
-    async fn server_sync_hash(&self) -> crate::Result<HashMap<String, u64>> {
-        crate::fs::get_hash_for_alias(&self.config.paths).await
+    async fn server_sync_hash(&self) -> RpcResult<HashMap<String, u64>> {
+        crate::fs::get_hash_for_alias(&self.config.paths).await.map_err(|_| IronCarrierError::IOReadingError)
     }
 
     async fn handle_events<'b>(&'a mut self, sync_events: Sender<SyncEvent>, file_events_buffer: Arc<FileEventsBuffer> ) -> crate::Result<()> {
@@ -125,10 +125,12 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                     match message.frame_name() {
                         "set_peer_port" => {
                             let port = message.next_arg::<u32>()?;
+                            log::debug!("peer requested to change port to {}", port);
                             self.socket_addr = format!("{}:{}", self.socket_addr, port);
                             self.frame_writer.write_frame("set_peer_port".into()).await?;
                         }
                         "server_sync_hash" => {
+                            log::debug!("peer requested sync hash");
                             let mut response = FrameMessage::new("server_sync_hash".to_owned());
                             response.append_arg(&self.server_sync_hash().await)?;
                             self.frame_writer.write_frame(response).await?;
@@ -136,6 +138,7 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
 
                         "query_file_list" => {
                             let alias = message.next_arg::<String>()?;
+                            log::debug!("peer requested file list for alias {}", alias);
                             let mut response = FrameMessage::new("query_file_list".to_owned());
                             response.append_arg(&self.get_file_list(&alias).await)?;
                             self.frame_writer.write_frame(response).await?;
@@ -143,6 +146,8 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                         
                         "create_or_update_file" => {
                             let remote_file = message.next_arg::<FileInfo>()?;
+                            log::debug!("peer request to send file {:?}", remote_file.path);
+
                             let should_sync = self.should_sync_file(&remote_file);
 
                             let mut response = FrameMessage::new("create_or_update_file".to_owned());
@@ -150,9 +155,10 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                             self.frame_writer.write_frame(response).await?;
 
                             if should_sync {
-                                file_events_buffer.add_event(remote_file.get_absolute_path(&self.config)?, &self.socket_addr);
-                                if let Err(_) = fs::write_file(&remote_file, &self.config, &mut self.direct_stream).await {
-                                    println!("failed to write file");
+                                log::debug!("receiving file {:?}", remote_file.path);
+                                file_events_buffer.add_event(&remote_file, &self.socket_addr);
+                                if let Err(err) = fs::write_file(&remote_file, &self.config, &mut self.direct_stream).await {
+                                    log::error!("failed to write file {}", err);
                                 }
                                 self.frame_writer.write_frame("create_or_update_file_complete".into()).await?;
                             }
@@ -161,28 +167,26 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                         "request_file" => {
                             let remote_file = message.next_arg::<FileInfo>()?;
                             
-                            println!("peer request file {:?}", remote_file.path);
+                            log::debug!("peer request file {:?}", remote_file.path);
                             self.frame_writer.write_frame("request_file".into()).await?;
 
                             let file_path = remote_file.get_absolute_path(&self.config)?;
 
-                            println!("sending file to peer: {}", remote_file.size.unwrap());
-                            let mut file = File::open(file_path).await.map_err(|_| IronCarrierError::IOReadingError)?;
+                            log::debug!("sending file to peer: {}", remote_file.size.unwrap());
+                            let mut file = File::open(file_path).await?;
                             self.direct_stream.write_to_stream(remote_file.size.unwrap(), &mut file)
-                            .await
-                            .map_err(|_| IronCarrierError::NetworkIOWritingError)?;
+                                .await?;
 
-                            println!("finishing task for file: {:?}", remote_file.path);
+                            log::debug!("file sent {:?}", remote_file.path);
                             let _frame = self.frame_reader.next_frame().await?;
-                            println!("task finished file: {:?}", remote_file.path);
                         }
 
                         "delete_file" => {
                             let remote_file = message.next_arg::<FileInfo>()?;
 
-                            println!("deleting file {:?}", remote_file.path);
+                            log::debug!("peer requested to delete file {:?}", remote_file.path);
 
-                            file_events_buffer.add_event(remote_file.get_absolute_path(&self.config)?, &self.socket_addr);
+                            file_events_buffer.add_event(&remote_file, &self.socket_addr);
 
                             fs::delete_file(&remote_file, &self.config).await?;
                             self.frame_writer.write_frame("delete_file".into()).await?;
@@ -192,8 +196,10 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                             let src_file = message.next_arg::<FileInfo>()?;
                             let dest_file = message.next_arg::<FileInfo>()?;
 
-                            file_events_buffer.add_event(src_file.get_absolute_path(&self.config)?, &self.socket_addr);
-                            file_events_buffer.add_event(dest_file.get_absolute_path(&self.config)?, &self.socket_addr);
+                            log::debug!("peer requested to move file {:?} to {:?}", src_file.path, dest_file.path);
+
+                            file_events_buffer.add_event(&src_file, &self.socket_addr);
+                            file_events_buffer.add_event(&dest_file, &self.socket_addr);
 
                             fs::move_file(&src_file, &dest_file, &self.config).await?;
 
@@ -201,6 +207,8 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                         }
                         
                         "init_sync" => {
+                            log::debug!("peer requested to start sync");
+
                             let sync_starter = Arc::new(tokio::sync::Notify::new());
                             let sync_ended = Arc::new(tokio::sync::Notify::new());
                             
@@ -210,18 +218,23 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                                 sync_ended.clone()
                             )).await;
                             
+                            log::debug!("waiting for sync schedule");
                             sync_starter.notified().await;
-                            if self.frame_writer.write_frame("init_sync".into()).await.is_ok() {
-                                self.sync_notifier = Some(sync_ended);
-                            }
+
+                            log::info!("init sync with peer");
+                            self.frame_writer.write_frame("init_sync".into()).await?;
+                            self.sync_notifier = Some(sync_ended);
+                            
                         }
                         "finish_sync" => {
                             let two_way_sync = message.next_arg::<bool>()?;
-                            
+                            log::debug!("peer is finishing sync");
+
                             self.sync_notifier.as_ref().unwrap().notify_one();
                             self.sync_notifier = None;
                             
                             if two_way_sync {
+                                log::debug!("schedulling sync back with peer");
                                 sync_events.send(SyncEvent::EnqueueSyncToPeer(self.socket_addr.clone(), false)).await;
                             }
                             
@@ -231,7 +244,7 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
                             if self.bounce_invalid_messages {
                                 self.frame_writer.write_frame(message_name.into()).await?;
                             } else {
-                                return Err(IronCarrierError::ParseCommandError)
+                                return Err(IronCarrierError::ParseCommandError.into())
                             }
                         }
                     }
@@ -254,7 +267,7 @@ impl <'a, T : AsyncWrite + AsyncRead + Unpin> ServerPeerHandler<T> {
 
 #[cfg(test)] 
 mod tests {
-    use std::{error::Error, path::{ PathBuf, Path }};
+    use std::{path::{ PathBuf, Path }};
     use crate::network::streaming::frame_stream;
 
     use super::*;
@@ -285,6 +298,7 @@ mod tests {
             let mut server_peer_handler = ServerPeerHandler::new(sample_config("server_handler_can_reply_messages"), server_stream, "".to_owned());
             server_peer_handler.bounce_invalid_messages = true;
             server_peer_handler.handle_events(events_tx, files_event_buffer).await.unwrap();
+            
         });
 
         let (mut reader, mut writer) = frame_stream(client_stream);
@@ -293,7 +307,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_reply_query_file_list() -> Result<(), Box<dyn Error>> {
+    async fn server_reply_query_file_list() -> crate::Result<()> {
         let (client_stream, server_stream) = tokio::io::duplex(10);
 
         create_tmp_file(Path::new("./tmp/server_reply_query_file_list/file_1"), "some content");
@@ -317,7 +331,7 @@ mod tests {
         let mut response = reader.next_frame().await?.unwrap();
         assert_eq!(response.frame_name(), "query_file_list");
         
-        let files= response.next_arg::<crate::Result<Vec<FileInfo>>>()??;
+        let files= response.next_arg::<RpcResult<Vec<FileInfo>>>()??;
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, Path::new("file_1"));
 
@@ -328,7 +342,7 @@ mod tests {
 
 
         let mut response = reader.next_frame().await?.unwrap();
-        let files= response.next_arg::<crate::Result<Vec<FileInfo>>>()?;
+        let files= response.next_arg::<RpcResult<Vec<FileInfo>>>()?;
         assert!(files.is_err());
 
         std::fs::remove_dir_all("./tmp/server_reply_query_file_list")?;
@@ -337,7 +351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_can_receive_files() -> Result<(), Box<dyn Error>> {
+    async fn server_can_receive_files() -> crate::Result<()> {
         let (client_stream, server_stream) = tokio::io::duplex(10);
         
         create_tmp_file(Path::new("./tmp/server_can_receive_files/file_1"), "");
@@ -386,7 +400,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_can_delete_files() -> Result<(), Box<dyn Error>> {
+    async fn server_can_delete_files() -> crate::Result<()> {
         let (client_stream, server_stream) = tokio::io::duplex(10);
         
         create_tmp_file(Path::new("./tmp/server_can_delete_files/file_1"), "");
@@ -426,7 +440,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_can_move_files() -> Result<(), Box<dyn Error>> {
+    async fn server_can_move_files() -> crate::Result<()> {
         let (client_stream, server_stream) = tokio::io::duplex(10);
         
         create_tmp_file(Path::new("./tmp/server_can_move_files/file_1"), "");
@@ -478,7 +492,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_can_send_files() -> Result<(), Box<dyn Error>> {
+    async fn server_can_send_files() -> crate::Result<()> {
         let (client_stream, server_stream) = tokio::io::duplex(10);
 
         let file_size = b"Some file content".len() as u64;

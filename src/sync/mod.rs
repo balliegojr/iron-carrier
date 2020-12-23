@@ -13,6 +13,7 @@ pub use synchronizer::Synchronizer;
 type PeerAddress = String;
 
 /// Synchronization Event Types
+#[derive(Debug)]
 pub(crate) enum SyncEvent {
     /// Add peer to synchronization list
     EnqueueSyncToPeer(PeerAddress, bool),

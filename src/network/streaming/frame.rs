@@ -62,13 +62,13 @@ impl FrameMessage {
     pub fn next_arg<T : DeserializeOwned>(&mut self) -> crate::Result<T> {
         let size = std::mem::size_of::<usize>();
 
-        if self.data.len() < size { return Err(IronCarrierError::ParseCommandError); }
+        if self.data.len() < size { return Err(IronCarrierError::ParseCommandError.into()); }
 
         let bytes: Vec<u8> = self.data.drain(0..size).collect();
         
         let size: usize = bincode::deserialize(&bytes)?;
         
-        if self.data.len() < size { return Err(IronCarrierError::ParseCommandError); }
+        if self.data.len() < size { return Err(IronCarrierError::ParseCommandError.into()); }
 
         let bytes: Vec<u8> = self.data.drain(0..size).collect();
         let result = bincode::deserialize::<T>(&bytes)?;
@@ -163,7 +163,7 @@ impl <T: AsyncRead + Unpin> FrameReader<T> {
                 if self.buffer.is_empty() {
                     return Ok(None);
                 } else {
-                    return Err(IronCarrierError::NetworkIOReadingError);
+                    return Err(IronCarrierError::NetworkIOReadingError.into());
                 }
             } else {
                 self.buffer.extend(&buf[..read]);
@@ -202,7 +202,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    pub async fn frame_can_be_parsed() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn frame_can_be_parsed() -> crate::Result<()> {
         let (server_stream, client_stream) = tokio::io::duplex(BUFFER_SIZE);
         let (mut server_reader, _) = frame_stream(server_stream);
         

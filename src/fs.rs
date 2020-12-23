@@ -73,13 +73,22 @@ impl FileInfo {
     /// Returns the absolute path of the file for this file system  
     /// Using the provided root path for the alias in [Config]
     pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
-        let mut root_path = config.paths.get(&self.alias)
-            .and_then(|p| p.canonicalize().ok())
-            .ok_or_else(|| IronCarrierError::AliasNotAvailable(self.alias.to_owned()))?;
-
-        root_path.extend(self.path.components());
-
-        Ok(root_path)
+        match config.paths.get(&self.alias) {
+            Some(path) => match path.canonicalize() {
+                Ok(mut root_path) => { 
+                    root_path.extend(self.path.components());
+                    Ok(root_path)
+                }
+                Err(_) => {
+                    log::error!("cannot get absolute path for alias {}, check if the path is valid", self.alias);
+                    Err(IronCarrierError::AliasNotAvailable(self.alias.to_owned()).into())
+                }
+            }
+            None => {
+                log::error!("provided alias does not exist in this node: {}", self.alias);
+                Err(IronCarrierError::AliasNotAvailable(self.alias.to_owned()).into())
+            }
+        }
     }
    
 }
@@ -130,9 +139,8 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Ve
         
 
     while let Some(path) = paths.pop() {
-        let mut entries = fs::read_dir(path).await
-            .map_err(|_| IronCarrierError::IOReadingError)?;
-        while let Some(entry) = entries.next_entry().await.map_err(|_| IronCarrierError::IOReadingError)? {
+        let mut entries = fs::read_dir(path).await?;
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             
             if is_special_file(&path) { continue; }
@@ -142,10 +150,10 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Ve
                 continue;
             }
 
-            let metadata = path.metadata().map_err(|_| IronCarrierError::IOReadingError)?;
+            let metadata = path.metadata()?;
             files.push(FileInfo::new(
                 alias.to_owned(), 
-                path.strip_prefix(root_path).map_err(|_| IronCarrierError::IOReadingError)?.to_owned(), 
+                path.strip_prefix(root_path)?.to_owned(), 
                 metadata
             ));
         }
@@ -160,6 +168,8 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Ve
 pub async fn get_files_with_hash<'a>(path: &Path, alias: &'a str) -> crate::Result<(u64, Vec<FileInfo>)>{
     let files = walk_path(path, alias).await?;
     let hash = crate::crypto::calculate_hash(&files);
+
+    log::debug!("found {} files for alias {} with hash {}", files.len(), alias, hash);
 
     return Ok((hash, files));
 }
@@ -179,22 +189,30 @@ pub async fn get_hash_for_alias(alias_path: &HashMap<String, PathBuf>) -> crate:
 pub async fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
+        log::debug!("delete_file: given path doesn't exist ({:?})", path);
         return Ok(())
     } else if path.is_dir() {
-        tokio::fs::remove_dir(path).await
-            .map_err(|_| IronCarrierError::IOWritingError)
+        log::debug!("delete_file: {:?} is dir, removing whole dir", path);
+        tokio::fs::remove_dir_all(&path).await?
     } else {
-        tokio::fs::remove_file(path).await
-            .map_err(|_| IronCarrierError::IOWritingError)
+        log::debug!("delete_file: removing file {:?}", path);
+        tokio::fs::remove_file(&path).await?
     }
+
+    log::debug!("{:?} removed", path);
+
+    Ok(())
 }
 
 pub async fn move_file<'b>(src_file: &'b FileInfo, dest_file: &'b FileInfo, config: &Config) -> crate::Result<()> {
     let src_path = src_file.get_absolute_path(config)?;
     let dest_path = dest_file.get_absolute_path(config)?;
 
-    tokio::fs::rename(src_path, dest_path).await
-        .map_err(|_| IronCarrierError::IOWritingError)
+    log::debug!("moving file {:?} to {:?}", src_path, dest_path);
+
+    tokio::fs::rename(src_path, dest_path).await?;
+    
+    Ok(())
 }
 
 /// Reads file content from [DirectStream] and writes it to [FileInfo] path
@@ -206,20 +224,26 @@ pub async fn write_file<T : AsyncRead + AsyncWrite + Unpin>(file_info: &FileInfo
 
     if let Some(parent) = temp_path.parent() {
         if !parent.exists() {
-            tokio::fs::create_dir_all(parent).await.map_err(|_| IronCarrierError::IOWritingError)?;
+            log::debug!("creating folders {:?}", parent);
+            tokio::fs::create_dir_all(parent).await?;
         }
     }
 
-    let mut file = File::create(&temp_path).await.map_err(|_| IronCarrierError::IOWritingError)?;
-    direct_stream.read_stream(file_info.size.unwrap() as usize, &mut file).await.map_err(|_| IronCarrierError::NetworkIOReadingError)?;
-    
-    file.flush().await.map_err(|_| IronCarrierError::IOWritingError)?;
+    log::debug!("creating temp file {:?}", temp_path);
+    let mut file = File::create(&temp_path).await?;
 
-    tokio::fs::rename(&temp_path, &final_path).await.map_err(|_| IronCarrierError::IOWritingError)?;
+    log::debug!("reading file contents from network stream");
+    direct_stream.read_stream(file_info.size.unwrap() as usize, &mut file).await?;
+    file.flush().await?;
 
+    log::debug!("renaming temp file to {:?}", final_path);
+    tokio::fs::rename(&temp_path, &final_path).await?;
+
+    log::debug!("setting file modification time");
     let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.modified_at.unwrap());
-    filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(mod_time)).map_err(|_| IronCarrierError::IOWritingError)?;
-    
+    filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(mod_time))?;
+
+    // TODO: set file permissions
 
     Ok(())
 }

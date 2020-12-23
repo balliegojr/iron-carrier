@@ -16,7 +16,7 @@ pub mod sync;
 mod deletion_tracker;
 
 /// Result<T, IronCarrierError> alias
-pub type Result<T> = std::result::Result<T, IronCarrierError>;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + 'static + Send + Sync>>;
 
 /// Error types
 #[derive(Debug, Serialize, Deserialize)]

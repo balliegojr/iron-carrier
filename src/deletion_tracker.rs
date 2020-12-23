@@ -2,8 +2,6 @@ use std::{collections::HashMap, path::{Path, PathBuf}, time::{Duration, SystemTi
 
 use tokio::io::AsyncWriteExt;
 
-use crate::IronCarrierError;
-
 pub(crate) struct DeletionTracker {
     log_path: PathBuf
 }
@@ -23,12 +21,15 @@ impl DeletionTracker {
 
     pub async fn get_files(&self) -> crate::Result<HashMap<PathBuf, SystemTime>> {
         if !self.log_path.exists() {
+            log::debug!("deletion log doesn't exist");
             return Ok(HashMap::new())
         }
 
-        let contents = tokio::fs::read(&self.log_path).await.map_err(|_| IronCarrierError::ParseLogError)?;
-        let contents = std::str::from_utf8(&contents).map_err(|_| IronCarrierError::ParseLogError)?;
+        log::debug!("reading deletion log content");
+        let contents = tokio::fs::read(&self.log_path).await?;
+        let contents = std::str::from_utf8(&contents)?;
 
+        log::debug!("parsing deletiong log");
         let log_entries = self.parse_log(&contents);
         return self.clean_and_rewrite(log_entries).await;
     }
@@ -38,25 +39,19 @@ impl DeletionTracker {
 
         let limit_date = SystemTime::now() - Duration::from_secs(FOURTEEN_DAYS_AS_SECS);
         log_entries.retain(|_,v| *v >= limit_date);
-       
+
         if log_entries.len() == 0 {
-            tokio::fs::remove_file(&self.log_path)
-                .await  
-                .map_err(|_| IronCarrierError::IOWritingError)?;
+            log::debug!("dropped {} entries from log file, removing log file", count_before);
+            tokio::fs::remove_file(&self.log_path).await?;
         } else if count_before != log_entries.len() {
+            log::debug!("dropping {} entries from log file, recreating log", count_before - log_entries.len());
             let mut log_file = tokio::fs::File::create(&self.log_path)
-                .await
-                .map_err(|_| IronCarrierError::IOWritingError)?;
+                .await?;
 
             for (path, time) in &log_entries {
-                log_file.write_all(&self.create_line(&path, &time).as_bytes())
-                    .await
-                    .map_err(|_| IronCarrierError::IOWritingError)?;
+                log_file.write_all(&self.create_line(&path, &time).as_bytes()).await?;
             }
-            log_file.flush()
-                .await
-                .map_err(|_| IronCarrierError::IOWritingError)?;
-
+            log_file.flush().await?;
         }
 
         Ok(log_entries)
@@ -84,21 +79,19 @@ impl DeletionTracker {
     }
 
     pub async fn add_entry(&self, path: &Path) -> crate::Result<()> {
+        log::debug!("adding entry to log file: {:?}", path);
         let mut log_file = tokio::fs::OpenOptions::new()
                 .append(true)
                 .create(true)
                 .open(&self.log_path)
-                .await
-                .map_err(|_| IronCarrierError::IOWritingError)?;
+                .await?;
 
         log_file
             .write_all(&self.create_line(path, &SystemTime::now()).as_bytes())
-            .await
-            .map_err(|_| IronCarrierError::IOWritingError)?;
+            .await?;
 
         log_file.flush()
-            .await
-            .map_err(|_| IronCarrierError::IOWritingError)?;
+            .await?;
         
         Ok(())
     }
@@ -108,20 +101,18 @@ impl DeletionTracker {
             return Ok(())
         }
 
+        log::debug!("removing entry {:?} from log", path);
         let mut log_file = tokio::fs::OpenOptions::new()
             .append(true)
             .open(&self.log_path)
-            .await
-            .map_err(|_| IronCarrierError::IOWritingError)?;
+            .await?;
 
         log_file
             .write_all(&self.create_line(path, &SystemTime::UNIX_EPOCH).as_bytes())
-            .await
-            .map_err(|_| IronCarrierError::IOWritingError)?;
+            .await?;
 
         log_file.flush()
-            .await
-            .map_err(|_| IronCarrierError::IOWritingError)?;
+            .await?;
 
         Ok(())
     }
