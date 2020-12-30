@@ -1,5 +1,5 @@
 use std::{collections::HashMap, sync::Arc };
-use tokio::{fs::File, net::TcpListener, prelude::*, sync::mpsc::Sender};
+use tokio::{fs::File, io::{AsyncRead, AsyncWrite}, net::TcpListener, sync::mpsc::Sender};
 
 use crate::{
     IronCarrierError, 

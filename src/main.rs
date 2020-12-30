@@ -1,23 +1,46 @@
 use std::process::exit;
-
+use clap::{Arg, App};
 use iron_carrier::config::Config;
 
 #[tokio::main]
 async fn main() {
-    let mut args = std::env::args();
-    args.next();
+    let matches = App::new("Iron Carrier")
+        .version("0.1")
+        .author("Ilson Roberto Balliego Junior <ilson.balliego@gmail.com>")
+        .about("Synchronize your files")
+        .arg(
+            Arg::with_name("config")
+                .help("Sets the config file to use")
+                .value_name("Config")
+                .required(true)
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("auto-exit")
+                .help("Auto exit after sync")
+                .long("auto-exit")
+                .short("e")
+        )
+        .arg(
+            Arg::with_name("v")
+                .short("v")
+                .multiple(true)
+                .help("Sets the level of verbosity")
+        ).get_matches();
+
+    
+    let config = matches.value_of("config").expect("You must provide a configuration path");
+    let verbosity = matches.occurrences_of("v") as usize; 
+    let auto_exit = matches.is_present("auto-exit");
 
     stderrlog::new()
         .module(module_path!())
-        .verbosity(5)
+        .verbosity(verbosity)
         .timestamp(stderrlog::Timestamp::Second)
         .init()
         .unwrap();
 
-
-    let config_path = args.next().expect("You must provide a configuration path");
-
-    let config = match Config::new(config_path) {
+    let config = match Config::new(config) {
         Ok(config) => { config }
         Err(e) => { 
             log::error!("{}", e);
@@ -27,7 +50,7 @@ async fn main() {
 
     
     let mut s = iron_carrier::sync::Synchronizer::new(config);
-    if let Err(e) = s.start().await {
+    if let Err(e) = s.start(auto_exit).await {
         log::error!("{}", e);
         exit(- 1)
     };

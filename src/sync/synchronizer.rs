@@ -48,7 +48,7 @@ impl Synchronizer {
         }
     }
     
-    pub async fn start(&mut self) -> crate::Result<()> {
+    pub async fn start(&mut self, auto_exit: bool) -> crate::Result<()> {
         let (sync_events_sender, sync_events_receiver) = mpsc::channel(50);
 
         log::debug!("starting syncronizer");

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tokio::{prelude::*, io::AsyncRead, io::AsyncReadExt, io::AsyncWrite, sync::Mutex};
+use tokio::{io::AsyncRead, io::AsyncReadExt, io::AsyncWrite, io::AsyncWriteExt, sync::Mutex};
 use crate::IronCarrierError;
 
 const BUFFER_SIZE: usize = 8 * 1024;

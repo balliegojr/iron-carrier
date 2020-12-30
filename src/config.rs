@@ -40,7 +40,7 @@ impl Config {
     /// [Ok]`(`[Config]`)` if successful  
     /// [IronCarrierError::ConfigFileNotFound] if the provided path doesn't exists   
     /// [IronCarrierError::ConfigFileIsInvalid] if the provided configuration is not valid   
-    pub fn new(config_path: String) -> crate::Result<Self> {
+    pub fn new(config_path: &str) -> crate::Result<Self> {
         log::debug!("reading config file {}", config_path);
 
         Config::parse_content(read_to_string(config_path)?)
