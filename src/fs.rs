@@ -2,9 +2,9 @@
 
 use std::{time::Duration, cmp::Ord, collections::HashMap, hash::Hash, path::{Path, PathBuf}, time::SystemTime};
 use serde::{Serialize, Deserialize };
-use tokio::{fs::{self, File}, io::{AsyncRead, AsyncWrite, AsyncWriteExt}};
+use tokio::{fs::{self, File}};
 
-use crate::{IronCarrierError, config::Config, deletion_tracker::DeletionTracker, network::streaming::DirectStream};
+use crate::{IronCarrierError, config::Config, deletion_tracker::DeletionTracker};
 
 /// Holds the information for a file inside a mapped folder  
 ///
@@ -12,7 +12,7 @@ use crate::{IronCarrierError, config::Config, deletion_tracker::DeletionTracker,
 /// Otherwise, only `deleted_at` will be [Some]
 /// 
 /// The `path` will always be relative to the alias root folder
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileInfo {
     /// Root folder alias
     pub alias: String,
@@ -63,9 +63,9 @@ impl FileInfo {
         } else {
             self.get_absolute_path(config).ok()
                 .and_then(|path| path.metadata().ok())
-                .and_then(|metadata| metadata.created().ok())
+                .and_then(|metadata| metadata.modified().ok())
                 .and_then(system_time_to_secs)
-                .and_then(|created_at| Some( created_at > self.created_at.unwrap()))
+                .and_then(|created_at| Some( created_at > self.modified_at.unwrap()))
                 .unwrap_or(false)
         }
     }
@@ -215,11 +215,8 @@ pub async fn move_file<'b>(src_file: &'b FileInfo, dest_file: &'b FileInfo, conf
     Ok(())
 }
 
-/// Reads file content from [DirectStream] and writes it to [FileInfo] path
-pub async fn write_file<T : AsyncRead + AsyncWrite + Unpin>(file_info: &FileInfo, config: &Config, direct_stream: &mut DirectStream<T>) -> crate::Result<()> {
-    let final_path = file_info.get_absolute_path(config)?;
-    let mut temp_path = final_path.clone();
-    
+pub async fn get_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<tokio::fs::File> {
+    let mut temp_path = file_info.get_absolute_path(config)?;
     temp_path.set_extension("ironcarrier");
 
     if let Some(parent) = temp_path.parent() {
@@ -230,20 +227,23 @@ pub async fn write_file<T : AsyncRead + AsyncWrite + Unpin>(file_info: &FileInfo
     }
 
     log::debug!("creating temp file {:?}", temp_path);
-    let mut file = File::create(&temp_path).await?;
+    Ok(File::create(&temp_path).await?)
+}
 
-    log::debug!("reading file contents from network stream");
-    direct_stream.read_stream(file_info.size.unwrap() as usize, &mut file).await?;
-    file.flush().await?;
+pub async fn flush_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
+    let final_path = file_info.get_absolute_path(config)?;
+    let mut temp_path = final_path.clone();
+    
+    temp_path.set_extension("ironcarrier");
 
-    log::debug!("renaming temp file to {:?}", final_path);
+    log::debug!("moving temp file to {:?}", final_path);
     tokio::fs::rename(&temp_path, &final_path).await?;
 
     log::debug!("setting file modification time");
     let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.modified_at.unwrap());
     filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(mod_time))?;
 
-    // TODO: set file permissions
+    // TODO: Set File Permissions
 
     Ok(())
 }
@@ -263,16 +263,16 @@ mod tests {
 
     #[tokio::test]
     async fn can_read_local_files() -> Result<(), Box<dyn std::error::Error>> {
-        fs::create_dir_all("./tmp/fs_read_local_files").await?;
-        File::create("./tmp/fs_read_local_files/file_1").await?;
-        File::create("./tmp/fs_read_local_files/file_2").await?;
+        fs::create_dir_all("./tmp/fs/read_local_files").await?;
+        File::create("./tmp/fs/read_local_files/file_1").await?;
+        File::create("./tmp/fs/read_local_files/file_2").await?;
 
-        let files = walk_path(&PathBuf::from("./tmp/fs_read_local_files"), "a").await.unwrap();
+        let files = walk_path(&PathBuf::from("./tmp/fs/read_local_files"), "a").await.unwrap();
 
         assert_eq!(files[0].path.to_str(), Some("file_1"));
         assert_eq!(files[1].path.to_str(), Some("file_2"));
         
-        fs::remove_dir_all("./tmp/fs_read_local_files").await?;
+        fs::remove_dir_all("./tmp/fs/read_local_files").await?;
 
         Ok(())
     }
@@ -297,5 +297,31 @@ mod tests {
         assert!(!is_special_file(Path::new("some_file.txt")));
         assert!(is_special_file(Path::new("some_file.ironcarrier")));
         assert!(is_special_file(Path::new(".ironcarrier")));
+    }
+
+    #[test]
+    fn is_local_file_newer() {
+        std::fs::create_dir_all("./tmp/fs").unwrap();
+
+        let path = PathBuf::from("./tmp/fs/mtime");
+        std::fs::File::create(&path).unwrap();
+        filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(SystemTime::UNIX_EPOCH)).unwrap();
+
+        let file = FileInfo {
+            alias: "a".to_string(),
+            modified_at: system_time_to_secs(SystemTime::now()),
+            created_at: None,
+            deleted_at: None,
+            path: PathBuf::from("mtime"),
+            size: None
+        };
+
+        let config = Config::parse_content("
+        [paths]
+        a = \"./tmp/fs\"".to_string()).unwrap();
+
+        assert!(!file.is_local_file_newer(&config));
+
+
     }
 }

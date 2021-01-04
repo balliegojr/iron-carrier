@@ -22,35 +22,35 @@ const COMMAND_SIZE: usize = 8;
 /// ```
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FrameMessage {
-    name: String,
+    ident: String,
     data: Vec<u8>
 }
 
 impl FrameMessage {
     /// Creates a new [FrameMessage] without any args
-    pub fn new(name: String) -> Self {
+    pub fn new(ident: &str) -> Self {
         Self {
-            name,
+            ident: ident.to_owned(),
             data: Vec::new()
         }
     }
 
     /// Returns the name of this frame
-    pub fn frame_name(&self) -> &str {
-        &self.name
+    pub fn frame_ident(&self) -> &str {
+        &self.ident
     }
 
     /// Add an argument of type `T` to this frame
     /// 
     /// Returns [Ok] if successful
-    pub fn append_arg<T : Serialize>(&mut self, arg: &T) -> crate::Result<()> {
+    pub fn with_arg<A : Serialize>(mut self, arg: &A) -> crate::Result<Self> {
         let ser_value = bincode::serialize(arg)?;
         let ser_size = bincode::serialize(&ser_value.len())?;
 
         self.data.extend(ser_size);
         self.data.extend(ser_value);
 
-        Ok(())
+        Ok(self)
     }
 
     /// Return the next argument in this frame
@@ -59,7 +59,7 @@ impl FrameMessage {
     /// or if there isn't an argument to be retrieved
     /// 
     /// [`OK`]`(`[T]`)` if the argument is correct
-    pub fn next_arg<T : DeserializeOwned>(&mut self) -> crate::Result<T> {
+    pub fn next_arg<A : DeserializeOwned>(&mut self) -> crate::Result<A> {
         let size = std::mem::size_of::<usize>();
 
         if self.data.len() < size { return Err(IronCarrierError::ParseCommandError.into()); }
@@ -71,7 +71,7 @@ impl FrameMessage {
         if self.data.len() < size { return Err(IronCarrierError::ParseCommandError.into()); }
 
         let bytes: Vec<u8> = self.data.drain(0..size).collect();
-        let result = bincode::deserialize::<T>(&bytes)?;
+        let result = bincode::deserialize::<A>(&bytes)?;
 
         Ok(result)
     }
@@ -80,7 +80,7 @@ impl FrameMessage {
 impl From<&str> for FrameMessage {
     /// Creates a new [`FrameMessage`] from a primitive [`str`]
     fn from(name: &str) -> Self {
-        FrameMessage::new(name.to_owned())
+        FrameMessage::new(name)
     }
 }
 
@@ -197,6 +197,7 @@ impl <T: AsyncWrite + Unpin> FrameWriter<T> {
 }
 
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,17 +211,17 @@ mod tests {
             let (_, mut client_writer) = frame_stream(client_stream);
             
             client_writer.write_frame("some message".into()).await.unwrap();
-            let mut message_with_data = FrameMessage::new("message_data".to_string());
-            message_with_data.append_arg(&1).unwrap();
-            message_with_data.append_arg(&"other_info").unwrap();
-            
+            let message_with_data = FrameMessage::new("message_data")
+                .with_arg(&1).unwrap()
+                .with_arg(&"other_info").unwrap();
+
             client_writer.write_frame(message_with_data).await.unwrap();
             client_writer.write_frame("other message".into()).await.unwrap();
         });
 
-        assert_eq!(server_reader.next_frame().await?.unwrap().name, "some message".to_string());
-        assert_eq!(server_reader.next_frame().await?.unwrap().name, "message_data".to_string());
-        assert_eq!(server_reader.next_frame().await?.unwrap().name, "other message".to_string());
+        assert_eq!(server_reader.next_frame().await?.unwrap().ident, "some message".to_string());
+        assert_eq!(server_reader.next_frame().await?.unwrap().ident, "message_data".to_string());
+        assert_eq!(server_reader.next_frame().await?.unwrap().ident, "other message".to_string());
 
         handle.await.unwrap();
 

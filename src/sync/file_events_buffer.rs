@@ -38,7 +38,7 @@ impl FileEventsBuffer {
 
         if let Some((event_peer_address, event_time)) = received_file_events.get(&absolute_path) {
             if event_time > &limit {
-                peers.retain(|p| *p != *event_peer_address);
+                peers.retain(|p| !p.starts_with(event_peer_address));
             }
         }
         Some(peers)

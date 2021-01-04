@@ -1,7 +1,7 @@
 use std::{collections::HashMap};
-use tokio::{fs::File, net::{TcpStream}};
-use super::streaming::{DirectStream, FrameMessage, FrameReader, FrameWriter, get_streamers};
-use crate::{IronCarrierError, config::Config, fs::FileInfo, sync::FileAction, fs};
+use tokio::{fs::File, io::{ReadHalf, WriteHalf}, net::{TcpStream}};
+use super::streaming::{FileReceiver, FileSender, FrameMessage, FrameReader, FrameWriter, file_streamers, get_streamers};
+use crate::{IronCarrierError, config::Config, sync::file_events_buffer::FileEventsBuffer, fs::FileInfo, sync::FileAction};
 
 type RpcResult<T> = Result<T, IronCarrierError>;
 
@@ -13,8 +13,8 @@ macro_rules! send_message {
         }
 
         log::debug!("sending message {} to peer", stringify!($func));
-        let message = FrameMessage::new(stringify!($func).to_string());
-        $self.frame_writer.as_mut().unwrap().write_frame(message).await?;
+        let message = FrameMessage::new(stringify!($func));
+        $self.frame_writer.write_frame(message).await?;
     };
     
     ($self:expr, $func:ident($($arg:expr),+)) => {
@@ -24,12 +24,10 @@ macro_rules! send_message {
         }
 
         log::debug!("sending message {} to peer", stringify!($func));
-        let mut message = FrameMessage::new(stringify!($func).to_string());
-        $(
-            message.append_arg(&$arg)?;
-        )+
+        let message = FrameMessage::new(stringify!($func))
+        $( .with_arg(&$arg)? )+;
     
-        $self.frame_writer.as_mut().unwrap().write_frame(message).await?;
+        $self.frame_writer.write_frame(message).await?;
     };
 }
 
@@ -38,14 +36,14 @@ macro_rules! rpc_call {
         send_message!($self, $func($($arg),*));
 
         log::debug!("waiting response for {}", stringify!($func));
-        let response_message = $self.frame_reader.as_mut().unwrap().next_frame().await?;
+        let response_message = $self.frame_reader.next_frame().await?;
         match response_message {
             Some(message) => {
-                if message.frame_name() == stringify!($func) {
+                if message.frame_ident() == stringify!($func) {
                     log::debug!("received response from peer");
                     Ok(())
                 } else {
-                    log::error!("received wrong response {}", message.frame_name());
+                    log::error!("received wrong response {}", message.frame_ident());
                     Err(IronCarrierError::ParseCommandError)
                 }
             }
@@ -60,14 +58,14 @@ macro_rules! rpc_call {
         send_message!($self, $func($($arg),*));
 
         log::debug!("waiting response for {}", stringify!($func));
-        let response_message = $self.frame_reader.as_mut().unwrap().next_frame().await?;
+        let response_message = $self.frame_reader.next_frame().await?;
         match response_message {
             Some(mut message) => {
-                if message.frame_name() == stringify!($func) {
+                if message.frame_ident() == stringify!($func) {
                     log::debug!("received response from peer");
                     Ok(message.next_arg::<$t>()?)
                 } else {
-                    log::error!("received wrong response {}", message.frame_name());
+                    log::error!("received wrong response {}", message.frame_ident());
                     Err(IronCarrierError::ParseCommandError)
                 }
             }
@@ -111,43 +109,37 @@ pub(crate) struct Peer<'a> {
     address: &'a str,
     config: &'a Config,
     status: PeerStatus,
-    frame_writer: Option<FrameWriter<TcpStream>>,
-    frame_reader: Option<FrameReader<TcpStream>>,
-    direct_stream: Option<DirectStream<TcpStream>>,
-    
+    frame_writer: FrameWriter<TcpStream>,
+    frame_reader: FrameReader<TcpStream>,
+    file_sender: FileSender<WriteHalf<TcpStream>>,
+    file_receiver: FileReceiver<'a, ReadHalf<TcpStream>>,
+    events_buffer: &'a FileEventsBuffer,    
     peer_sync_hash: HashMap<String, u64>,
 }
 
 impl <'a> Peer<'a> {
-    pub fn new(address: &'a str, config: &'a Config) -> Self {
+    pub async fn new(address: &'a str, config: &'a Config, events_buffer: &'a FileEventsBuffer) -> crate::Result<Peer<'a>> {
+        log::info!("connecting to peer {:?}", address);
         
-        Peer {
-            address: address,
-            frame_writer: None,
-            frame_reader: None,
-            direct_stream: None,
+        let (frame_reader, frame_writer) = get_streamers(TcpStream::connect(address).await?);
+        let (file_receiver, file_sender) = file_streamers(TcpStream::connect(address).await?, config.clone(), address.split(':').next().unwrap().to_string());
+
+
+        Ok(Peer {
+            address,
+            frame_writer,
+            frame_reader,
+            file_sender,
+            file_receiver,
             peer_sync_hash: HashMap::new(),
-            status: PeerStatus::Disconnected,
-            config
-        }
+            status: PeerStatus::Connected,
+            config,
+            events_buffer
+        })
     }
 
     pub fn get_address(&'a self) -> &'a str {
         &self.address
-    }
-    
-    pub async fn connect(&mut self) -> crate::Result<()> {
-        log::info!("connecting to peer {:?}", self.address);
-        let stream = TcpStream::connect(&self.address).await?;
-        let (direct_stream, reader, writer) = get_streamers(stream);
-       
-
-        self.frame_reader = Some(reader);
-        self.frame_writer = Some(writer);
-        self.direct_stream = Some(direct_stream);
-        self.status = PeerStatus::Connected;
-        
-        self.send_server_port().await
     }
 
     async fn send_server_port(&mut self) -> crate::Result<()> {
@@ -155,16 +147,6 @@ impl <'a> Peer<'a> {
 
         rpc_call!(self, set_peer_port(self.config.port))?;
         Ok(())
-    }
-
-    pub async fn disconnect(&mut self) {
-        log::info!("disconnecting from peer {}", self.address);
-        self.frame_reader = None;
-        self.frame_writer = None;
-        self.direct_stream = None;
-
-        self.status = PeerStatus::Disconnected;
-        self.peer_sync_hash = HashMap::new();
     }
 
     async fn fetch_peer_status(&mut self) -> crate::Result<()>{
@@ -221,8 +203,7 @@ impl <'a> Peer<'a> {
             },
             FileAction::Request(file_info) => {
                 log::debug!("asking peer {} for file {:?}", self.address, file_info.path);
-                // I must find waht is wrong with this call
-                // self.request_file(&file_info).await?
+                self.request_file(&file_info).await?
             }
         }
 
@@ -231,20 +212,18 @@ impl <'a> Peer<'a> {
 
     async fn send_file(&mut self, file_info: &FileInfo) -> crate::Result<()> {
         log::debug!("sending file {:?} to peer {}", file_info.path, self.address);
-        let should_sync = rpc_call!(
+        let file_handle = rpc_call!(
             self,
             create_or_update_file(file_info),
-            bool
+            u64
         )?;
         
-        if should_sync {
+        if file_handle > 0 {
             let file_path = file_info.get_absolute_path(&self.config)?;
 
             let mut file = File::open(file_path).await?;
-            self.direct_stream.as_mut().unwrap().write_to_stream(file_info.size.unwrap(), &mut file)
+            self.file_sender.send_file(file_handle, &mut file)
                 .await?;
-    
-            self.frame_reader.as_mut().unwrap().next_frame().await?.unwrap().frame_name();
         } else {
             log::debug!("peer refused file");
         }
@@ -252,15 +231,13 @@ impl <'a> Peer<'a> {
     }
 
     async fn request_file(&mut self, file_info: &FileInfo) -> crate::Result<()> {
+        let file_handle = self.file_receiver.prepare_file_transfer(file_info.clone());
         rpc_call!(
             self,
-            request_file(file_info)
+            request_file(file_info, file_handle)
         )?;
 
-        if let Err(_) = fs::write_file(&file_info, &self.config, self.direct_stream.as_mut().unwrap()).await {
-            log::error!("failed to write file");
-        }
-        self.frame_writer.as_mut().unwrap().write_frame("request_file_complete".into()).await?;
+        self.file_receiver.wait_files(&self.events_buffer).await?;
         
         Ok(())
     }
@@ -285,7 +262,7 @@ impl <'a> Peer<'a> {
         )?;
 
         self.status = PeerStatus::Connected;
-        self.disconnect().await;
+        // self.disconnect().await;
         Ok(())
     }
 }

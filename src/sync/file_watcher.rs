@@ -42,8 +42,8 @@ impl FileWatcher {
     fn process_events(&self, notify_events_receiver: std::sync::mpsc::Receiver<DebouncedEvent>) {
         
         let config = self.config.clone();
-        let sync_event_sender = self.event_sender.clone();
         let events_buffer = self.events_buffer.clone();
+        let sync_event_sender = self.event_sender.clone();
 
         tokio::task::spawn_blocking(move || {
             loop {
@@ -90,7 +90,7 @@ fn get_alias_for_path(file_path: &Path, paths: &HashMap<String, PathBuf>) -> Opt
 ///
 /// Returns [Some]`(`[SyncEvent]`)` if success  
 /// Returns [None] for ignored events
-async fn map_to_sync_event(event: DebouncedEvent, paths: &HashMap<String, PathBuf>, events_buffer: &FileEventsBuffer) -> Option<SyncEvent> {
+async fn map_to_sync_event<'b>(event: DebouncedEvent, paths: &HashMap<String, PathBuf>, events_buffer: &'b FileEventsBuffer) -> Option<SyncEvent> {
     match event {
         notify::DebouncedEvent::Create(file_path) => {
             if crate::fs::is_special_file(&file_path) || file_path.is_dir() { return None }
