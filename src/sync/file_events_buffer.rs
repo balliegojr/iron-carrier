@@ -1,10 +1,7 @@
 use std::{
-    collections::HashMap, 
-    path::PathBuf, 
-    sync::{
-        RwLock,
-        Arc
-    }
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, RwLock},
 };
 
 use crate::{config::Config, fs::FileInfo};
@@ -19,7 +16,7 @@ impl FileEventsBuffer {
     pub fn new(config: Arc<Config>) -> Self {
         FileEventsBuffer {
             events: Arc::new(RwLock::new(HashMap::new())),
-            config
+            config,
         }
     }
 
@@ -29,11 +26,12 @@ impl FileEventsBuffer {
 
         let absolute_path = file.get_absolute_path(&self.config);
         let absolute_path = match absolute_path {
-            Ok(path) => { path }
-            Err(_) => { return Some(peers) }
+            Ok(path) => path,
+            Err(_) => return Some(peers),
         };
 
-        let limit = std::time::Instant::now() - std::time::Duration::from_secs(self.config.delay_watcher_events * 2);
+        let limit = std::time::Instant::now()
+            - std::time::Duration::from_secs(self.config.delay_watcher_events * 2);
         let received_file_events = self.events.read().unwrap();
 
         if let Some((event_peer_address, event_time)) = received_file_events.get(&absolute_path) {
@@ -42,13 +40,16 @@ impl FileEventsBuffer {
             }
         }
         Some(peers)
-     }
+    }
 
     pub fn add_event(&self, file_info: &FileInfo, peer_address: &str) {
         let absolute_path = file_info.get_absolute_path(&self.config).unwrap();
-        
+
         let mut received_events_guard = self.events.write().unwrap();
-        received_events_guard.insert(absolute_path.clone(), (peer_address.to_owned(), std::time::Instant::now()));
+        received_events_guard.insert(
+            absolute_path.clone(),
+            (peer_address.to_owned(), std::time::Instant::now()),
+        );
 
         let received_events = self.events.clone();
         let debounce_time = self.config.delay_watcher_events + 1;
@@ -57,7 +58,6 @@ impl FileEventsBuffer {
 
             let mut received_events_guard = received_events.write().unwrap();
             received_events_guard.remove(&absolute_path);
-
         });
     }
 }
@@ -70,11 +70,15 @@ mod tests {
 
     #[tokio::test]
     pub async fn filter_events() {
-        let config = Config::parse_content("peers = [\"a\", \"b\"]
+        let config = Config::parse_content(
+            "peers = [\"a\", \"b\"]
         delay_watcher_events=1
         [paths]
         a = \"./tmp\"
-        ".into()).unwrap();
+        "
+            .into(),
+        )
+        .unwrap();
 
         let buffer = FileEventsBuffer::new(Arc::new(config));
         let file_info = FileInfo::new_deleted("a".into(), "file".into(), None);
@@ -89,6 +93,5 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(2, buffer.allowed_peers_for_event(&file_info).unwrap().len());
-
     }
 }

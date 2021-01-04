@@ -5,15 +5,15 @@
 //!
 //! Synchronize your files in differents machines on the same network
 
+use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt::Display};
-use serde::{Serialize, Deserialize };
 
 pub mod config;
-mod fs;
 mod crypto;
+mod deletion_tracker;
+mod fs;
 mod network;
 pub mod sync;
-mod deletion_tracker;
 
 /// Result<T, IronCarrierError> alias
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + 'static + Send + Sync>>;
@@ -46,24 +46,58 @@ pub enum IronCarrierError {
     /// It wasn't possible to parse command frame
     ParseCommandError,
     /// It wasn't possible to parse the log file
-    ParseLogError
+    ParseLogError,
 }
 
 impl Display for IronCarrierError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IronCarrierError::ConfigFileNotFound => { write!(f, "Configuration file not found on provided path")}
-            IronCarrierError::ConfigFileIsInvalid(reason) => { write!(f, "Configuration file has invalid configuration, {}", reason)}
-            IronCarrierError::InvalidPeerAddress => { write!(f, "Invalid Peer Address")}
-            IronCarrierError::AliasNotAvailable(alias) => { write!(f, "Alias {} not available on this node", alias)}
-            IronCarrierError::IOReadingError => { write!(f, "There was an error reading information from disk")}
-            IronCarrierError::IOWritingError => { write!(f, "There was an error writing information to disk")}
-            IronCarrierError::ServerStartError(reason) => { write!(f, "There was an error starting the server: {}", reason)}
-            IronCarrierError::NetworkIOReadingError => { write!(f, "There was an error reading information from network stream")}
-            IronCarrierError::NetworkIOWritingError => { write!(f, "There was an error writing information to network stream")}
-            IronCarrierError::ParseCommandError => { write!(f, "There was an error parsing the provide command")}
-            IronCarrierError::PeerDisconectedError(peer_address) => { write!(f, "The target peer is not available: {}", peer_address)}
-            IronCarrierError::ParseLogError => { write!(f, "There was an error parsing the log")}
+            IronCarrierError::ConfigFileNotFound => {
+                write!(f, "Configuration file not found on provided path")
+            }
+            IronCarrierError::ConfigFileIsInvalid(reason) => {
+                write!(
+                    f,
+                    "Configuration file has invalid configuration, {}",
+                    reason
+                )
+            }
+            IronCarrierError::InvalidPeerAddress => {
+                write!(f, "Invalid Peer Address")
+            }
+            IronCarrierError::AliasNotAvailable(alias) => {
+                write!(f, "Alias {} not available on this node", alias)
+            }
+            IronCarrierError::IOReadingError => {
+                write!(f, "There was an error reading information from disk")
+            }
+            IronCarrierError::IOWritingError => {
+                write!(f, "There was an error writing information to disk")
+            }
+            IronCarrierError::ServerStartError(reason) => {
+                write!(f, "There was an error starting the server: {}", reason)
+            }
+            IronCarrierError::NetworkIOReadingError => {
+                write!(
+                    f,
+                    "There was an error reading information from network stream"
+                )
+            }
+            IronCarrierError::NetworkIOWritingError => {
+                write!(
+                    f,
+                    "There was an error writing information to network stream"
+                )
+            }
+            IronCarrierError::ParseCommandError => {
+                write!(f, "There was an error parsing the provide command")
+            }
+            IronCarrierError::PeerDisconectedError(peer_address) => {
+                write!(f, "The target peer is not available: {}", peer_address)
+            }
+            IronCarrierError::ParseLogError => {
+                write!(f, "There was an error parsing the log")
+            }
         }
     }
 }
@@ -71,7 +105,7 @@ impl Display for IronCarrierError {
 impl Error for IronCarrierError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match *self {
-            _ => { None }
+            _ => None,
         }
     }
 }

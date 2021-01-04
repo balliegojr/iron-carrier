@@ -1,16 +1,23 @@
 //! This module is responsible for handling file system operations
 
-use std::{time::Duration, cmp::Ord, collections::HashMap, hash::Hash, path::{Path, PathBuf}, time::SystemTime};
-use serde::{Serialize, Deserialize };
-use tokio::{fs::{self, File}};
+use serde::{Deserialize, Serialize};
+use std::{
+    cmp::Ord,
+    collections::HashMap,
+    hash::Hash,
+    path::{Path, PathBuf},
+    time::Duration,
+    time::SystemTime,
+};
+use tokio::fs::{self, File};
 
-use crate::{IronCarrierError, config::Config, deletion_tracker::DeletionTracker};
+use crate::{config::Config, deletion_tracker::DeletionTracker, IronCarrierError};
 
 /// Holds the information for a file inside a mapped folder  
 ///
 /// If the file exists, `modified_at`, `created_at` and `size` will be [Some]  
 /// Otherwise, only `deleted_at` will be [Some]
-/// 
+///
 /// The `path` will always be relative to the alias root folder
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileInfo {
@@ -19,11 +26,11 @@ pub struct FileInfo {
     /// File path, it is always relative to the alias root  
     /// The relative path will always be the same, no matter the machine
     pub path: PathBuf,
-    
+
     pub modified_at: Option<u64>,
     pub created_at: Option<u64>,
     pub deleted_at: Option<u64>,
-    pub size: Option<u64>
+    pub size: Option<u64>,
 }
 
 fn system_time_to_secs(time: SystemTime) -> Option<u64> {
@@ -40,20 +47,24 @@ impl FileInfo {
             created_at: metadata.created().ok().and_then(system_time_to_secs),
             modified_at: metadata.modified().ok().and_then(system_time_to_secs),
             size: Some(metadata.len()),
-            deleted_at: None
+            deleted_at: None,
         }
-                
     }
-    
-    pub fn new_deleted(alias: String, relative_path: PathBuf, deleted_at: Option<SystemTime>) -> Self {
-        
-        FileInfo{
+
+    pub fn new_deleted(
+        alias: String,
+        relative_path: PathBuf,
+        deleted_at: Option<SystemTime>,
+    ) -> Self {
+        FileInfo {
             alias,
             path: relative_path,
             created_at: None,
             modified_at: None,
             size: None,
-            deleted_at: deleted_at.or_else(|| Some(SystemTime::now())).and_then(system_time_to_secs)
+            deleted_at: deleted_at
+                .or_else(|| Some(SystemTime::now()))
+                .and_then(system_time_to_secs),
         }
     }
 
@@ -61,11 +72,12 @@ impl FileInfo {
         if self.deleted_at.is_some() {
             true
         } else {
-            self.get_absolute_path(config).ok()
+            self.get_absolute_path(config)
+                .ok()
                 .and_then(|path| path.metadata().ok())
                 .and_then(|metadata| metadata.modified().ok())
                 .and_then(system_time_to_secs)
-                .and_then(|created_at| Some( created_at > self.modified_at.unwrap()))
+                .and_then(|created_at| Some(created_at > self.modified_at.unwrap()))
                 .unwrap_or(false)
         }
     }
@@ -75,22 +87,24 @@ impl FileInfo {
     pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
         match config.paths.get(&self.alias) {
             Some(path) => match path.canonicalize() {
-                Ok(mut root_path) => { 
+                Ok(mut root_path) => {
                     root_path.extend(self.path.components());
                     Ok(root_path)
                 }
                 Err(_) => {
-                    log::error!("cannot get absolute path for alias {}, check if the path is valid", self.alias);
+                    log::error!(
+                        "cannot get absolute path for alias {}, check if the path is valid",
+                        self.alias
+                    );
                     Err(IronCarrierError::AliasNotAvailable(self.alias.to_owned()).into())
                 }
-            }
+            },
             None => {
                 log::error!("provided alias does not exist in this node: {}", self.alias);
                 Err(IronCarrierError::AliasNotAvailable(self.alias.to_owned()).into())
             }
         }
     }
-   
 }
 
 impl Hash for FileInfo {
@@ -128,23 +142,24 @@ impl Ord for FileInfo {
 /// files with name or extension `.ironcarrier` will be ignored
 pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Vec<FileInfo>> {
     let mut paths = vec![root_path.to_owned()];
-    
+
     let deletion_tracker = DeletionTracker::new(root_path);
-    let mut files: Vec<FileInfo> = deletion_tracker.get_files().await?
+    let mut files: Vec<FileInfo> = deletion_tracker
+        .get_files()
+        .await?
         .into_iter()
-        .map(|(k,v)| FileInfo::new_deleted(
-            alias.to_owned(), k, Some(v))
-        )
+        .map(|(k, v)| FileInfo::new_deleted(alias.to_owned(), k, Some(v)))
         .collect();
-        
 
     while let Some(path) = paths.pop() {
         let mut entries = fs::read_dir(path).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            
-            if is_special_file(&path) { continue; }
-            
+
+            if is_special_file(&path) {
+                continue;
+            }
+
             if path.is_dir() {
                 paths.push(path);
                 continue;
@@ -152,32 +167,42 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Ve
 
             let metadata = path.metadata()?;
             files.push(FileInfo::new(
-                alias.to_owned(), 
-                path.strip_prefix(root_path)?.to_owned(), 
-                metadata
+                alias.to_owned(),
+                path.strip_prefix(root_path)?.to_owned(),
+                metadata,
             ));
         }
     }
 
     files.sort();
-    
+
     return Ok(files);
 }
 
 /// This function returns the result of [walk_path] along with the hash for the file list
-pub async fn get_files_with_hash<'a>(path: &Path, alias: &'a str) -> crate::Result<(u64, Vec<FileInfo>)>{
+pub async fn get_files_with_hash<'a>(
+    path: &Path,
+    alias: &'a str,
+) -> crate::Result<(u64, Vec<FileInfo>)> {
     let files = walk_path(path, alias).await?;
     let hash = crate::crypto::calculate_hash(&files);
 
-    log::debug!("found {} files for alias {} with hash {}", files.len(), alias, hash);
+    log::debug!(
+        "found {} files for alias {} with hash {}",
+        files.len(),
+        alias,
+        hash
+    );
 
     return Ok((hash, files));
 }
 
 /// This function will return a [HashMap] containing the alias as key and the hash as value
-pub async fn get_hash_for_alias(alias_path: &HashMap<String, PathBuf>) -> crate::Result<HashMap<String, u64>> {
+pub async fn get_hash_for_alias(
+    alias_path: &HashMap<String, PathBuf>,
+) -> crate::Result<HashMap<String, u64>> {
     let mut result = HashMap::new();
-    
+
     for (alias, path) in alias_path {
         let (hash, _) = get_files_with_hash(path.as_path(), alias).await?;
         result.insert(alias.to_string(), hash);
@@ -190,7 +215,7 @@ pub async fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
         log::debug!("delete_file: given path doesn't exist ({:?})", path);
-        return Ok(())
+        return Ok(());
     } else if path.is_dir() {
         log::debug!("delete_file: {:?} is dir, removing whole dir", path);
         tokio::fs::remove_dir_all(&path).await?
@@ -204,18 +229,25 @@ pub async fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result
     Ok(())
 }
 
-pub async fn move_file<'b>(src_file: &'b FileInfo, dest_file: &'b FileInfo, config: &Config) -> crate::Result<()> {
+pub async fn move_file<'b>(
+    src_file: &'b FileInfo,
+    dest_file: &'b FileInfo,
+    config: &Config,
+) -> crate::Result<()> {
     let src_path = src_file.get_absolute_path(config)?;
     let dest_path = dest_file.get_absolute_path(config)?;
 
     log::debug!("moving file {:?} to {:?}", src_path, dest_path);
 
     tokio::fs::rename(src_path, dest_path).await?;
-    
+
     Ok(())
 }
 
-pub async fn get_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<tokio::fs::File> {
+pub async fn get_temp_file(
+    file_info: &FileInfo,
+    config: &Config,
+) -> crate::Result<tokio::fs::File> {
     let mut temp_path = file_info.get_absolute_path(config)?;
     temp_path.set_extension("ironcarrier");
 
@@ -233,7 +265,7 @@ pub async fn get_temp_file(file_info: &FileInfo, config: &Config) -> crate::Resu
 pub async fn flush_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     let final_path = file_info.get_absolute_path(config)?;
     let mut temp_path = final_path.clone();
-    
+
     temp_path.set_extension("ironcarrier");
 
     log::debug!("moving temp file to {:?}", final_path);
@@ -267,11 +299,13 @@ mod tests {
         File::create("./tmp/fs/read_local_files/file_1").await?;
         File::create("./tmp/fs/read_local_files/file_2").await?;
 
-        let files = walk_path(&PathBuf::from("./tmp/fs/read_local_files"), "a").await.unwrap();
+        let files = walk_path(&PathBuf::from("./tmp/fs/read_local_files"), "a")
+            .await
+            .unwrap();
 
         assert_eq!(files[0].path.to_str(), Some("file_1"));
         assert_eq!(files[1].path.to_str(), Some("file_2"));
-        
+
         fs::remove_dir_all("./tmp/fs/read_local_files").await?;
 
         Ok(())
@@ -279,15 +313,15 @@ mod tests {
 
     #[test]
     fn calc_hash() {
-        let file = FileInfo{
+        let file = FileInfo {
             alias: "a".to_owned(),
             created_at: Some(0),
             modified_at: Some(0),
             path: Path::new("./some_file_path").to_owned(),
             size: Some(100),
-            deleted_at: None
+            deleted_at: None,
         };
-        
+
         let files = vec![file];
         assert_eq!(calculate_hash(&files), 1762848629165523426);
     }
@@ -305,7 +339,11 @@ mod tests {
 
         let path = PathBuf::from("./tmp/fs/mtime");
         std::fs::File::create(&path).unwrap();
-        filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(SystemTime::UNIX_EPOCH)).unwrap();
+        filetime::set_file_mtime(
+            &path,
+            filetime::FileTime::from_system_time(SystemTime::UNIX_EPOCH),
+        )
+        .unwrap();
 
         let file = FileInfo {
             alias: "a".to_string(),
@@ -313,15 +351,17 @@ mod tests {
             created_at: None,
             deleted_at: None,
             path: PathBuf::from("mtime"),
-            size: None
+            size: None,
         };
 
-        let config = Config::parse_content("
+        let config = Config::parse_content(
+            "
         [paths]
-        a = \"./tmp/fs\"".to_string()).unwrap();
+        a = \"./tmp/fs\""
+                .to_string(),
+        )
+        .unwrap();
 
         assert!(!file.is_local_file_newer(&config));
-
-
     }
 }

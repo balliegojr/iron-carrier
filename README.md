@@ -55,7 +55,6 @@ a = "./samples/peer_a"
 ```
 
 # Planned features
-- Cron for sincronization
 - rsync protocol for file transfer
 - zero-conf for network sincronization
 - Windows and Mac compatibility

@@ -1,12 +1,12 @@
 //! Handle synchronization
 
-mod file_watcher;
 pub(crate) mod file_events_buffer;
+mod file_watcher;
 pub mod synchronizer;
 
-use std::{sync::Arc};
-use tokio::sync::{ Notify }; 
 use crate::fs::FileInfo;
+use std::sync::Arc;
+use tokio::sync::Notify;
 
 pub use synchronizer::Synchronizer;
 
@@ -25,12 +25,11 @@ pub(crate) enum SyncEvent {
     BroadcastToAllPeers(FileAction, Vec<String>),
 }
 
-
 #[derive(Debug)]
 pub(crate) enum FileAction {
     Create(FileInfo),
     Update(FileInfo),
     Move(FileInfo, FileInfo),
     Remove(FileInfo),
-    Request(FileInfo)
+    Request(FileInfo),
 }
