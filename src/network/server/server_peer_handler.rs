@@ -5,10 +5,7 @@ use tokio::{
     sync::mpsc::Sender,
 };
 
-use crate::{
-    config::Config, fs, fs::FileInfo, sync::file_events_buffer::FileEventsBuffer, sync::SyncEvent,
-    IronCarrierError,
-};
+use crate::{sync::BlockingEvent, IronCarrierError, config::Config, fs, fs::FileInfo, sync::SyncEvent, sync::file_watcher_event_blocker::FileWatcherEventBlocker};
 
 use crate::network::streaming::{FileReceiver, FileSender, FrameMessage, FrameReader, FrameWriter};
 
@@ -76,16 +73,15 @@ where
     }
 
     pub async fn close(&mut self) {
-        if self.sync_notifier.is_some() {
-            self.sync_notifier.as_ref().unwrap().notify_one();
-            self.sync_notifier = None;
+        if let Some(notifier) = self.sync_notifier.take() {
+            notifier.notify_one();
         }
     }
 
     pub async fn handle_events<'b>(
         &mut self,
         sync_events: Sender<SyncEvent>,
-        file_events_buffer: &'b FileEventsBuffer,
+        events_blocker: Sender<BlockingEvent>,
     ) -> crate::Result<()> {
         loop {
             match self.frame_reader.next_frame().await? {
@@ -119,11 +115,14 @@ where
                         log::debug!("peer request to send file {:?}", remote_file.path);
 
                         if self.should_sync_file(&remote_file) {
+                            let file_path = remote_file.get_absolute_path(&self.config)?;
+                            events_blocker.send((file_path, self.socket_addr.clone())).await;
+
                             let file_handle = self.file_receiver.prepare_file_transfer(remote_file);
                             let response = FrameMessage::new("create_or_update_file")
                                 .with_arg(&file_handle)?;
                             self.frame_writer.write_frame(response).await?;
-                            self.file_receiver.wait_files(&file_events_buffer).await?;
+                            self.file_receiver.wait_files().await?;
                         } else {
                             let response =
                                 FrameMessage::new("create_or_update_file").with_arg(&0u64)?;
@@ -153,7 +152,8 @@ where
 
                         log::debug!("peer requested to delete file {:?}", remote_file.path);
 
-                        file_events_buffer.add_event(&remote_file, &self.socket_addr);
+                        let file_path = remote_file.get_absolute_path(&self.config)?;
+                        events_blocker.send((file_path, self.socket_addr.clone())).await;
 
                         fs::delete_file(&remote_file, &self.config).await?;
                         self.frame_writer.write_frame("delete_file".into()).await?;
@@ -169,8 +169,8 @@ where
                             dest_file.path
                         );
 
-                        file_events_buffer.add_event(&src_file, &self.socket_addr);
-                        file_events_buffer.add_event(&dest_file, &self.socket_addr);
+                        let file_path = src_file.get_absolute_path(&self.config)?;
+                        events_blocker.send((file_path, self.socket_addr.clone())).await;
 
                         fs::move_file(&src_file, &dest_file, &self.config).await?;
 
@@ -202,8 +202,9 @@ where
                         let two_way_sync = message.next_arg::<bool>()?;
                         log::debug!("peer is finishing sync");
 
-                        self.sync_notifier.as_ref().unwrap().notify_one();
-                        self.sync_notifier = None;
+                        if let Some(notifier) = self.sync_notifier.take() {
+                            notifier.notify_one();
+                        }
 
                         if two_way_sync {
                             log::debug!("schedulling sync back with peer");
@@ -226,9 +227,8 @@ where
                     }
                 },
                 None => {
-                    if self.sync_notifier.is_some() {
-                        self.sync_notifier.as_ref().unwrap().notify_one();
-                        self.sync_notifier = None;
+                    if let Some(notifier) = self.sync_notifier.take() {
+                        notifier.notify_one();
                     }
 
                     return Ok(());
@@ -278,10 +278,10 @@ mod tests {
     ) {
         let config = sample_config(test_folder);
         let (events_tx, _) = tokio::sync::mpsc::channel(10);
-        let files_event_buffer = Arc::new(FileEventsBuffer::new(config.clone()));
+        let (events_blocker_tx, _) = tokio::sync::mpsc::channel(10);
 
         let (frame_reader, frame_writer) = frame_stream(command_stream);
-        let (file_receiver, file_sender) = file_streamers(file_stream, &config, "".into());
+        let (file_receiver, file_sender) = file_streamers(file_stream, &config,);
 
         let mut server_peer_handler = ServerPeerHandler::new(
             &config,
@@ -294,7 +294,7 @@ mod tests {
 
         server_peer_handler.bounce_invalid_messages = true;
         server_peer_handler
-            .handle_events(events_tx, &files_event_buffer)
+            .handle_events(events_tx, events_blocker_tx)
             .await
             .unwrap();
     }
@@ -529,7 +529,7 @@ mod tests {
             };
 
             let config = sample_config("server_can_send_files_2");
-            let mut receiver = FileReceiver::new(client_file_stream, &config, "a".into());
+            let mut receiver = FileReceiver::new(client_file_stream, &config);
 
             let message = FrameMessage::new("request_file")
                 .with_arg(&file_info)?
@@ -539,8 +539,7 @@ mod tests {
             let response = reader.next_frame().await?.unwrap();
             assert_eq!(response.frame_ident(), "request_file");
 
-            let events_buffer = FileEventsBuffer::new(config.clone());
-            receiver.wait_files(&events_buffer).await?;
+            receiver.wait_files().await?;
 
             assert!(Path::new("./tmp/server_can_send_files_2/file_1").exists());
 

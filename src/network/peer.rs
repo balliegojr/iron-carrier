@@ -2,7 +2,7 @@ use super::streaming::{
     file_streamers, frame_stream, FileReceiver, FileSender, FrameMessage, FrameReader, FrameWriter,
 };
 use crate::{
-    config::Config, fs::FileInfo, sync::file_events_buffer::FileEventsBuffer, sync::FileAction,
+    config::Config, fs::FileInfo, sync::FileAction,
     IronCarrierError,
 };
 use std::{collections::HashMap};
@@ -126,15 +126,13 @@ where
     frame_reader: FrameReader<TReader>,
     file_sender: FileSender<TWriter>,
     file_receiver: FileReceiver<'a, TReader>,
-    events_buffer: &'a FileEventsBuffer,
     peer_sync_hash: HashMap<String, u64>,
 }
 
 impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
     pub async fn new(
         address: &'a str,
-        config: &'a Config,
-        events_buffer: &'a FileEventsBuffer,
+        config: &'a Config
     ) -> crate::Result<Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>>> {
         log::info!("connecting to peer {:?}", address);
 
@@ -142,7 +140,6 @@ impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
         let (file_receiver, file_sender) = file_streamers(
             TcpStream::connect(address).await?,
             config.clone(),
-            address.split(':').next().unwrap().to_string(),
         );
 
         Ok(Peer {
@@ -153,8 +150,7 @@ impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
             file_receiver,
             peer_sync_hash: HashMap::new(),
             status: PeerStatus::Connected,
-            config,
-            events_buffer,
+            config
         })
     }
 
@@ -246,7 +242,7 @@ impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
         let file_handle = self.file_receiver.prepare_file_transfer(file_info.clone());
         rpc_call!(self, request_file(file_info, file_handle))?;
 
-        self.file_receiver.wait_files(&self.events_buffer).await?;
+        self.file_receiver.wait_files().await?;
 
         Ok(())
     }

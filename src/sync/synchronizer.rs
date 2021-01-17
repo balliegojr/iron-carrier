@@ -1,16 +1,15 @@
 use std::sync::Arc;
 use tokio::sync::{mpsc, mpsc::Receiver, mpsc::Sender};
 
-use super::{
-    file_events_buffer::FileEventsBuffer, file_watcher::FileWatcher, FileAction, SyncEvent,
-};
+use super::{BlockingEvent, FileAction, SyncEvent, file_watcher::FileWatcher, file_watcher_event_blocker::FileWatcherEventBlocker};
 use crate::{config::Config, fs, fs::FileInfo, network::peer::Peer, network::server::Server};
 
 pub struct Synchronizer {
     config: Arc<Config>,
     server: Server,
-    file_watcher: Option<FileWatcher>,
-    events_buffer: Arc<FileEventsBuffer>,
+    events_channel_sender: Sender<SyncEvent>,
+    events_channel_receiver: Receiver<SyncEvent>,
+    file_watcher: FileWatcher
 }
 
 /// lookup for the peer file  
@@ -26,50 +25,40 @@ fn get_peer_file(file: &FileInfo, peer_files: &mut Vec<FileInfo>) -> Option<File
 impl Synchronizer {
     pub fn new(config: Config) -> Self {
         let config = Arc::new(config);
-        let events_buffer = Arc::new(FileEventsBuffer::new(config.clone()));
-        let server = Server::new(config.clone(), events_buffer.clone());
+
+        let (events_channel_sender, events_channel_receiver) = mpsc::channel(50);
+        let file_watcher = FileWatcher::new(
+            events_channel_sender.clone(),
+            config.clone(),
+        );
+
+        let server = Server::new(config.clone(), file_watcher.get_events_blocker());
+
 
         Synchronizer {
             config: config,
-            events_buffer,
             server,
-            file_watcher: None,
+            events_channel_sender,
+            events_channel_receiver,
+            file_watcher
         }
     }
 
-    pub async fn start(&mut self, _auto_exit: bool) -> crate::Result<()> {
-        let (sync_events_sender, sync_events_receiver) = mpsc::channel(50);
-
+    pub async fn start(&mut self) -> crate::Result<()> {
         log::debug!("starting syncronizer");
-        self.server.start(sync_events_sender.clone()).await?;
-
-        if self.config.enable_file_watcher {
-            match FileWatcher::new(
-                sync_events_sender.clone(),
-                self.config.clone(),
-                self.events_buffer.clone(),
-            ) {
-                Ok(file_watcher) => {
-                    self.file_watcher = Some(file_watcher);
-                }
-                Err(err) => {
-                    log::error!("some error ocurred with the file watcher");
-                    log::error!("{}", err)
-                }
-            }
-        }
-
-        self.schedule_peers(sync_events_sender).await?;
-        self.sync_events(sync_events_receiver).await;
+        self.server.start(self.events_channel_sender.clone()).await?;
+        self.file_watcher.start();
+        self.start_peers_full_sync().await?;
+        self.sync_events().await;
 
         Ok(())
     }
 
-    async fn schedule_peers(&self, sync_events: Sender<SyncEvent>) -> crate::Result<()> {
+    async fn start_peers_full_sync(&self) -> crate::Result<()> {
         if let Some(peers) = &self.config.peers {
             for peer_address in peers.iter() {
                 log::info!("schedulling peer {} for synchonization", peer_address);
-                sync_events
+                self.events_channel_sender
                     .send(SyncEvent::EnqueueSyncToPeer(peer_address.to_owned(), false))
                     .await?;
             }
@@ -78,20 +67,20 @@ impl Synchronizer {
         Ok(())
     }
 
-    async fn sync_events(&self, mut events_receiver: Receiver<SyncEvent>) {
+    async fn sync_events(&mut self) {
         loop {
-            match events_receiver.recv().await {
+            match self.events_channel_receiver.recv().await {
                 Some(event) => match event {
                     SyncEvent::EnqueueSyncToPeer(peer_address, two_way_sync) => {
                         let config = self.config.clone();
-                        let events_buffer = self.events_buffer.clone();
-
+                        let events_blocker = self.file_watcher.get_events_blocker();
+                        
                         tokio::spawn(async move {
                             match Synchronizer::sync_peer(
                                 peer_address,
                                 two_way_sync,
                                 &config,
-                                &events_buffer,
+                                events_blocker,
                             )
                             .await
                             {
@@ -131,7 +120,7 @@ impl Synchronizer {
         peer_address: &str,
         action: &'b FileAction,
     ) -> crate::Result<()> {
-        let mut peer = Peer::new(peer_address, &self.config, &self.events_buffer).await?;
+        let mut peer = Peer::new(peer_address, &self.config).await?;
         peer.sync_action(action).await
     }
 
@@ -139,9 +128,9 @@ impl Synchronizer {
         peer_address: String,
         two_way_sync: bool,
         config: &Config,
-        events_buffer: &FileEventsBuffer,
+        events_blocker: Sender<BlockingEvent>,
     ) -> crate::Result<()> {
-        let mut peer = Peer::new(&peer_address, config, events_buffer).await?;
+        let mut peer = Peer::new(&peer_address, config).await?;
         log::info!("Peer full synchronization started: {}", peer.get_address());
 
         peer.start_sync().await?;
@@ -165,7 +154,7 @@ impl Synchronizer {
                             FileAction::Remove(local_file)
                         } else if local_file.deleted_at.is_none() && peer_file.deleted_at.is_some()
                         {
-                            events_buffer.add_event(&local_file, &peer_address);
+                            events_blocker.send((local_file.get_absolute_path(&config)?, peer_address.clone())).await;
                             fs::delete_file(&local_file, &config).await?;
                             continue;
                         } else {
@@ -175,6 +164,7 @@ impl Synchronizer {
                                 .cmp(&peer_file.modified_at.unwrap())
                             {
                                 std::cmp::Ordering::Less => {
+                                    events_blocker.send((local_file.get_absolute_path(&config)?, peer_address.clone())).await;
                                     FileAction::Request(local_file);
                                     continue;
                                 }
@@ -202,9 +192,10 @@ impl Synchronizer {
 
             while let Some(peer_file) = peer_files.pop() {
                 if peer_file.deleted_at.is_some() {
-                    events_buffer.add_event(&peer_file, &peer_address);
+                    events_blocker.send((peer_file.get_absolute_path(&config)?, peer_address.clone())).await;
                     fs::delete_file(&peer_file, &config).await?;
                 } else {
+                    events_blocker.send((peer_file.get_absolute_path(&config)?, peer_address.clone())).await;
                     peer.sync_action(&FileAction::Request(peer_file)).await?;
                 }
             }

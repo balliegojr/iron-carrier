@@ -1,20 +1,22 @@
 //! Handle synchronization
 
-pub(crate) mod file_events_buffer;
+pub(crate) mod file_watcher_event_blocker;
 mod file_watcher;
 pub mod synchronizer;
 
 use crate::fs::FileInfo;
-use std::sync::Arc;
+use std::{sync::Arc, path::PathBuf};
 use tokio::sync::Notify;
 
 pub use synchronizer::Synchronizer;
 
 type PeerAddress = String;
+pub type BlockingEvent = (PathBuf, String);
+
 
 /// Synchronization Event Types
 #[derive(Debug)]
-pub(crate) enum SyncEvent {
+pub enum SyncEvent {
     /// Add peer to synchronization list
     EnqueueSyncToPeer(PeerAddress, bool),
 
@@ -26,7 +28,7 @@ pub(crate) enum SyncEvent {
 }
 
 #[derive(Debug)]
-pub(crate) enum FileAction {
+pub enum FileAction {
     Create(FileInfo),
     Update(FileInfo),
     Move(FileInfo, FileInfo),

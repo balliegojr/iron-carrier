@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use crate::{
     config::Config,
     fs::{self, FileInfo},
-    sync::file_events_buffer::FileEventsBuffer,
 };
 use tokio::{
     io::AsyncRead,
@@ -43,24 +42,21 @@ pub(crate) struct Receiver<'a, T: AsyncRead + Unpin> {
     ident: u64,
     files: HashMap<u64, FileInfo>,
     config: &'a Config,
-    peer_address: String,
 }
 
 impl<'a, T: AsyncRead + Unpin> Receiver<'a, T> {
-    pub fn new(stream: T, config: &'a Config, peer_address: String) -> Self {
+    pub fn new(stream: T, config: &'a Config) -> Self {
         Receiver {
             stream,
             ident: 0,
             files: HashMap::new(),
             config,
-            peer_address,
         }
     }
 
-    async fn read_file<'b>(
+    async fn read_file(
         &mut self,
         file_info: FileInfo,
-        events_buffer: &'b FileEventsBuffer,
     ) -> crate::Result<()> {
         let mut buf = [0u8; BUFFER_SIZE];
         let mut buf_size = file_info.size.unwrap() as usize;
@@ -74,16 +70,13 @@ impl<'a, T: AsyncRead + Unpin> Receiver<'a, T> {
         }
 
         buf_write.flush().await?;
-
-        events_buffer.add_event(&file_info, &self.peer_address);
         fs::flush_temp_file(&file_info, &self.config).await?;
 
         Ok(())
     }
 
-    pub async fn wait_files<'b>(
+    pub async fn wait_files(
         &mut self,
-        events_buffer: &'b FileEventsBuffer,
     ) -> crate::Result<()> {
         while self.files.len() > 0 {
             let mut handle_buf = [0u8; 8];
@@ -93,7 +86,7 @@ impl<'a, T: AsyncRead + Unpin> Receiver<'a, T> {
             // TODO: handle error
             match self.files.remove(&file_handle) {
                 Some(file_info) => {
-                    self.read_file(file_info, events_buffer).await?;
+                    self.read_file(file_info).await?;
                 }
                 None => {
                     log::error!("file handle {} don't exist", &file_handle)
@@ -115,13 +108,12 @@ impl<'a, T: AsyncRead + Unpin> Receiver<'a, T> {
 pub(crate) fn file_streamers<'a, T>(
     stream: T,
     config: &'a Config,
-    peer_address: String,
 ) -> (Receiver<'a, ReadHalf<T>>, Sender<WriteHalf<T>>)
 where
     T: AsyncRead + AsyncWrite,
 {
     let (rx, tx) = tokio::io::split(stream);
-    (Receiver::new(rx, config, peer_address), Sender::new(tx))
+    (Receiver::new(rx, config), Sender::new(tx))
 }
 
 #[cfg(test)]
@@ -164,7 +156,6 @@ mod tests {
             files: HashMap::new(),
             stream: rx_stream,
             config: &config,
-            peer_address: "".into(),
         };
 
         create_tmp_file("./tmp/file_streamer/file_1".into(), "some content");
@@ -182,8 +173,7 @@ mod tests {
             tx.send_file(file_handle, &mut buffer).await.unwrap();
         });
 
-        let events_buffer = FileEventsBuffer::new(config.clone());
-        rx.wait_files(&events_buffer).await.unwrap();
+        rx.wait_files().await.unwrap();
 
         assert_eq!(
             tokio::fs::read_to_string("./tmp/file_streamer/file_1")

@@ -115,3 +115,8 @@ impl From<bincode::Error> for IronCarrierError {
         IronCarrierError::ParseCommandError
     }
 }
+
+pub async fn run(config: config::Config) -> Result<()> {
+    let mut s = sync::Synchronizer::new(config);
+    s.start().await
+}

@@ -1,7 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::{net::TcpListener, net::TcpStream, sync::mpsc::Sender, sync::Mutex};
 
-use crate::{config::Config, sync::file_events_buffer::FileEventsBuffer, sync::SyncEvent};
+use crate::{
+    config::Config, 
+    sync::BlockingEvent, 
+    sync::SyncEvent
+};
 
 use self::server_peer_handler::ServerPeerHandler;
 
@@ -12,16 +16,16 @@ mod server_peer_handler;
 pub(crate) struct Server {
     port: u32,
     config: Arc<Config>,
-    file_events: Arc<FileEventsBuffer>,
+    events_blocker: Sender<BlockingEvent>,
     handlers: Arc<Mutex<HashMap<String, TcpStream>>>,
 }
 
 impl Server {
-    pub fn new(config: Arc<Config>, file_events: Arc<FileEventsBuffer>) -> Self {
+    pub fn new(config: Arc<Config>, events_blocker: Sender<BlockingEvent>) -> Self {
         Server {
             port: config.port,
             config,
-            file_events,
+            events_blocker,
             handlers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -32,7 +36,7 @@ impl Server {
         log::info!("Server listening on port: {}", self.port);
 
         let config = self.config.clone();
-        let file_events = self.file_events.clone();
+        let events_blocker = self.events_blocker.clone();
         let handlers = self.handlers.clone();
 
         tokio::spawn(async move {
@@ -40,8 +44,8 @@ impl Server {
                 match listener.accept().await {
                     Ok((stream, socket)) => {
                         let sync_events = sync_events.clone();
+                        let events_blocker = events_blocker.clone();
                         let config = config.clone();
-                        let file_events = file_events.clone();
 
                         let socket_addr = socket.ip().to_string();
                         log::info!("New connection from {}", &socket_addr);
@@ -56,7 +60,7 @@ impl Server {
                             tokio::spawn(async move {
                                 let (frame_reader, frame_writer) = frame_stream(command_stream);
                                 let (file_receiver, file_sender) =
-                                    file_streamers(file_stream, &config, socket_addr.clone());
+                                    file_streamers(file_stream, &config);
 
                                 let mut handler = ServerPeerHandler::new(
                                     &config,
@@ -67,7 +71,7 @@ impl Server {
                                     socket_addr.clone(),
                                 );
 
-                                match handler.handle_events(sync_events, &file_events).await {
+                                match handler.handle_events(sync_events, events_blocker).await {
                                     Ok(()) => {
                                         log::info!("Peer connection closed: {}", socket_addr)
                                     }

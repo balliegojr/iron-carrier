@@ -15,12 +15,12 @@ async fn main() {
                 .required(true)
                 .takes_value(true),
         )
-        .arg(
-            Arg::with_name("auto-exit")
-                .help("Auto exit after sync")
-                .long("auto-exit")
-                .short("e"),
-        )
+        // .arg(
+        //     Arg::with_name("auto-exit")
+        //         .help("Auto exit after sync")
+        //         .long("auto-exit")
+        //         .short("e"),
+        // )
         .arg(
             Arg::with_name("v")
                 .short("v")
@@ -33,7 +33,7 @@ async fn main() {
         .value_of("config")
         .expect("You must provide a configuration path");
     let verbosity = matches.occurrences_of("v") as usize;
-    let auto_exit = matches.is_present("auto-exit");
+    // let auto_exit = matches.is_present("auto-exit");
 
     stderrlog::new()
         .module(module_path!())
@@ -50,8 +50,7 @@ async fn main() {
         }
     };
 
-    let mut s = iron_carrier::sync::Synchronizer::new(config);
-    if let Err(e) = s.start(auto_exit).await {
+    if let Err(e) = iron_carrier::run(config).await {
         log::error!("{}", e);
         exit(-1)
     };
