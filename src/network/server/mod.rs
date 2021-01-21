@@ -1,11 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::{net::TcpListener, net::TcpStream, sync::mpsc::Sender, sync::Mutex};
 
-use crate::{
-    config::Config, 
-    sync::BlockingEvent, 
-    sync::SyncEvent
-};
+use crate::{config::Config, sync::BlockingEvent, sync::SyncEvent};
 
 use self::server_peer_handler::ServerPeerHandler;
 

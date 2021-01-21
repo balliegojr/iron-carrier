@@ -9,7 +9,7 @@
             "request": "launch",
             "name": "Launch a",
             "program": "${workspaceFolder}/target/debug/iron-carrier",
-            "args": ["./samples/config_peer_a.toml"],
+            "args": ["./samples/config_peer_a.toml", "-vvv"],
             "cwd": "${workspaceFolder}",
             // "preLaunchTask": "build-dev"
         },
@@ -18,7 +18,7 @@
             "request": "launch",
             "name": "Launch b",
             "program": "${workspaceFolder}/target/debug/iron-carrier",
-            "args": ["./samples/config_peer_b.toml"],
+            "args": ["./samples/config_peer_b.toml", "-vvv"],
             "cwd": "${workspaceFolder}",
             // "preLaunchTask": "build-dev"
         },

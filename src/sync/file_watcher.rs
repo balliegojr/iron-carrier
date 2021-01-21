@@ -3,26 +3,23 @@ use std::{collections::HashMap, path::Path, path::PathBuf, sync::Arc, time::Dura
 use notify::{watcher, DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc::{Receiver, Sender};
 
-use super::{BlockingEvent, FileAction, SyncEvent, file_watcher_event_blocker::FileWatcherEventBlocker};
+use super::{
+    file_watcher_event_blocker::FileWatcherEventBlocker, BlockingEvent, FileAction, SyncEvent,
+};
 use crate::{config::Config, deletion_tracker::DeletionTracker, fs::FileInfo};
-
 
 pub(crate) struct FileWatcher {
     event_sender: Sender<SyncEvent>,
     config: Arc<Config>,
     _notify_watcher: Option<RecommendedWatcher>,
     event_blocker_sender: Sender<BlockingEvent>,
-    event_blocker_receiver: Option<Receiver<BlockingEvent>>
-    // event_blocker: FileWatcherEventBlocker<'a>,
+    event_blocker_receiver: Option<Receiver<BlockingEvent>>, // event_blocker: FileWatcherEventBlocker<'a>,
 }
 
 impl FileWatcher {
-    pub fn new(
-        event_sender: Sender<SyncEvent>,
-        config: Arc<Config>,
-    ) -> Self {
+    pub fn new(event_sender: Sender<SyncEvent>, config: Arc<Config>) -> Self {
         let (event_blocker_sender, event_blocker_receiver) = tokio::sync::mpsc::channel(1);
-        
+
         FileWatcher {
             event_sender,
             config,
@@ -39,15 +36,16 @@ impl FileWatcher {
     pub fn start(&mut self) -> crate::Result<()> {
         if self.config.enable_file_watcher {
             let (tx, rx) = std::sync::mpsc::channel();
-    
-            let mut notify_watcher = watcher(tx, Duration::from_secs(self.config.delay_watcher_events))?;
+
+            let mut notify_watcher =
+                watcher(tx, Duration::from_secs(self.config.delay_watcher_events))?;
             for (_, path) in self.config.paths.iter() {
                 let path = path.canonicalize().unwrap();
                 if let Err(_) = notify_watcher.watch(path, RecursiveMode::Recursive) {
                     eprintln!("Cannot watch path");
                 }
             }
-    
+
             self._notify_watcher = Some(notify_watcher);
             self.start_event_processing(rx);
         } else {
@@ -57,15 +55,17 @@ impl FileWatcher {
         Ok(())
     }
 
-    fn start_event_processing(&mut self, notify_events_receiver: std::sync::mpsc::Receiver<DebouncedEvent>) {
+    fn start_event_processing(
+        &mut self,
+        notify_events_receiver: std::sync::mpsc::Receiver<DebouncedEvent>,
+    ) {
         let config = self.config.clone();
-        
+
         let event_blocker = Arc::new(FileWatcherEventBlocker::new(config.clone()));
         self.event_blocker_event_processing(event_blocker.clone());
         self.watcher_event_processing(notify_events_receiver, event_blocker);
-        
     }
-    
+
     fn event_blocker_event_processing(&mut self, event_blocker: Arc<FileWatcherEventBlocker>) {
         let mut receiver = self.event_blocker_receiver.take().unwrap();
         tokio::spawn(async move {
@@ -74,17 +74,15 @@ impl FileWatcher {
             }
         });
     }
-    fn watcher_event_processing(&self, 
+    fn watcher_event_processing(
+        &self,
         notify_events_receiver: std::sync::mpsc::Receiver<DebouncedEvent>,
-        event_blocker: Arc<FileWatcherEventBlocker>
-
+        event_blocker: Arc<FileWatcherEventBlocker>,
     ) {
         let sync_event_sender = self.event_sender.clone();
         let config = self.config.clone();
 
-
         tokio::task::spawn_blocking(move || loop {
-           
             match notify_events_receiver.recv() {
                 Ok(event) => {
                     let config = config.clone();

@@ -5,7 +5,9 @@ use tokio::{
     sync::mpsc::Sender,
 };
 
-use crate::{sync::BlockingEvent, IronCarrierError, config::Config, fs, fs::FileInfo, sync::SyncEvent, sync::file_watcher_event_blocker::FileWatcherEventBlocker};
+use crate::{
+    config::Config, fs, fs::FileInfo, sync::BlockingEvent, sync::SyncEvent, IronCarrierError,
+};
 
 use crate::network::streaming::{FileReceiver, FileSender, FrameMessage, FrameReader, FrameWriter};
 
@@ -116,7 +118,9 @@ where
 
                         if self.should_sync_file(&remote_file) {
                             let file_path = remote_file.get_absolute_path(&self.config)?;
-                            events_blocker.send((file_path, self.socket_addr.clone())).await;
+                            events_blocker
+                                .send((file_path, self.socket_addr.clone()))
+                                .await;
 
                             let file_handle = self.file_receiver.prepare_file_transfer(remote_file);
                             let response = FrameMessage::new("create_or_update_file")
@@ -153,7 +157,9 @@ where
                         log::debug!("peer requested to delete file {:?}", remote_file.path);
 
                         let file_path = remote_file.get_absolute_path(&self.config)?;
-                        events_blocker.send((file_path, self.socket_addr.clone())).await;
+                        events_blocker
+                            .send((file_path, self.socket_addr.clone()))
+                            .await;
 
                         fs::delete_file(&remote_file, &self.config).await?;
                         self.frame_writer.write_frame("delete_file".into()).await?;
@@ -170,7 +176,9 @@ where
                         );
 
                         let file_path = src_file.get_absolute_path(&self.config)?;
-                        events_blocker.send((file_path, self.socket_addr.clone())).await;
+                        events_blocker
+                            .send((file_path, self.socket_addr.clone()))
+                            .await;
 
                         fs::move_file(&src_file, &dest_file, &self.config).await?;
 
@@ -281,7 +289,7 @@ mod tests {
         let (events_blocker_tx, _) = tokio::sync::mpsc::channel(10);
 
         let (frame_reader, frame_writer) = frame_stream(command_stream);
-        let (file_receiver, file_sender) = file_streamers(file_stream, &config,);
+        let (file_receiver, file_sender) = file_streamers(file_stream, &config);
 
         let mut server_peer_handler = ServerPeerHandler::new(
             &config,

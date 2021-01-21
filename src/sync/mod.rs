@@ -1,18 +1,17 @@
 //! Handle synchronization
 
-pub(crate) mod file_watcher_event_blocker;
 mod file_watcher;
+pub(crate) mod file_watcher_event_blocker;
 pub mod synchronizer;
 
 use crate::fs::FileInfo;
-use std::{sync::Arc, path::PathBuf};
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Notify;
 
 pub use synchronizer::Synchronizer;
 
 type PeerAddress = String;
 pub type BlockingEvent = (PathBuf, String);
-
 
 /// Synchronization Event Types
 #[derive(Debug)]

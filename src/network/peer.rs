@@ -2,14 +2,14 @@ use super::streaming::{
     file_streamers, frame_stream, FileReceiver, FileSender, FrameMessage, FrameReader, FrameWriter,
 };
 use crate::{
-    config::Config, fs::FileInfo, sync::FileAction,
-    IronCarrierError,
+    config::Config, fs::FileInfo, sync::BlockingEvent, sync::FileAction, IronCarrierError,
 };
-use std::{collections::HashMap};
+use std::collections::HashMap;
 use tokio::{
     fs::File,
     io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf},
     net::TcpStream,
+    sync::mpsc::Sender,
 };
 
 type RpcResult<T> = Result<T, IronCarrierError>;
@@ -127,20 +127,20 @@ where
     file_sender: FileSender<TWriter>,
     file_receiver: FileReceiver<'a, TReader>,
     peer_sync_hash: HashMap<String, u64>,
+    event_blocker: Sender<BlockingEvent>,
 }
 
 impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
     pub async fn new(
         address: &'a str,
-        config: &'a Config
+        config: &'a Config,
+        event_blocker: Sender<BlockingEvent>,
     ) -> crate::Result<Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>>> {
         log::info!("connecting to peer {:?}", address);
 
         let (frame_reader, frame_writer) = frame_stream(TcpStream::connect(address).await?);
-        let (file_receiver, file_sender) = file_streamers(
-            TcpStream::connect(address).await?,
-            config.clone(),
-        );
+        let (file_receiver, file_sender) =
+            file_streamers(TcpStream::connect(address).await?, config.clone());
 
         Ok(Peer {
             address,
@@ -150,7 +150,8 @@ impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
             file_receiver,
             peer_sync_hash: HashMap::new(),
             status: PeerStatus::Connected,
-            config
+            config,
+            event_blocker,
         })
     }
 
@@ -216,6 +217,12 @@ impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
             }
             FileAction::Request(file_info) => {
                 log::debug!("asking peer {} for file {:?}", self.address, file_info.path);
+                self.event_blocker
+                    .send((
+                        file_info.get_absolute_path(&self.config)?,
+                        self.address.to_owned(),
+                    ))
+                    .await?;
                 self.request_file(&file_info).await?
             }
         }

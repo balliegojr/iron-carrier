@@ -34,14 +34,15 @@ impl FileWatcherEventBlocker {
             - std::time::Duration::from_secs(self.config.delay_watcher_events * 2);
         let mut received_file_events = self.events.write().unwrap();
 
-        if let Some((event_peer_address, event_time)) = received_file_events.remove(&absolute_path) {
+        if let Some((event_peer_address, event_time)) = received_file_events.remove(&absolute_path)
+        {
             if event_time > limit {
                 peers.retain(|p| !p.starts_with(&event_peer_address));
             }
         }
         Some(peers)
     }
-    
+
     pub fn block_next_event(&self, absolute_path: PathBuf, peer_address: String) {
         let mut received_events_guard = self.events.write().unwrap();
         received_events_guard.insert(
@@ -57,16 +58,17 @@ mod tests {
 
     #[tokio::test]
     pub async fn filter_events() {
-        let config = Arc::new(Config::parse_content(
-            "peers = [\"a\", \"b\"]
+        let config = Arc::new(
+            Config::parse_content(
+                "peers = [\"a\", \"b\"]
         delay_watcher_events=1
         [paths]
         a = \"./tmp\"
         "
-            .into(),
-        )
-        .unwrap());
-
+                .into(),
+            )
+            .unwrap(),
+        );
 
         let buffer = FileWatcherEventBlocker::new(config.clone());
         let file_info = FileInfo::new_deleted("a".into(), "file".into(), None);

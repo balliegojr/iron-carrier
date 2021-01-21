@@ -54,10 +54,7 @@ impl<'a, T: AsyncRead + Unpin> Receiver<'a, T> {
         }
     }
 
-    async fn read_file(
-        &mut self,
-        file_info: FileInfo,
-    ) -> crate::Result<()> {
+    async fn read_file(&mut self, file_info: FileInfo) -> crate::Result<()> {
         let mut buf = [0u8; BUFFER_SIZE];
         let mut buf_size = file_info.size.unwrap() as usize;
 
@@ -75,9 +72,7 @@ impl<'a, T: AsyncRead + Unpin> Receiver<'a, T> {
         Ok(())
     }
 
-    pub async fn wait_files(
-        &mut self,
-    ) -> crate::Result<()> {
+    pub async fn wait_files(&mut self) -> crate::Result<()> {
         while self.files.len() > 0 {
             let mut handle_buf = [0u8; 8];
             self.stream.read_exact(&mut handle_buf[..]).await?;

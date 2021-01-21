@@ -33,12 +33,6 @@ pub struct FileInfo {
     pub size: Option<u64>,
 }
 
-fn system_time_to_secs(time: SystemTime) -> Option<u64> {
-    time.duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .ok()
-}
-
 impl FileInfo {
     pub fn new(alias: String, relative_path: PathBuf, metadata: std::fs::Metadata) -> Self {
         FileInfo {
@@ -49,6 +43,10 @@ impl FileInfo {
             size: Some(metadata.len()),
             deleted_at: None,
         }
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some()
     }
 
     pub fn new_deleted(
@@ -136,6 +134,44 @@ impl Ord for FileInfo {
     }
 }
 
+fn system_time_to_secs(time: SystemTime) -> Option<u64> {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .ok()
+}
+
+/// This function returns the result of [walk_path] along with the hash for the file list
+pub async fn get_files_with_hash<'a>(
+    path: &Path,
+    alias: &'a str,
+) -> crate::Result<(u64, Vec<FileInfo>)> {
+    let files = walk_path(path, alias).await?;
+    let hash = crate::crypto::calculate_hash(&files);
+
+    log::debug!(
+        "found {} files for alias {} with hash {}",
+        files.len(),
+        alias,
+        hash
+    );
+
+    return Ok((hash, files));
+}
+
+/// This function will return a [HashMap] containing the alias as key and the hash as value
+pub async fn get_hash_for_alias(
+    alias_path: &HashMap<String, PathBuf>,
+) -> crate::Result<HashMap<String, u64>> {
+    let mut result = HashMap::new();
+
+    for (alias, path) in alias_path {
+        let (hash, _) = get_files_with_hash(path.as_path(), alias).await?;
+        result.insert(alias.to_string(), hash);
+    }
+
+    Ok(result)
+}
+
 /// Returns a sorted vector with the entire folder structure for the given path
 ///
 /// This function will look for deletes files in the [DeletionTracker] log and append all entries to the return list  
@@ -177,38 +213,6 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Ve
     files.sort();
 
     return Ok(files);
-}
-
-/// This function returns the result of [walk_path] along with the hash for the file list
-pub async fn get_files_with_hash<'a>(
-    path: &Path,
-    alias: &'a str,
-) -> crate::Result<(u64, Vec<FileInfo>)> {
-    let files = walk_path(path, alias).await?;
-    let hash = crate::crypto::calculate_hash(&files);
-
-    log::debug!(
-        "found {} files for alias {} with hash {}",
-        files.len(),
-        alias,
-        hash
-    );
-
-    return Ok((hash, files));
-}
-
-/// This function will return a [HashMap] containing the alias as key and the hash as value
-pub async fn get_hash_for_alias(
-    alias_path: &HashMap<String, PathBuf>,
-) -> crate::Result<HashMap<String, u64>> {
-    let mut result = HashMap::new();
-
-    for (alias, path) in alias_path {
-        let (hash, _) = get_files_with_hash(path.as_path(), alias).await?;
-        result.insert(alias.to_string(), hash);
-    }
-
-    Ok(result)
 }
 
 pub async fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
