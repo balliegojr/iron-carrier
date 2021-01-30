@@ -7,9 +7,12 @@ use std::{
     hash::Hash,
     path::{Path, PathBuf},
     time::Duration,
-    time::SystemTime,
+    time::SystemTime
 };
 use tokio::fs::{self, File};
+
+#[cfg(unix)] 
+use std::os::unix::fs::PermissionsExt;
 
 use crate::{config::Config, deletion_tracker::DeletionTracker, IronCarrierError};
 
@@ -31,6 +34,7 @@ pub struct FileInfo {
     pub created_at: Option<u64>,
     pub deleted_at: Option<u64>,
     pub size: Option<u64>,
+    pub permissions: u32
 }
 
 impl FileInfo {
@@ -42,6 +46,7 @@ impl FileInfo {
             modified_at: metadata.modified().ok().and_then(system_time_to_secs),
             size: Some(metadata.len()),
             deleted_at: None,
+            permissions: get_permissions(&metadata)
         }
     }
 
@@ -63,6 +68,7 @@ impl FileInfo {
             deleted_at: deleted_at
                 .or_else(|| Some(SystemTime::now()))
                 .and_then(system_time_to_secs),
+                permissions: 0
         }
     }
 
@@ -279,10 +285,37 @@ pub async fn flush_temp_file(file_info: &FileInfo, config: &Config) -> crate::Re
     let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.modified_at.unwrap());
     filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(mod_time))?;
 
-    // TODO: Set File Permissions
+    if file_info.permissions > 0 {
+        set_file_permissions(&final_path, file_info.permissions).await?;
+    }
 
     Ok(())
 }
+
+
+#[cfg(unix)]
+fn get_permissions(metadata: &std::fs::Metadata) -> u32 {
+    metadata.permissions().mode()
+}
+
+#[cfg(not(unix))]
+fn get_permissions(metadata: &std::fs::Metadata) -> u32 {
+    //TODO: figure out how to handle windows permissions
+    0
+}
+
+#[cfg(unix)]
+async fn set_file_permissions(path: &Path, perm: u32) -> tokio::io::Result<()> {
+    let perm = std::fs::Permissions::from_mode(perm);
+    tokio::fs::set_permissions(path, perm).await
+}
+
+#[cfg(not(unix))]
+async fn set_file_permissions(path: &Path, perm: u32) -> tokio::io::Result<()> {
+    //TODO: figure out how to handle windows permissions
+    Ok(())
+}
+
 
 /// Returns true if `path` name or extension are .ironcarrier
 pub fn is_special_file(path: &Path) -> bool {
@@ -324,6 +357,7 @@ mod tests {
             path: Path::new("./some_file_path").to_owned(),
             size: Some(100),
             deleted_at: None,
+            permissions: 0
         };
 
         let files = vec![file];
@@ -356,6 +390,7 @@ mod tests {
             deleted_at: None,
             path: PathBuf::from("mtime"),
             size: None,
+            permissions: 0
         };
 
         let config = Config::parse_content(
