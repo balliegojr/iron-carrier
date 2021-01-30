@@ -92,7 +92,9 @@ impl Synchronizer {
                         log::debug!("file changed on disk: {:?}", action);
 
                         for peer in peers.iter() {
-                            self.sync_peer_single_action(peer, &action).await;
+                            if let Err(e) = self.sync_peer_single_action(peer, &action).await {
+                                log::error!("Peer Synchronization failed: {}", e);
+                            };
                         }
                     }
                 },
