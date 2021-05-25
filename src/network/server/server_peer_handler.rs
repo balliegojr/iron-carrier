@@ -402,7 +402,7 @@ mod tests {
             created_at: Some(0),
             modified_at: Some(modified_at),
             deleted_at: None,
-            permissions: 0
+            permissions: 0,
         };
 
         let message = FrameMessage::new("create_or_update_file").with_arg(&file_info)?;
@@ -445,7 +445,7 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 deleted_at: None,
-                permissions: 0
+                permissions: 0,
             };
 
             let message = FrameMessage::new("delete_file").with_arg(&file_info)?;
@@ -480,7 +480,7 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 deleted_at: None,
-                permissions: 0
+                permissions: 0,
             };
 
             let dst = FileInfo {
@@ -490,7 +490,7 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 deleted_at: None,
-                permissions: 0
+                permissions: 0,
             };
 
             let message = FrameMessage::new("move_file")
@@ -538,7 +538,7 @@ mod tests {
                 created_at: None,
                 modified_at: Some(modified_at),
                 deleted_at: None,
-                permissions: 0
+                permissions: 0,
             };
 
             let config = sample_config("server_can_send_files_2");
