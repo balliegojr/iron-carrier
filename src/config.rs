@@ -14,6 +14,9 @@ fn default_enable_watcher() -> bool {
 fn default_watcher_debounce() -> u64 {
     10
 }
+fn default_enable_service_discovery() -> bool {
+    true
+}
 
 const MAX_PORT: u16 = 65535;
 /// Represents the configuration for the current machine
@@ -38,6 +41,9 @@ pub struct Config {
     /// Seconds to debounce file events, defaults to 10 seconds
     #[serde(default = "default_watcher_debounce")]
     pub delay_watcher_events: u64,
+
+    #[serde(default = "default_enable_service_discovery")]
+    pub enable_service_discovery: bool,
 }
 
 impl Config {

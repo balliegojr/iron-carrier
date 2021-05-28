@@ -250,6 +250,10 @@ fn lookup_file(file: &FileInfo, file_collection: &mut Vec<FileInfo>) -> Option<F
 }
 
 fn get_service_discovery(config: &Config) -> Option<ServiceDiscovery> {
+    if !config.enable_service_discovery {
+        return None;
+    }
+
     let mut sd = ServiceDiscovery::new("_ironcarrier._tcp.local", 600, true).unwrap();
     sd.add_port(config.port);
     log::debug!("Registered port: {}", config.port);
