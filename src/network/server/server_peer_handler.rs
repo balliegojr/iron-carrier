@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     fs::File,
     io::{AsyncRead, AsyncWrite},
@@ -23,7 +23,7 @@ where
     frame_reader: FrameReader<TReader>,
     file_sender: FileSender<TWriter>,
     file_receiver: FileReceiver<'a, TReader>,
-    socket_addr: String,
+    socket_addr: SocketAddr,
     sync_notifier: Option<Arc<tokio::sync::Notify>>,
     bounce_invalid_messages: bool,
 }
@@ -39,7 +39,7 @@ where
         frame_writer: FrameWriter<TWriter>,
         file_receiver: FileReceiver<'a, TReader>,
         file_sender: FileSender<TWriter>,
-        socket_addr: String,
+        socket_addr: SocketAddr,
     ) -> Self {
         Self {
             config,
@@ -89,9 +89,9 @@ where
             match self.frame_reader.next_frame().await? {
                 Some(mut message) => match message.frame_ident() {
                     "set_peer_port" => {
-                        let port = message.next_arg::<u32>()?;
+                        let port = message.next_arg::<u16>()?;
                         log::debug!("peer requested to change port to {}", port);
-                        self.socket_addr = format!("{}:{}", self.socket_addr, port);
+                        self.socket_addr.set_port(port);
                         self.frame_writer
                             .write_frame("set_peer_port".into())
                             .await?;
@@ -250,6 +250,7 @@ where
 mod tests {
     use std::{
         path::{Path, PathBuf},
+        str::FromStr,
         time::Duration,
     };
     use tokio::io::DuplexStream;
@@ -297,7 +298,7 @@ mod tests {
             frame_writer,
             file_receiver,
             file_sender,
-            "".to_owned(),
+            SocketAddr::from_str("127.0.0.1:0").unwrap(),
         );
 
         server_peer_handler.bounce_invalid_messages = true;

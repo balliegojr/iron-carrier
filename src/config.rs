@@ -1,11 +1,11 @@
 //! Handles configuration
 
 use serde::Deserialize;
-use std::{collections::HashMap, fs::read_to_string, path::PathBuf};
+use std::{collections::HashMap, fs::read_to_string, net::SocketAddr, path::PathBuf};
 
 use crate::IronCarrierError;
 
-fn default_port() -> u32 {
+fn default_port() -> u16 {
     8090
 }
 fn default_enable_watcher() -> bool {
@@ -15,7 +15,7 @@ fn default_watcher_debounce() -> u64 {
     10
 }
 
-const MAX_PORT: u32 = 65535;
+const MAX_PORT: u16 = 65535;
 /// Represents the configuration for the current machine
 #[derive(Deserialize)]
 pub struct Config {
@@ -25,11 +25,11 @@ pub struct Config {
     pub paths: HashMap<String, PathBuf>,
     /// contains the address for the other peers  
     /// in the format IPV4:PORT (**192.168.1.1:9090**)
-    pub peers: Option<Vec<String>>,
+    pub peers: Option<Vec<SocketAddr>>,
 
     /// Port to listen to connections, defaults to 8090
     #[serde(default = "default_port")]
-    pub port: u32,
+    pub port: u16,
 
     /// Enable file watchers for real time syncs, defaults to true
     #[serde(default = "default_enable_watcher")]
@@ -84,6 +84,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
 
     #[test]
@@ -102,7 +104,7 @@ mod tests {
         let peers = config.peers.unwrap();
 
         assert_eq!(1, peers.len());
-        assert_eq!("127.0.0.1:8888", peers[0]);
+        assert_eq!(SocketAddr::from_str("127.0.0.1:8888").unwrap(), peers[0]);
 
         let paths = config.paths;
         assert_eq!(1, paths.len());

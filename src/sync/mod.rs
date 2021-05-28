@@ -5,25 +5,24 @@ pub(crate) mod file_watcher_event_blocker;
 pub mod synchronizer;
 
 use crate::fs::FileInfo;
-use std::{path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::Notify;
 
 pub use synchronizer::Synchronizer;
 
-type PeerAddress = String;
-pub type BlockingEvent = (PathBuf, String);
+pub type BlockingEvent = (PathBuf, SocketAddr);
 
 /// Synchronization Event Types
 #[derive(Debug)]
 pub enum SyncEvent {
     /// Add peer to synchronization list
-    EnqueueSyncToPeer(PeerAddress, bool),
+    EnqueueSyncToPeer(SocketAddr, bool),
 
     /// Peer signaled to start synchronization
-    PeerRequestedSync(PeerAddress, Arc<Notify>, Arc<Notify>),
+    PeerRequestedSync(SocketAddr, Arc<Notify>, Arc<Notify>),
 
     /// Broadcast event to all configurated peers
-    BroadcastToAllPeers(FileAction, Vec<String>),
+    BroadcastToAllPeers(FileAction, Vec<SocketAddr>),
 }
 
 #[derive(Debug)]

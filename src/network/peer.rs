@@ -4,7 +4,7 @@ use super::streaming::{
 use crate::{
     config::Config, fs::FileInfo, sync::BlockingEvent, sync::FileAction, IronCarrierError,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, net::SocketAddr};
 use tokio::{
     fs::File,
     io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf},
@@ -119,7 +119,7 @@ where
     TReader: AsyncRead + Unpin,
     TWriter: AsyncWrite + Unpin,
 {
-    address: &'a str,
+    address: SocketAddr,
     config: &'a Config,
     status: PeerStatus,
     frame_writer: FrameWriter<TWriter>,
@@ -132,7 +132,7 @@ where
 
 impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
     pub async fn new(
-        address: &'a str,
+        address: SocketAddr,
         config: &'a Config,
         event_blocker: Sender<BlockingEvent>,
     ) -> crate::Result<Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>>> {
@@ -155,7 +155,7 @@ impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
         })
     }
 
-    pub fn get_address(&'a self) -> &'a str {
+    pub fn get_address(&'a self) -> &'a SocketAddr {
         &self.address
     }
 
@@ -218,10 +218,7 @@ impl<'a> Peer<'a, ReadHalf<TcpStream>, WriteHalf<TcpStream>> {
             FileAction::Request(file_info) => {
                 log::debug!("asking peer {} for file {:?}", self.address, file_info.path);
                 self.event_blocker
-                    .send((
-                        file_info.get_absolute_path(&self.config)?,
-                        self.address.to_owned(),
-                    ))
+                    .send((file_info.get_absolute_path(&self.config)?, self.address))
                     .await?;
                 self.request_file(&file_info).await?
             }

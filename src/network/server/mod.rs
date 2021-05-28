@@ -10,7 +10,7 @@ use super::streaming::{file_streamers, frame_stream};
 mod server_peer_handler;
 
 pub(crate) struct Server {
-    port: u32,
+    port: u16,
     config: Arc<Config>,
     events_blocker: Sender<BlockingEvent>,
     handlers: Arc<Mutex<HashMap<String, TcpStream>>>,
@@ -64,7 +64,7 @@ impl Server {
                                     frame_writer,
                                     file_receiver,
                                     file_sender,
-                                    socket_addr.clone(),
+                                    socket,
                                 );
 
                                 match handler.handle_events(sync_events, events_blocker).await {

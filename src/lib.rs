@@ -5,6 +5,8 @@
 //!
 //! Synchronize your files in differents machines on the same network
 
+use std::net::SocketAddr;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -46,7 +48,7 @@ pub enum IronCarrierError {
     ServerStartError(String),
     /// The target peer is disconnected
     #[error("The target peer is not available: {0}")]
-    PeerDisconectedError(String),
+    PeerDisconectedError(SocketAddr),
     /// It wasn't possible to read from network socket
     #[error("There was an error reading information from network stream")]
     NetworkIOReadingError,

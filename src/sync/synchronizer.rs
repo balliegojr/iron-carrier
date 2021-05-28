@@ -1,4 +1,9 @@
-use std::sync::Arc;
+use simple_mdns::ServiceDiscovery;
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::{mpsc, mpsc::Receiver, mpsc::Sender};
 
 use super::{file_watcher::FileWatcher, BlockingEvent, FileAction, SyncEvent};
@@ -10,6 +15,7 @@ pub struct Synchronizer {
     events_channel_sender: Sender<SyncEvent>,
     events_channel_receiver: Receiver<SyncEvent>,
     file_watcher: FileWatcher,
+    service_discovery: Option<ServiceDiscovery>,
 }
 
 impl Synchronizer {
@@ -20,13 +26,15 @@ impl Synchronizer {
         let file_watcher = FileWatcher::new(events_channel_sender.clone(), config.clone());
 
         let server = Server::new(config.clone(), file_watcher.get_events_blocker());
+        let service_discovery = get_service_discovery(&config);
 
         Synchronizer {
-            config: config,
+            config,
             server,
             events_channel_sender,
             events_channel_receiver,
             file_watcher,
+            service_discovery,
         }
     }
 
@@ -42,16 +50,38 @@ impl Synchronizer {
         Ok(())
     }
 
-    async fn start_peers_full_sync(&self) -> crate::Result<()> {
-        if let Some(peers) = &self.config.peers {
-            for peer_address in peers.iter() {
-                log::info!("schedulling peer {} for synchonization", peer_address);
-                self.events_channel_sender
-                    .send(SyncEvent::EnqueueSyncToPeer(peer_address.to_owned(), false))
-                    .await?;
-            }
-        }
+    fn get_peers(&self) -> std::collections::HashSet<SocketAddr> {
+        let from_sd = self
+            .service_discovery
+            .iter()
+            .flat_map(|sd| sd.get_known_services());
+        let from_config = self
+            .config
+            .peers
+            .iter()
+            .flat_map(|peers| peers.iter().cloned());
 
+        from_sd.chain(from_config).collect()
+    }
+
+    async fn start_peers_full_sync(&self) -> crate::Result<()> {
+        let peers = loop {
+            let p = self.get_peers();
+            if p.len() == 0 {
+                log::debug!("No peers found, waiting 2 seconds");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+
+            break p;
+        };
+
+        for peer_address in peers {
+            log::info!("schedulling peer {} for synchonization", peer_address);
+            self.events_channel_sender
+                .send(SyncEvent::EnqueueSyncToPeer(peer_address, false))
+                .await?;
+        }
         Ok(())
     }
 
@@ -91,7 +121,7 @@ impl Synchronizer {
                     SyncEvent::BroadcastToAllPeers(action, peers) => {
                         log::debug!("file changed on disk: {:?}", action);
 
-                        for peer in peers.iter() {
+                        for peer in peers {
                             if let Err(e) = self.sync_peer_single_action(peer, &action).await {
                                 log::error!("Peer Synchronization failed: {}", e);
                             };
@@ -107,7 +137,7 @@ impl Synchronizer {
 
     async fn sync_peer_single_action<'b>(
         &self,
-        peer_address: &str,
+        peer_address: SocketAddr,
         action: &'b FileAction,
     ) -> crate::Result<()> {
         let mut peer = Peer::new(
@@ -120,12 +150,12 @@ impl Synchronizer {
     }
 
     async fn sync_peer<'b>(
-        peer_address: String,
+        peer_address: SocketAddr,
         two_way_sync: bool,
         config: &Config,
         events_blocker: Sender<BlockingEvent>,
     ) -> crate::Result<()> {
-        let mut peer = Peer::new(&peer_address, config, events_blocker.clone()).await?;
+        let mut peer = Peer::new(peer_address, config, events_blocker.clone()).await?;
         log::info!("Peer full synchronization started: {}", peer.get_address());
 
         peer.start_sync().await?;
@@ -140,7 +170,7 @@ impl Synchronizer {
 
             for file in find_deletable_local_files(&mut peer_files, &mut local_files) {
                 let _ = events_blocker
-                    .send((file.get_absolute_path(&config)?, peer_address.clone()))
+                    .send((file.get_absolute_path(&config)?, peer_address))
                     .await;
                 fs::delete_file(&file, &config).await?;
             }
@@ -217,4 +247,31 @@ fn lookup_file(file: &FileInfo, file_collection: &mut Vec<FileInfo>) -> Option<F
         Ok(index) => Some(file_collection.remove(index)),
         Err(_) => None,
     }
+}
+
+fn get_service_discovery(config: &Config) -> Option<ServiceDiscovery> {
+    let mut sd = ServiceDiscovery::new("_ironcarrier._tcp.local", 600, true).unwrap();
+    sd.add_port(config.port);
+    log::debug!("Registered port: {}", config.port);
+    for addr in get_my_ips()? {
+        sd.add_ip_address(addr);
+        log::debug!("Registered address: {:?}", addr);
+    }
+
+    Some(sd)
+}
+fn get_my_ips() -> Option<Vec<IpAddr>> {
+    let addrs = if_addrs::get_if_addrs()
+        .ok()?
+        .iter()
+        .filter_map(|iface| {
+            if iface.addr.is_loopback() {
+                None
+            } else {
+                Some(iface.addr.ip())
+            }
+        })
+        .collect();
+
+    Some(addrs)
 }
