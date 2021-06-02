@@ -261,7 +261,7 @@ mod tests {
 
     fn sample_config(test_folder: &str) -> Arc<Config> {
         Arc::new(
-            Config::parse_content(format!(
+            Config::new_from_str(format!(
                 "port = 8090
        
         [paths]

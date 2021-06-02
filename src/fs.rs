@@ -391,7 +391,7 @@ mod tests {
             permissions: 0,
         };
 
-        let config = Config::parse_content(
+        let config = Config::new_from_str(
             "
         [paths]
         a = \"./tmp/fs\""

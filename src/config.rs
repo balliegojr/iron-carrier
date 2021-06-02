@@ -42,6 +42,7 @@ pub struct Config {
     #[serde(default = "default_watcher_debounce")]
     pub delay_watcher_events: u64,
 
+    /// Enable service discovery
     #[serde(default = "default_enable_service_discovery")]
     pub enable_service_discovery: bool,
 }
@@ -55,11 +56,11 @@ impl Config {
     pub fn new(config_path: &str) -> crate::Result<Self> {
         log::debug!("reading config file {}", config_path);
 
-        Config::parse_content(read_to_string(config_path)?)
+        Config::new_from_str(read_to_string(config_path)?)
     }
 
     /// Parses the given content into [Config]
-    pub(crate) fn parse_content(content: String) -> crate::Result<Self> {
+    pub fn new_from_str(content: String) -> crate::Result<Self> {
         toml::from_str::<Config>(&content)?.validate()
     }
 
@@ -106,7 +107,7 @@ mod tests {
         "
         .to_owned();
 
-        let config = Config::parse_content(config_content)?;
+        let config = Config::new_from_str(config_content)?;
         let peers = config.peers.unwrap();
 
         assert_eq!(1, peers.len());

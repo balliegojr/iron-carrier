@@ -60,7 +60,7 @@ mod tests {
     #[tokio::test]
     pub async fn filter_events() {
         let config = Arc::new(
-            Config::parse_content(
+            Config::new_from_str(
                 "peers = [\"192.168.1.10:8080\", \"192.168.1.11:8080\"]
         delay_watcher_events=1
         [paths]

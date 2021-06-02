@@ -121,7 +121,7 @@ mod tests {
     use super::*;
 
     fn sample_config(test_folder: &str) -> Config {
-        Config::parse_content(format!(
+        Config::new_from_str(format!(
             "port = 8090
        
         [paths]

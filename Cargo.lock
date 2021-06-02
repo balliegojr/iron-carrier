@@ -337,6 +337,7 @@ dependencies = [
  "if-addrs",
  "log",
  "notify",
+ "rand",
  "serde",
  "simple-mdns",
  "stderrlog",
@@ -704,7 +705,8 @@ dependencies = [
 [[package]]
 name = "simple-dns"
 version = "0.1.0"
-source = "git+https://github.com/balliegojr/simple-dns?branch=main#0fb01a8d888e8cb0acceaf247c992b4599e4d1f5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "195496be3d5e22e6ae4d1bb29f01e916af2168cccc29b535209b6929506a4281"
 dependencies = [
  "byteorder",
  "thiserror",
@@ -713,7 +715,8 @@ dependencies = [
 [[package]]
 name = "simple-mdns"
 version = "0.1.0"
-source = "git+https://github.com/balliegojr/simple-dns?branch=main#0fb01a8d888e8cb0acceaf247c992b4599e4d1f5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4bc953fd4e82dccc46782e7e092a4d57c21daeba3418eb78a8b1fa97c011790"
 dependencies = [
  "futures",
  "lazy_static",
