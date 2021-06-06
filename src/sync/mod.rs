@@ -5,12 +5,24 @@ pub(crate) mod file_watcher_event_blocker;
 pub mod synchronizer;
 
 use crate::fs::FileInfo;
+use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::Notify;
 
 pub use synchronizer::Synchronizer;
 
 pub type BlockingEvent = (PathBuf, SocketAddr);
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) enum CarrierEvent {
+    StartFullSync,
+    StartSync,
+    SyncRequestAccepted,
+    SyncRequestRejected,
+
+    BuildStorageIndex(String),
+    ExchangeStorageIndex(String, Box<Vec<FileInfo>>),
+}
 
 /// Synchronization Event Types
 #[derive(Debug)]

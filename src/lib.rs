@@ -71,5 +71,6 @@ impl From<bincode::Error> for IronCarrierError {
 
 pub async fn run(config: config::Config) -> Result<()> {
     let mut s = sync::Synchronizer::new(config);
-    s.start().await
+    // s.start().await
+    Ok(())
 }

@@ -1,0 +1,4 @@
+port = 8092
+
+[paths]
+a = "./samples/peer_c"

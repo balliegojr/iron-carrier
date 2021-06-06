@@ -6,48 +6,195 @@ use std::{
 };
 use tokio::sync::{mpsc, mpsc::Receiver, mpsc::Sender};
 
-use super::{file_watcher::FileWatcher, BlockingEvent, FileAction, SyncEvent};
+use super::{file_watcher::FileWatcher, BlockingEvent, CarrierEvent, FileAction, SyncEvent};
 use crate::{config::Config, fs, fs::FileInfo, network::peer::Peer, network::server::Server};
+
+use message_io::{
+    network::Endpoint,
+    node::{self, NodeHandler},
+};
+use message_io::{
+    network::{NetEvent, Transport},
+    node::NodeListener,
+};
+
+use rand::Rng;
+
+#[derive(Debug, Eq, PartialEq)]
+enum SyncState {
+    Idle,
+    Initiator,
+    Synchronizing,
+}
 
 pub struct Synchronizer {
     config: Arc<Config>,
-    server: Server,
-    events_channel_sender: Sender<SyncEvent>,
-    events_channel_receiver: Receiver<SyncEvent>,
-    file_watcher: FileWatcher,
+    state: SyncState,
+    connected_peers: Vec<Endpoint>,
+    prepared_to_sync: usize,
+    // events_channel_receiver: Receiver<SyncEvent>,
+    // file_watcher: FileWatcher,
     service_discovery: Option<ServiceDiscovery>,
+    handler: NodeHandler<CarrierEvent>,
 }
 
 impl Synchronizer {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config) -> crate::Result<Self> {
         let config = Arc::new(config);
 
-        let (events_channel_sender, events_channel_receiver) = mpsc::channel(50);
-        let file_watcher = FileWatcher::new(events_channel_sender.clone(), config.clone());
+        // let (events_channel_sender, events_channel_receiver) = mpsc::channel(50);
+        // let file_watcher = FileWatcher::new(events_channel_sender.clone(), config.clone());
 
-        let server = Server::new(config.clone(), file_watcher.get_events_blocker());
+        // let server = Server::new(config.clone(), file_watcher.get_events_blocker());
         let service_discovery = get_service_discovery(&config);
+        let (handler, listener) = node::split::<CarrierEvent>();
 
-        Synchronizer {
+        let mut s = Synchronizer {
             config,
-            server,
-            events_channel_sender,
-            events_channel_receiver,
-            file_watcher,
+            // server,
+            // events_channel_sender,
+            // events_channel_receiver,
+            // file_watcher,
             service_discovery,
+            state: SyncState::Idle,
+            handler,
+            connected_peers: Vec::new(),
+            prepared_to_sync: 0,
+        };
+
+        s.start(listener)?;
+        Ok(s)
+    }
+
+    fn start(&mut self, listener: NodeListener<CarrierEvent>) -> crate::Result<()> {
+        log::debug!("starting syncronizer");
+        // self.server
+        //     .start(self.events_channel_sender.clone())
+        //     .await?;
+        // // self.file_watcher.start();
+        // self.start_peers_full_sync().await?;
+        // self.sync_events().await;
+        let mut rng = rand::thread_rng();
+        let wait = rng.gen_range(3.0..5.0);
+        self.handler
+            .signals()
+            .send_with_timer(CarrierEvent::StartFullSync, Duration::from_secs_f64(wait));
+
+        // Listen for TCP, UDP and WebSocket messages at the same time.
+        self.handler
+            .network()
+            .listen(
+                Transport::FramedTcp,
+                format!("0.0.0.0:{}", self.config.port),
+            )
+            .unwrap();
+
+        // Read incoming network events.
+        listener.for_each(move |event| match event {
+            node::NodeEvent::Network(net_event) => {
+                match net_event {
+                    NetEvent::Connected(endpoint, _) => {
+                        log::debug!("Peer connected:  {}", endpoint);
+                        self.connected_peers.push(endpoint);
+                    } // Used for explicit connections.
+                    NetEvent::Accepted(_endpoint, _listener) => {
+                        println!("Client connected"); // Tcp or Ws
+                    }
+                    NetEvent::Message(endpoint, data) => {
+                        match bincode::deserialize(data) {
+                            Ok(message) => self.process_event(message, Some(endpoint)),
+                            Err(err) => {
+                                log::error!("Invalid message: {:?}", err);
+                            }
+                        };
+                    }
+                    NetEvent::Disconnected(endpoint) => {
+                        log::debug!("Peer disconnected:  {}", endpoint);
+                        self.connected_peers.retain(|p| *p != endpoint);
+                        if self.state == SyncState::Synchronizing {
+                            self.set_state(SyncState::Idle);
+                        }
+                    }
+                }
+            }
+            node::NodeEvent::Signal(signal_event) => {
+                self.process_event(signal_event, None);
+            }
+        });
+
+        Ok(())
+    }
+
+    fn process_event(&mut self, event: CarrierEvent, endpoint: Option<Endpoint>) {
+        log::debug!("received event {:?}", event);
+        match event {
+            CarrierEvent::StartFullSync => {
+                log::info!("Received StartAsync event");
+                if self.set_state(SyncState::Initiator) {
+                    self.prepared_to_sync = 0;
+                    let peers = self.get_peers();
+                    if peers.len() == 0 {
+                        self.set_state(SyncState::Idle);
+                    } else {
+                        for peer in peers {
+                            log::debug!("Connecting to peer {:?}", peer);
+                            match self
+                                .handler
+                                .network()
+                                .connect_sync(Transport::FramedTcp, peer)
+                            {
+                                Ok((endpoint, _)) => {
+                                    self.send_message(CarrierEvent::StartSync, endpoint);
+                                }
+                                Err(_) => log::error!("Error connecting to peer"),
+                            }
+                        }
+                    }
+                }
+            }
+            CarrierEvent::BuildStorageIndex(_) => {}
+            CarrierEvent::StartSync => {
+                if self.set_state(SyncState::Synchronizing) {
+                    self.send_message(CarrierEvent::SyncRequestAccepted, endpoint.unwrap());
+                } else {
+                    self.send_message(CarrierEvent::SyncRequestRejected, endpoint.unwrap());
+                }
+            }
+            CarrierEvent::SyncRequestAccepted => {
+                self.prepared_to_sync += 1;
+                if self.prepared_to_sync == self.connected_peers.len() {
+                    log::info!("agora vai")
+                }
+            }
+            CarrierEvent::SyncRequestRejected => {
+                log::debug!("Peer reject sync request");
+                self.handler
+                    .network()
+                    .remove(endpoint.unwrap().resource_id());
+            }
+            CarrierEvent::ExchangeStorageIndex(_, _) => {}
         }
     }
 
-    pub async fn start(&mut self) -> crate::Result<()> {
-        log::debug!("starting syncronizer");
-        self.server
-            .start(self.events_channel_sender.clone())
-            .await?;
-        self.file_watcher.start();
-        self.start_peers_full_sync().await?;
-        self.sync_events().await;
+    fn send_message(&self, message: CarrierEvent, endpoint: Endpoint) {
+        let data = bincode::serialize(&message).unwrap();
+        self.handler.network().send(endpoint, &data);
+        log::debug!("sent message {:?} to {:?}", message, endpoint);
+    }
 
-        Ok(())
+    fn set_state(&mut self, state: SyncState) -> bool {
+        match (&self.state, &state) {
+            (SyncState::Initiator, SyncState::Synchronizing)
+            | (SyncState::Synchronizing, SyncState::Initiator) => {
+                log::info!("Invalid state change {:?} -> {:?}", self.state, state);
+                false
+            }
+            _ => {
+                log::info!("State change {:?} -> {:?}", self.state, state);
+                self.state = state;
+                true
+            }
+        }
     }
 
     fn get_peers(&self) -> std::collections::HashSet<SocketAddr> {
@@ -64,132 +211,132 @@ impl Synchronizer {
         from_sd.chain(from_config).collect()
     }
 
-    async fn start_peers_full_sync(&self) -> crate::Result<()> {
-        let peers = loop {
-            let p = self.get_peers();
-            if p.len() == 0 {
-                log::debug!("No peers found, waiting 2 seconds");
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                continue;
-            }
+    // async fn start_peers_full_sync(&self) -> crate::Result<()> {
+    //     let peers = loop {
+    //         let p = self.get_peers();
+    //         if p.len() == 0 {
+    //             log::debug!("No peers found, waiting 2 seconds");
+    //             tokio::time::sleep(Duration::from_secs(2)).await;
+    //             continue;
+    //         }
 
-            break p;
-        };
+    //         break p;
+    //     };
 
-        for peer_address in peers {
-            log::info!("schedulling peer {} for synchonization", peer_address);
-            self.events_channel_sender
-                .send(SyncEvent::EnqueueSyncToPeer(peer_address, false))
-                .await?;
-        }
-        Ok(())
-    }
+    //     for peer_address in peers {
+    //         log::info!("schedulling peer {} for synchonization", peer_address);
+    //         self.events_channel_sender
+    //             .send(SyncEvent::EnqueueSyncToPeer(peer_address, false))
+    //             .await?;
+    //     }
+    //     Ok(())
+    // }
 
-    async fn sync_events(&mut self) {
-        loop {
-            match self.events_channel_receiver.recv().await {
-                Some(event) => match event {
-                    SyncEvent::EnqueueSyncToPeer(peer_address, two_way_sync) => {
-                        let config = self.config.clone();
-                        let events_blocker = self.file_watcher.get_events_blocker();
+    // async fn sync_events(&mut self) {
+    //     loop {
+    //         match self.events_channel_receiver.recv().await {
+    //             Some(event) => match event {
+    //                 SyncEvent::EnqueueSyncToPeer(peer_address, two_way_sync) => {
+    //                     let config = self.config.clone();
+    //                     let events_blocker = self.file_watcher.get_events_blocker();
 
-                        tokio::spawn(async move {
-                            match Synchronizer::sync_peer(
-                                peer_address,
-                                two_way_sync,
-                                &config,
-                                events_blocker,
-                            )
-                            .await
-                            {
-                                Ok(_) => {
-                                    log::info!("Peer synchronization successful")
-                                }
-                                Err(e) => {
-                                    log::error!("Peer synchronization failed: {}", e);
-                                }
-                            }
-                        });
-                    }
-                    SyncEvent::PeerRequestedSync(peer_address, sync_starter, sync_ended) => {
-                        log::info!("Peer requested synchronization: {}", peer_address);
-                        sync_starter.notify_one();
-                        sync_ended.notified().await;
+    //                     tokio::spawn(async move {
+    //                         match Synchronizer::sync_peer(
+    //                             peer_address,
+    //                             two_way_sync,
+    //                             &config,
+    //                             events_blocker,
+    //                         )
+    //                         .await
+    //                         {
+    //                             Ok(_) => {
+    //                                 log::info!("Peer synchronization successful")
+    //                             }
+    //                             Err(e) => {
+    //                                 log::error!("Peer synchronization failed: {}", e);
+    //                             }
+    //                         }
+    //                     });
+    //                 }
+    //                 SyncEvent::PeerRequestedSync(peer_address, sync_starter, sync_ended) => {
+    //                     log::info!("Peer requested synchronization: {}", peer_address);
+    //                     sync_starter.notify_one();
+    //                     sync_ended.notified().await;
 
-                        log::info!("Peer synchronization ended");
-                    }
-                    SyncEvent::BroadcastToAllPeers(action, peers) => {
-                        log::debug!("file changed on disk: {:?}", action);
+    //                     log::info!("Peer synchronization ended");
+    //                 }
+    //                 SyncEvent::BroadcastToAllPeers(action, peers) => {
+    //                     log::debug!("file changed on disk: {:?}", action);
 
-                        for peer in peers {
-                            if let Err(e) = self.sync_peer_single_action(peer, &action).await {
-                                log::error!("Peer Synchronization failed: {}", e);
-                            };
-                        }
-                    }
-                },
-                None => {
-                    break;
-                }
-            }
-        }
-    }
+    //                     for peer in peers {
+    //                         if let Err(e) = self.sync_peer_single_action(peer, &action).await {
+    //                             log::error!("Peer Synchronization failed: {}", e);
+    //                         };
+    //                     }
+    //                 }
+    //             },
+    //             None => {
+    //                 break;
+    //             }
+    //         }
+    //     }
+    // }
 
-    async fn sync_peer_single_action<'b>(
-        &self,
-        peer_address: SocketAddr,
-        action: &'b FileAction,
-    ) -> crate::Result<()> {
-        let mut peer = Peer::new(
-            peer_address,
-            &self.config,
-            self.file_watcher.get_events_blocker(),
-        )
-        .await?;
-        peer.sync_action(action).await
-    }
+    // async fn sync_peer_single_action<'b>(
+    //     &self,
+    //     peer_address: SocketAddr,
+    //     action: &'b FileAction,
+    // ) -> crate::Result<()> {
+    //     let mut peer = Peer::new(
+    //         peer_address,
+    //         &self.config,
+    //         self.file_watcher.get_events_blocker(),
+    //     )
+    //     .await?;
+    //     peer.sync_action(action).await
+    // }
 
-    async fn sync_peer<'b>(
-        peer_address: SocketAddr,
-        two_way_sync: bool,
-        config: &Config,
-        events_blocker: Sender<BlockingEvent>,
-    ) -> crate::Result<()> {
-        let mut peer = Peer::new(peer_address, config, events_blocker.clone()).await?;
-        log::info!("Peer full synchronization started: {}", peer.get_address());
+    // async fn sync_peer<'b>(
+    //     peer_address: SocketAddr,
+    //     two_way_sync: bool,
+    //     config: &Config,
+    //     events_blocker: Sender<BlockingEvent>,
+    // ) -> crate::Result<()> {
+    //     let mut peer = Peer::new(peer_address, config, events_blocker.clone()).await?;
+    //     log::info!("Peer full synchronization started: {}", peer.get_address());
 
-        peer.start_sync().await?;
+    //     peer.start_sync().await?;
 
-        for (alias, path) in &config.paths {
-            let (hash, mut local_files) = fs::get_files_with_hash(path, alias).await?;
-            if !peer.need_to_sync(&alias, hash) {
-                continue;
-            }
+    //     for (alias, path) in &config.paths {
+    //         let (hash, mut local_files) = fs::get_files_with_hash(path, alias).await?;
+    //         if !peer.need_to_sync(&alias, hash) {
+    //             continue;
+    //         }
 
-            let mut peer_files = peer.fetch_files_for_alias(alias).await?;
+    //         let mut peer_files = peer.fetch_files_for_alias(alias).await?;
 
-            for file in find_deletable_local_files(&mut peer_files, &mut local_files) {
-                let _ = events_blocker
-                    .send((file.get_absolute_path(&config)?, peer_address))
-                    .await;
-                fs::delete_file(&file, &config).await?;
-            }
+    //         for file in find_deletable_local_files(&mut peer_files, &mut local_files) {
+    //             let _ = events_blocker
+    //                 .send((file.get_absolute_path(&config)?, peer_address))
+    //                 .await;
+    //             fs::delete_file(&file, &config).await?;
+    //         }
 
-            while let Some(local_file) = local_files.pop() {
-                let peer_file = lookup_file(&local_file, &mut peer_files);
-                let peer_action = get_file_action(local_file, peer_file);
-                if let Some(peer_action) = peer_action {
-                    peer.sync_action(&peer_action).await?
-                }
-            }
+    //         while let Some(local_file) = local_files.pop() {
+    //             let peer_file = lookup_file(&local_file, &mut peer_files);
+    //             let peer_action = get_file_action(local_file, peer_file);
+    //             if let Some(peer_action) = peer_action {
+    //                 peer.sync_action(&peer_action).await?
+    //             }
+    //         }
 
-            while let Some(peer_file) = peer_files.pop() {
-                peer.sync_action(&FileAction::Request(peer_file)).await?;
-            }
-        }
+    //         while let Some(peer_file) = peer_files.pop() {
+    //             peer.sync_action(&FileAction::Request(peer_file)).await?;
+    //         }
+    //     }
 
-        peer.finish_sync(two_way_sync).await
-    }
+    //     peer.finish_sync(two_way_sync).await
+    // }
 }
 
 fn find_deletable_local_files(
