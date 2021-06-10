@@ -14,7 +14,7 @@ pub mod config;
 mod crypto;
 mod deletion_tracker;
 mod fs;
-mod network;
+// mod network;
 pub mod sync;
 
 /// Result<T, IronCarrierError> alias

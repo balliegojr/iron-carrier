@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    io::Write,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
@@ -23,22 +24,22 @@ impl DeletionTracker {
         }
     }
 
-    pub async fn get_files(&self) -> crate::Result<HashMap<PathBuf, SystemTime>> {
+    pub fn get_files(&self) -> crate::Result<HashMap<PathBuf, SystemTime>> {
         if !self.log_path.exists() {
             log::debug!("deletion log doesn't exist");
             return Ok(HashMap::new());
         }
 
         log::debug!("reading deletion log content");
-        let contents = tokio::fs::read(&self.log_path).await?;
+        let contents = std::fs::read(&self.log_path)?;
         let contents = std::str::from_utf8(&contents)?;
 
         log::debug!("parsing deletiong log");
         let log_entries = self.parse_log(&contents);
-        return self.clean_and_rewrite(log_entries).await;
+        return self.clean_and_rewrite(log_entries);
     }
 
-    async fn clean_and_rewrite(
+    fn clean_and_rewrite(
         &self,
         mut log_entries: HashMap<PathBuf, SystemTime>,
     ) -> crate::Result<HashMap<PathBuf, SystemTime>> {
@@ -52,20 +53,19 @@ impl DeletionTracker {
                 "dropped {} entries from log file, removing log file",
                 count_before
             );
-            tokio::fs::remove_file(&self.log_path).await?;
+            std::fs::remove_file(&self.log_path)?;
         } else if count_before != log_entries.len() {
             log::debug!(
                 "dropping {} entries from log file, recreating log",
                 count_before - log_entries.len()
             );
-            let mut log_file = tokio::fs::File::create(&self.log_path).await?;
+            let mut log_file = std::fs::File::create(&self.log_path)?;
 
+            // TODO: use buffered writer
             for (path, time) in &log_entries {
-                log_file
-                    .write_all(&self.create_line(&path, &time).as_bytes())
-                    .await?;
+                log_file.write_all(&self.create_line(&path, &time).as_bytes())?;
             }
-            log_file.flush().await?;
+            log_file.flush()?;
         }
 
         Ok(log_entries)

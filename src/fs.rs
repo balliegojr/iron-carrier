@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ord,
     collections::HashMap,
+    fs::{self, File},
     hash::Hash,
     path::{Path, PathBuf},
     time::Duration,
     time::SystemTime,
 };
-use tokio::fs::{self, File};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -24,7 +24,6 @@ use crate::{config::Config, deletion_tracker::DeletionTracker, IronCarrierError}
 /// The `path` will always be relative to the alias root folder
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileInfo {
-    /// Root folder alias
     pub alias: String,
     /// File path, it is always relative to the alias root  
     /// The relative path will always be the same, no matter the machine
@@ -72,6 +71,16 @@ impl FileInfo {
         }
     }
 
+    pub fn is_out_of_sync(&self, other: &FileInfo) -> bool {
+        if self.deleted_at.is_some() && other.deleted_at.is_some() {
+            return false;
+        }
+
+        self.modified_at != other.modified_at
+            || self.deleted_at != other.deleted_at
+            || self.size != other.size
+    }
+
     pub fn is_local_file_newer(&self, config: &Config) -> bool {
         if self.deleted_at.is_some() {
             true
@@ -115,8 +124,6 @@ impl Hash for FileInfo {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.alias.hash(state);
         self.path.hash(state);
-        self.modified_at.hash(state);
-        self.size.hash(state);
     }
 }
 
@@ -124,7 +131,7 @@ impl Eq for FileInfo {}
 
 impl PartialEq for FileInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.path.eq(&other.path)
+        self.alias.eq(&other.alias) && self.path.eq(&other.path)
     }
 }
 
@@ -147,55 +154,51 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 }
 
 /// This function returns the result of [walk_path] along with the hash for the file list
-pub async fn get_files_with_hash<'a>(
-    path: &Path,
-    alias: &'a str,
-) -> crate::Result<(u64, Vec<FileInfo>)> {
-    let files = walk_path(path, alias).await?;
-    let hash = crate::crypto::calculate_hash(&files);
+// pub fn  get_files_with_hash<'a>(path: &Path, alias: &'a str) -> crate::Result<(u64, Vec<FileInfo>)> {
+//     let files = walk_path(path, alias)?;
+//     let hash = crate::crypto::calculate_hash(&files);
 
-    log::debug!(
-        "found {} files for alias {} with hash {}",
-        files.len(),
-        alias,
-        hash
-    );
+//     log::debug!(
+//         "found {} files for alias {} with hash {}",
+//         files.len(),
+//         alias,
+//         hash
+//     );
 
-    return Ok((hash, files));
-}
+//     return Ok((hash, files));
+// }
 
 /// This function will return a [HashMap] containing the alias as key and the hash as value
-pub async fn get_hash_for_alias(
-    alias_path: &HashMap<String, PathBuf>,
-) -> crate::Result<HashMap<String, u64>> {
-    let mut result = HashMap::new();
+// pub fn get_hash_for_alias(
+//     alias_path: &HashMap<String, PathBuf>,
+// ) -> crate::Result<HashMap<String, u64>> {
+//     let mut result = HashMap::new();
 
-    for (alias, path) in alias_path {
-        let (hash, _) = get_files_with_hash(path.as_path(), alias).await?;
-        result.insert(alias.to_string(), hash);
-    }
+//     for (alias, path) in alias_path {
+//         let (hash, _) = get_files_with_hash(path.as_path(), alias)?;
+//         result.insert(alias.to_string(), hash);
+//     }
 
-    Ok(result)
-}
+//     Ok(result)
+// }
 
 /// Returns a sorted vector with the entire folder structure for the given path
 ///
 /// This function will look for deletes files in the [DeletionTracker] log and append all entries to the return list  
 /// files with name or extension `.ironcarrier` will be ignored
-pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Vec<FileInfo>> {
+pub fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Vec<FileInfo>> {
     let mut paths = vec![root_path.to_owned()];
 
     let deletion_tracker = DeletionTracker::new(root_path);
     let mut files: Vec<FileInfo> = deletion_tracker
-        .get_files()
-        .await?
+        .get_files()?
         .into_iter()
         .map(|(k, v)| FileInfo::new_deleted(alias.to_owned(), k, Some(v)))
         .collect();
 
     while let Some(path) = paths.pop() {
-        let mut entries = fs::read_dir(path).await?;
-        while let Some(entry) = entries.next_entry().await? {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
             let path = entry.path();
 
             if is_special_file(&path) {
@@ -221,17 +224,17 @@ pub async fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Ve
     return Ok(files);
 }
 
-pub async fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
+pub fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
         log::debug!("delete_file: given path doesn't exist ({:?})", path);
         return Ok(());
     } else if path.is_dir() {
         log::debug!("delete_file: {:?} is dir, removing whole dir", path);
-        tokio::fs::remove_dir_all(&path).await?
+        std::fs::remove_dir_all(&path)?;
     } else {
         log::debug!("delete_file: removing file {:?}", path);
-        tokio::fs::remove_file(&path).await?
+        std::fs::remove_file(&path)?;
     }
 
     log::debug!("{:?} removed", path);
@@ -254,22 +257,19 @@ pub async fn move_file<'b>(
     Ok(())
 }
 
-pub async fn get_temp_file(
-    file_info: &FileInfo,
-    config: &Config,
-) -> crate::Result<tokio::fs::File> {
+pub fn get_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<File> {
     let mut temp_path = file_info.get_absolute_path(config)?;
     temp_path.set_extension("ironcarrier");
 
     if let Some(parent) = temp_path.parent() {
         if !parent.exists() {
             log::debug!("creating folders {:?}", parent);
-            tokio::fs::create_dir_all(parent).await?;
+            std::fs::create_dir_all(parent)?;
         }
     }
 
     log::debug!("creating temp file {:?}", temp_path);
-    Ok(File::create(&temp_path).await?)
+    Ok(File::create(&temp_path)?)
 }
 
 pub async fn flush_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
@@ -328,20 +328,18 @@ mod tests {
     use super::*;
     use crate::crypto::calculate_hash;
 
-    #[tokio::test]
-    async fn can_read_local_files() -> Result<(), Box<dyn std::error::Error>> {
-        fs::create_dir_all("./tmp/fs/read_local_files").await?;
-        File::create("./tmp/fs/read_local_files/file_1").await?;
-        File::create("./tmp/fs/read_local_files/file_2").await?;
+    #[test]
+    fn can_read_local_files() -> Result<(), Box<dyn std::error::Error>> {
+        fs::create_dir_all("./tmp/fs/read_local_files")?;
+        File::create("./tmp/fs/read_local_files/file_1")?;
+        File::create("./tmp/fs/read_local_files/file_2")?;
 
-        let files = walk_path(&PathBuf::from("./tmp/fs/read_local_files"), "a")
-            .await
-            .unwrap();
+        let files = walk_path(&PathBuf::from("./tmp/fs/read_local_files"), "a").unwrap();
 
         assert_eq!(files[0].path.to_str(), Some("file_1"));
         assert_eq!(files[1].path.to_str(), Some("file_2"));
 
-        fs::remove_dir_all("./tmp/fs/read_local_files").await?;
+        fs::remove_dir_all("./tmp/fs/read_local_files")?;
 
         Ok(())
     }

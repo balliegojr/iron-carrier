@@ -1,13 +1,15 @@
 use simple_mdns::ServiceDiscovery;
 use std::{
+    collections::{HashMap, HashSet, LinkedList},
     net::{IpAddr, SocketAddr},
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 use tokio::sync::{mpsc, mpsc::Receiver, mpsc::Sender};
 
 use super::{file_watcher::FileWatcher, BlockingEvent, CarrierEvent, FileAction, SyncEvent};
-use crate::{config::Config, fs, fs::FileInfo, network::peer::Peer, network::server::Server};
+use crate::{config::Config, fs, fs::FileInfo, /*network::peer::Peer, network::server::Server*/};
 
 use message_io::{
     network::Endpoint,
@@ -21,21 +23,168 @@ use message_io::{
 use rand::Rng;
 
 #[derive(Debug, Eq, PartialEq)]
-enum SyncState {
+enum SynchronizerState {
     Idle,
     Initiator,
     Synchronizing,
 }
 
+#[derive(Debug, Hash, Eq, PartialEq)]
+enum Origin {
+    Initiator,
+    Peer(Endpoint),
+}
+
+#[derive(Debug)]
+struct SynchronizationSession {
+    peers: Vec<Endpoint>,
+    storages: Vec<String>,
+    // current_storage: String,
+    current_storage_index: HashMap<Origin, Vec<FileInfo>>,
+    sync_queue: LinkedList<(CarrierEvent, Option<Endpoint>)>,
+}
+
+impl SynchronizationSession {
+    pub fn new(storages: Vec<String>) -> Self {
+        Self {
+            peers: Vec::new(),
+            storages,
+            // current_storage: (),
+            current_storage_index: HashMap::new(),
+            sync_queue: LinkedList::new(),
+        }
+    }
+
+    pub fn get_next_storage(&mut self) -> Option<String> {
+        self.storages.pop()
+    }
+
+    pub fn set_storage_index(&mut self, origin: Origin, index: Vec<FileInfo>) {
+        self.current_storage_index.insert(origin, index);
+    }
+
+    pub fn received_all_indexes(&self) -> bool {
+        self.current_storage_index.len() == self.peers.len() + 1
+    }
+
+    pub fn build_sync_queue(&mut self) {
+        let consolidated_index = self.get_consolidated_index();
+        let actions = consolidated_index
+            .iter()
+            .flat_map(|(_, v)| self.convert_to_actions(v))
+            .collect();
+
+        self.sync_queue = actions;
+        dbg!(&self.sync_queue);
+    }
+
+    pub fn get_next_action(&mut self) -> Option<(CarrierEvent, Option<Endpoint>)> {
+        self.sync_queue.pop_front()
+    }
+
+    fn get_consolidated_index(&self) -> HashMap<&FileInfo, HashMap<&Origin, &FileInfo>> {
+        let mut consolidated_index: HashMap<&FileInfo, HashMap<&Origin, &FileInfo>> =
+            HashMap::new();
+        for (origin, index) in &self.current_storage_index {
+            for file in index {
+                consolidated_index
+                    .entry(&file)
+                    .or_default()
+                    .insert(origin, file);
+            }
+        }
+        let mut all_origins: HashSet<Origin> =
+            self.peers.iter().map(|peer| Origin::Peer(*peer)).collect();
+        all_origins.insert(Origin::Initiator);
+
+        consolidated_index.retain(|file, files| {
+            files.len() <= self.current_storage_index.len()
+                || files.values().any(|w| file.is_out_of_sync(w))
+        });
+
+        consolidated_index
+    }
+    fn convert_to_actions(
+        &self,
+        files: &HashMap<&Origin, &FileInfo>,
+    ) -> Vec<(CarrierEvent, Option<Endpoint>)> {
+        let mut actions = Vec::new();
+        let (source, source_file) = files
+            .iter()
+            .max_by(|(_, a), (_, b)| {
+                a.deleted_at
+                    .unwrap_or(a.modified_at.unwrap())
+                    .cmp(&b.deleted_at.unwrap_or(b.modified_at.unwrap()))
+            })
+            .unwrap();
+
+        match *source {
+            Origin::Initiator => {
+                actions.extend(
+                    self.peers
+                        .iter()
+                        .filter(|peer| match files.get(&Origin::Peer(**peer)) {
+                            Some(f) => f.is_out_of_sync(source_file),
+                            None => !source_file.is_deleted(),
+                        })
+                        .map(|peer| {
+                            if source_file.is_deleted() {
+                                (
+                                    CarrierEvent::DeleteFile((*source_file).clone()),
+                                    Some(*peer),
+                                )
+                            } else {
+                                (CarrierEvent::SendFile((*source_file).clone()), Some(*peer))
+                            }
+                        }),
+                );
+            }
+            Origin::Peer(endpoint) => {
+                actions.push(if source_file.is_deleted() {
+                    (CarrierEvent::DeleteFile((*source_file).clone()), None)
+                } else {
+                    (
+                        CarrierEvent::RequestFile((*source_file).clone()),
+                        Some(*endpoint),
+                    )
+                });
+                actions.extend(
+                    self.peers
+                        .iter()
+                        .filter(|peer| {
+                            **peer != *endpoint
+                                && match files.get(&Origin::Peer(**peer)) {
+                                    Some(f) => f.is_out_of_sync(source_file),
+                                    None => !source_file.is_deleted(),
+                                }
+                        })
+                        .map(|peer| {
+                            if source_file.is_deleted() {
+                                (
+                                    CarrierEvent::DeleteFile((*source_file).clone()),
+                                    Some(*peer),
+                                )
+                            } else {
+                                (CarrierEvent::SendFile((*source_file).clone()), Some(*peer))
+                            }
+                        }),
+                );
+            }
+        }
+
+        return actions;
+    }
+}
+
 pub struct Synchronizer {
     config: Arc<Config>,
-    state: SyncState,
+    state: SynchronizerState,
     connected_peers: Vec<Endpoint>,
-    prepared_to_sync: usize,
     // events_channel_receiver: Receiver<SyncEvent>,
     // file_watcher: FileWatcher,
     service_discovery: Option<ServiceDiscovery>,
     handler: NodeHandler<CarrierEvent>,
+    session: Option<SynchronizationSession>,
 }
 
 impl Synchronizer {
@@ -56,10 +205,10 @@ impl Synchronizer {
             // events_channel_receiver,
             // file_watcher,
             service_discovery,
-            state: SyncState::Idle,
+            state: SynchronizerState::Idle,
             handler,
             connected_peers: Vec::new(),
-            prepared_to_sync: 0,
+            session: None,
         };
 
         s.start(listener)?;
@@ -97,9 +246,7 @@ impl Synchronizer {
                         log::debug!("Peer connected:  {}", endpoint);
                         self.connected_peers.push(endpoint);
                     } // Used for explicit connections.
-                    NetEvent::Accepted(_endpoint, _listener) => {
-                        println!("Client connected"); // Tcp or Ws
-                    }
+                    NetEvent::Accepted(_endpoint, _listener) => {}
                     NetEvent::Message(endpoint, data) => {
                         match bincode::deserialize(data) {
                             Ok(message) => self.process_event(message, Some(endpoint)),
@@ -111,8 +258,11 @@ impl Synchronizer {
                     NetEvent::Disconnected(endpoint) => {
                         log::debug!("Peer disconnected:  {}", endpoint);
                         self.connected_peers.retain(|p| *p != endpoint);
-                        if self.state == SyncState::Synchronizing {
-                            self.set_state(SyncState::Idle);
+                        if self.connected_peers.is_empty()
+                            && self.state == SynchronizerState::Synchronizing
+                        {
+                            self.set_state(SynchronizerState::Idle);
+                            self.session = None;
                         }
                     }
                 }
@@ -130,12 +280,13 @@ impl Synchronizer {
         match event {
             CarrierEvent::StartFullSync => {
                 log::info!("Received StartAsync event");
-                if self.set_state(SyncState::Initiator) {
-                    self.prepared_to_sync = 0;
+                if self.set_state(SynchronizerState::Initiator) {
                     let peers = self.get_peers();
-                    if peers.len() == 0 {
-                        self.set_state(SyncState::Idle);
+                    if peers.is_empty() {
+                        self.set_state(SynchronizerState::Idle);
                     } else {
+                        let storages = self.config.paths.keys().cloned().collect();
+                        self.session = Some(SynchronizationSession::new(storages));
                         for peer in peers {
                             log::debug!("Connecting to peer {:?}", peer);
                             match self
@@ -152,18 +303,38 @@ impl Synchronizer {
                     }
                 }
             }
-            CarrierEvent::BuildStorageIndex(_) => {}
+            CarrierEvent::BuildStorageIndex(storage) => {
+                log::info!("Building index for {}", storage);
+                let storage_path = self.config.paths.get(&storage).unwrap().clone();
+                let index = fs::walk_path(&storage_path, &storage).unwrap();
+
+                log::debug!("Read {} files ", index.len());
+
+                match endpoint {
+                    Some(endpoint) => {
+                        let data =
+                            bincode::serialize(&CarrierEvent::SetStorageIndex(index)).unwrap();
+                        self.handler.network().send(endpoint, &data);
+                    }
+                    None => self
+                        .handler
+                        .signals()
+                        .send(CarrierEvent::SetStorageIndex(index)),
+                };
+            }
             CarrierEvent::StartSync => {
-                if self.set_state(SyncState::Synchronizing) {
+                if self.set_state(SynchronizerState::Synchronizing) {
                     self.send_message(CarrierEvent::SyncRequestAccepted, endpoint.unwrap());
                 } else {
                     self.send_message(CarrierEvent::SyncRequestRejected, endpoint.unwrap());
                 }
             }
             CarrierEvent::SyncRequestAccepted => {
-                self.prepared_to_sync += 1;
-                if self.prepared_to_sync == self.connected_peers.len() {
-                    log::info!("agora vai")
+                let session = self.session.as_mut().unwrap();
+                session.peers.push(endpoint.unwrap());
+
+                if session.peers.len() == self.connected_peers.len() {
+                    self.handler.signals().send(CarrierEvent::SyncNextStorage);
                 }
             }
             CarrierEvent::SyncRequestRejected => {
@@ -172,8 +343,126 @@ impl Synchronizer {
                     .network()
                     .remove(endpoint.unwrap().resource_id());
             }
-            CarrierEvent::ExchangeStorageIndex(_, _) => {}
+            CarrierEvent::SyncNextStorage => {
+                match self.session.as_mut().unwrap().get_next_storage() {
+                    Some(storage) => {
+                        self.handler
+                            .signals()
+                            .send(CarrierEvent::BuildStorageIndex(storage.clone()));
+                        self.broadcast_message(CarrierEvent::BuildStorageIndex(storage));
+                    }
+                    None => {
+                        // TODO: finish sync
+                        todo!()
+                    }
+                }
+            }
+            CarrierEvent::SetStorageIndex(index) => {
+                let origin = match endpoint {
+                    Some(endpoint) => Origin::Peer(endpoint),
+                    None => Origin::Initiator,
+                };
+
+                log::debug!("Setting index with origin {:?}", origin);
+
+                let session = self.session.as_mut().unwrap();
+                session.set_storage_index(origin, index);
+
+                if session.received_all_indexes() {
+                    // self.handler.signals().send(CarrierEvent::BuildSyncQueue);
+                    session.build_sync_queue();
+                }
+            }
+            CarrierEvent::ConsumeSyncQueue => {
+                let session = self.session.as_mut().unwrap();
+                let action = session.get_next_action();
+                match action {
+                    Some((event, endpoint)) => {}
+                    None => {
+                        self.handler.signals().send(CarrierEvent::SyncNextStorage);
+                    }
+                }
+            }
+            CarrierEvent::DeleteFile(file) => {
+                fs::delete_file(&file, &self.config);
+            }
+            CarrierEvent::SendFile(_) => todo!(),
+            CarrierEvent::RequestFile(_) => todo!(),
+            CarrierEvent::PrepareFileTransfer(_, _) => todo!(),
+            CarrierEvent::WriteFileChunk(_, _, _) => todo!(),
+            CarrierEvent::EndFileTransfer(_) => todo!(),
         }
+    }
+
+    fn convert_to_actions(
+        &self,
+        files: &HashMap<&Origin, &FileInfo>,
+    ) -> Vec<(CarrierEvent, Option<Endpoint>)> {
+        let mut actions = Vec::new();
+        let (source, source_file) = files
+            .iter()
+            .max_by(|(_, a), (_, b)| {
+                a.deleted_at
+                    .unwrap_or(a.modified_at.unwrap())
+                    .cmp(&b.deleted_at.unwrap_or(b.modified_at.unwrap()))
+            })
+            .unwrap();
+
+        match *source {
+            Origin::Initiator => {
+                actions.extend(
+                    self.connected_peers
+                        .iter()
+                        .filter(|peer| match files.get(&Origin::Peer(**peer)) {
+                            Some(f) => f.is_out_of_sync(source_file),
+                            None => !source_file.is_deleted(),
+                        })
+                        .map(|peer| {
+                            if source_file.is_deleted() {
+                                (
+                                    CarrierEvent::DeleteFile((*source_file).clone()),
+                                    Some(*peer),
+                                )
+                            } else {
+                                (CarrierEvent::SendFile((*source_file).clone()), Some(*peer))
+                            }
+                        }),
+                );
+            }
+            Origin::Peer(endpoint) => {
+                actions.push(if source_file.is_deleted() {
+                    (CarrierEvent::DeleteFile((*source_file).clone()), None)
+                } else {
+                    (
+                        CarrierEvent::RequestFile((*source_file).clone()),
+                        Some(*endpoint),
+                    )
+                });
+                actions.extend(
+                    self.connected_peers
+                        .iter()
+                        .filter(|peer| {
+                            **peer != *endpoint
+                                && match files.get(&Origin::Peer(**peer)) {
+                                    Some(f) => f.is_out_of_sync(source_file),
+                                    None => !source_file.is_deleted(),
+                                }
+                        })
+                        .map(|peer| {
+                            if source_file.is_deleted() {
+                                (
+                                    CarrierEvent::DeleteFile((*source_file).clone()),
+                                    Some(*peer),
+                                )
+                            } else {
+                                (CarrierEvent::SendFile((*source_file).clone()), Some(*peer))
+                            }
+                        }),
+                );
+            }
+        }
+
+        return actions;
     }
 
     fn send_message(&self, message: CarrierEvent, endpoint: Endpoint) {
@@ -182,10 +471,17 @@ impl Synchronizer {
         log::debug!("sent message {:?} to {:?}", message, endpoint);
     }
 
-    fn set_state(&mut self, state: SyncState) -> bool {
+    fn broadcast_message(&self, message: CarrierEvent) {
+        let data = bincode::serialize(&message).unwrap();
+        for endpoint in &self.connected_peers {
+            self.handler.network().send(*endpoint, &data);
+        }
+    }
+
+    fn set_state(&mut self, state: SynchronizerState) -> bool {
         match (&self.state, &state) {
-            (SyncState::Initiator, SyncState::Synchronizing)
-            | (SyncState::Synchronizing, SyncState::Initiator) => {
+            (SynchronizerState::Initiator, SynchronizerState::Synchronizing)
+            | (SynchronizerState::Synchronizing, SynchronizerState::Initiator) => {
                 log::info!("Invalid state change {:?} -> {:?}", self.state, state);
                 false
             }

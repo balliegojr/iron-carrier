@@ -19,9 +19,18 @@ pub(crate) enum CarrierEvent {
     StartSync,
     SyncRequestAccepted,
     SyncRequestRejected,
+    SyncNextStorage,
 
     BuildStorageIndex(String),
-    ExchangeStorageIndex(String, Box<Vec<FileInfo>>),
+    SetStorageIndex(Vec<FileInfo>),
+    ConsumeSyncQueue,
+
+    DeleteFile(FileInfo),
+    SendFile(FileInfo),
+    RequestFile(FileInfo),
+    PrepareFileTransfer(FileInfo, u64),
+    WriteFileChunk(FileInfo, u64, Vec<u8>),
+    EndFileTransfer(FileInfo),
 }
 
 /// Synchronization Event Types
