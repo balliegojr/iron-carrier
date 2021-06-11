@@ -272,21 +272,21 @@ pub fn get_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<Fil
     Ok(File::create(&temp_path)?)
 }
 
-pub async fn flush_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
+pub fn flush_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     let final_path = file_info.get_absolute_path(config)?;
     let mut temp_path = final_path.clone();
 
     temp_path.set_extension("ironcarrier");
 
     log::debug!("moving temp file to {:?}", final_path);
-    tokio::fs::rename(&temp_path, &final_path).await?;
+    std::fs::rename(&temp_path, &final_path)?;
 
     log::debug!("setting file modification time");
     let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.modified_at.unwrap());
     filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(mod_time))?;
 
     if file_info.permissions > 0 {
-        set_file_permissions(&final_path, file_info.permissions).await?;
+        set_file_permissions(&final_path, file_info.permissions)?;
     }
 
     Ok(())
@@ -304,13 +304,13 @@ fn get_permissions(metadata: &std::fs::Metadata) -> u32 {
 }
 
 #[cfg(unix)]
-async fn set_file_permissions(path: &Path, perm: u32) -> tokio::io::Result<()> {
+fn set_file_permissions(path: &Path, perm: u32) -> tokio::io::Result<()> {
     let perm = std::fs::Permissions::from_mode(perm);
-    tokio::fs::set_permissions(path, perm).await
+    std::fs::set_permissions(path, perm)
 }
 
 #[cfg(not(unix))]
-async fn set_file_permissions(path: &Path, perm: u32) -> tokio::io::Result<()> {
+fn set_file_permissions(path: &Path, perm: u32) -> tokio::io::Result<()> {
     //TODO: figure out how to handle windows permissions
     Ok(())
 }

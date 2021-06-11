@@ -17,6 +17,7 @@ pub type BlockingEvent = (PathBuf, SocketAddr);
 pub(crate) enum CarrierEvent {
     StartFullSync,
     StartSync,
+    EndFullSync,
     SyncRequestAccepted,
     SyncRequestRejected,
     SyncNextStorage,
@@ -26,10 +27,10 @@ pub(crate) enum CarrierEvent {
     ConsumeSyncQueue,
 
     DeleteFile(FileInfo),
-    SendFile(FileInfo),
+    SendFile(FileInfo, SocketAddr),
     RequestFile(FileInfo),
     PrepareFileTransfer(FileInfo, u64),
-    WriteFileChunk(FileInfo, u64, Vec<u8>),
+    WriteFileChunk(u64, Vec<u8>),
     EndFileTransfer(FileInfo),
 }
 

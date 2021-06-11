@@ -61,6 +61,9 @@ pub enum IronCarrierError {
     /// It wasn't possible to parse the log file
     #[error("There was an error parsing the log")]
     ParseLogError,
+
+    #[error("Invalid state change: {0}")]
+    InvalidStateChange(String),
 }
 
 impl From<bincode::Error> for IronCarrierError {

@@ -1,15 +1,17 @@
 use simple_mdns::ServiceDiscovery;
 use std::{
     collections::{HashMap, HashSet, LinkedList},
+    fs::File,
+    io::{BufRead, BufReader, Read, Write},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
+    ptr::hash,
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::{mpsc, mpsc::Receiver, mpsc::Sender};
 
 use super::{file_watcher::FileWatcher, BlockingEvent, CarrierEvent, FileAction, SyncEvent};
-use crate::{config::Config, fs, fs::FileInfo, /*network::peer::Peer, network::server::Server*/};
+use crate::{config::Config, fs, fs::FileInfo, IronCarrierError};
 
 use message_io::{
     network::Endpoint,
@@ -75,7 +77,6 @@ impl SynchronizationSession {
             .collect();
 
         self.sync_queue = actions;
-        dbg!(&self.sync_queue);
     }
 
     pub fn get_next_action(&mut self) -> Option<(CarrierEvent, Option<Endpoint>)> {
@@ -98,7 +99,7 @@ impl SynchronizationSession {
         all_origins.insert(Origin::Initiator);
 
         consolidated_index.retain(|file, files| {
-            files.len() <= self.current_storage_index.len()
+            files.len() < self.current_storage_index.len()
                 || files.values().any(|w| file.is_out_of_sync(w))
         });
 
@@ -134,7 +135,10 @@ impl SynchronizationSession {
                                     Some(*peer),
                                 )
                             } else {
-                                (CarrierEvent::SendFile((*source_file).clone()), Some(*peer))
+                                (
+                                    CarrierEvent::SendFile((*source_file).clone(), peer.addr()),
+                                    None,
+                                )
                             }
                         }),
                 );
@@ -165,7 +169,10 @@ impl SynchronizationSession {
                                     Some(*peer),
                                 )
                             } else {
-                                (CarrierEvent::SendFile((*source_file).clone()), Some(*peer))
+                                (
+                                    CarrierEvent::SendFile((*source_file).clone(), peer.addr()),
+                                    None,
+                                )
                             }
                         }),
                 );
@@ -179,12 +186,13 @@ impl SynchronizationSession {
 pub struct Synchronizer {
     config: Arc<Config>,
     state: SynchronizerState,
-    connected_peers: Vec<Endpoint>,
+    connected_peers: HashMap<SocketAddr, Endpoint>,
     // events_channel_receiver: Receiver<SyncEvent>,
     // file_watcher: FileWatcher,
     service_discovery: Option<ServiceDiscovery>,
     handler: NodeHandler<CarrierEvent>,
     session: Option<SynchronizationSession>,
+    file_handle: Option<File>,
 }
 
 impl Synchronizer {
@@ -207,8 +215,9 @@ impl Synchronizer {
             service_discovery,
             state: SynchronizerState::Idle,
             handler,
-            connected_peers: Vec::new(),
+            connected_peers: HashMap::new(),
             session: None,
+            file_handle: None,
         };
 
         s.start(listener)?;
@@ -244,7 +253,7 @@ impl Synchronizer {
                 match net_event {
                     NetEvent::Connected(endpoint, _) => {
                         log::debug!("Peer connected:  {}", endpoint);
-                        self.connected_peers.push(endpoint);
+                        self.connected_peers.insert(endpoint.addr(), endpoint);
                     } // Used for explicit connections.
                     NetEvent::Accepted(_endpoint, _listener) => {}
                     NetEvent::Message(endpoint, data) => {
@@ -257,7 +266,7 @@ impl Synchronizer {
                     }
                     NetEvent::Disconnected(endpoint) => {
                         log::debug!("Peer disconnected:  {}", endpoint);
-                        self.connected_peers.retain(|p| *p != endpoint);
+                        self.connected_peers.remove(&endpoint.addr());
                         if self.connected_peers.is_empty()
                             && self.state == SynchronizerState::Synchronizing
                         {
@@ -276,7 +285,7 @@ impl Synchronizer {
     }
 
     fn process_event(&mut self, event: CarrierEvent, endpoint: Option<Endpoint>) {
-        log::debug!("received event {:?}", event);
+        // log::debug!("received event {:?}", event);
         match event {
             CarrierEvent::StartFullSync => {
                 log::info!("Received StartAsync event");
@@ -302,6 +311,10 @@ impl Synchronizer {
                         }
                     }
                 }
+            }
+            CarrierEvent::EndFullSync => {
+                self.session = None;
+                self.set_state(SynchronizerState::Idle);
             }
             CarrierEvent::BuildStorageIndex(storage) => {
                 log::info!("Building index for {}", storage);
@@ -352,8 +365,7 @@ impl Synchronizer {
                         self.broadcast_message(CarrierEvent::BuildStorageIndex(storage));
                     }
                     None => {
-                        // TODO: finish sync
-                        todo!()
+                        self.handler.signals().send(CarrierEvent::EndFullSync);
                     }
                 }
             }
@@ -369,111 +381,58 @@ impl Synchronizer {
                 session.set_storage_index(origin, index);
 
                 if session.received_all_indexes() {
-                    // self.handler.signals().send(CarrierEvent::BuildSyncQueue);
                     session.build_sync_queue();
+                    self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                 }
             }
             CarrierEvent::ConsumeSyncQueue => {
                 let session = self.session.as_mut().unwrap();
                 let action = session.get_next_action();
                 match action {
-                    Some((event, endpoint)) => {}
+                    Some((event, endpoint)) => match endpoint {
+                        Some(endpoint) => self.send_message(event, endpoint),
+                        None => self.handler.signals().send(event),
+                    },
                     None => {
                         self.handler.signals().send(CarrierEvent::SyncNextStorage);
                     }
                 }
             }
             CarrierEvent::DeleteFile(file) => {
-                fs::delete_file(&file, &self.config);
+                if let Err(err) = fs::delete_file(&file, &self.config) {
+                    log::error!("Failed to delete file {}", err);
+                }
             }
-            CarrierEvent::SendFile(_) => todo!(),
-            CarrierEvent::RequestFile(_) => todo!(),
-            CarrierEvent::PrepareFileTransfer(_, _) => todo!(),
-            CarrierEvent::WriteFileChunk(_, _, _) => todo!(),
-            CarrierEvent::EndFileTransfer(_) => todo!(),
-        }
-    }
-
-    fn convert_to_actions(
-        &self,
-        files: &HashMap<&Origin, &FileInfo>,
-    ) -> Vec<(CarrierEvent, Option<Endpoint>)> {
-        let mut actions = Vec::new();
-        let (source, source_file) = files
-            .iter()
-            .max_by(|(_, a), (_, b)| {
-                a.deleted_at
-                    .unwrap_or(a.modified_at.unwrap())
-                    .cmp(&b.deleted_at.unwrap_or(b.modified_at.unwrap()))
-            })
-            .unwrap();
-
-        match *source {
-            Origin::Initiator => {
-                actions.extend(
-                    self.connected_peers
-                        .iter()
-                        .filter(|peer| match files.get(&Origin::Peer(**peer)) {
-                            Some(f) => f.is_out_of_sync(source_file),
-                            None => !source_file.is_deleted(),
-                        })
-                        .map(|peer| {
-                            if source_file.is_deleted() {
-                                (
-                                    CarrierEvent::DeleteFile((*source_file).clone()),
-                                    Some(*peer),
-                                )
-                            } else {
-                                (CarrierEvent::SendFile((*source_file).clone()), Some(*peer))
-                            }
-                        }),
-                );
+            CarrierEvent::SendFile(file_info, peer_addr) => {
+                self.send_file(file_info, self.connected_peers[&peer_addr]);
+                self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
             }
-            Origin::Peer(endpoint) => {
-                actions.push(if source_file.is_deleted() {
-                    (CarrierEvent::DeleteFile((*source_file).clone()), None)
-                } else {
-                    (
-                        CarrierEvent::RequestFile((*source_file).clone()),
-                        Some(*endpoint),
-                    )
-                });
-                actions.extend(
-                    self.connected_peers
-                        .iter()
-                        .filter(|peer| {
-                            **peer != *endpoint
-                                && match files.get(&Origin::Peer(**peer)) {
-                                    Some(f) => f.is_out_of_sync(source_file),
-                                    None => !source_file.is_deleted(),
-                                }
-                        })
-                        .map(|peer| {
-                            if source_file.is_deleted() {
-                                (
-                                    CarrierEvent::DeleteFile((*source_file).clone()),
-                                    Some(*peer),
-                                )
-                            } else {
-                                (CarrierEvent::SendFile((*source_file).clone()), Some(*peer))
-                            }
-                        }),
-                );
+            CarrierEvent::RequestFile(file_info) => {
+                self.send_file(file_info, endpoint.unwrap());
+                self.send_message(CarrierEvent::ConsumeSyncQueue, endpoint.unwrap());
+            }
+            CarrierEvent::PrepareFileTransfer(file, chunks) => {
+                self.file_handle = Some(fs::get_temp_file(&file, &self.config).unwrap());
+            }
+            CarrierEvent::WriteFileChunk(chunk, bytes) => {
+                self.file_handle.as_mut().unwrap().write_all(&bytes);
+            }
+            CarrierEvent::EndFileTransfer(file) => {
+                self.file_handle = None;
+                fs::flush_temp_file(&file, &self.config).unwrap();
             }
         }
-
-        return actions;
     }
 
     fn send_message(&self, message: CarrierEvent, endpoint: Endpoint) {
         let data = bincode::serialize(&message).unwrap();
         self.handler.network().send(endpoint, &data);
-        log::debug!("sent message {:?} to {:?}", message, endpoint);
+        // log::debug!("sent message {:?} to {:?}", message, endpoint);
     }
 
     fn broadcast_message(&self, message: CarrierEvent) {
         let data = bincode::serialize(&message).unwrap();
-        for endpoint in &self.connected_peers {
+        for (_, endpoint) in &self.connected_peers {
             self.handler.network().send(*endpoint, &data);
         }
     }
@@ -491,6 +450,36 @@ impl Synchronizer {
                 true
             }
         }
+    }
+
+    fn send_file(&self, file_info: FileInfo, endpoint: Endpoint) -> crate::Result<()> {
+        let chunks = (file_info.size.unwrap() / 65000) + 1;
+        let file_path = file_info.get_absolute_path(&self.config)?;
+        self.send_message(
+            CarrierEvent::PrepareFileTransfer(file_info.clone(), chunks),
+            endpoint,
+        );
+
+        let mut file = std::fs::File::open(file_path)?;
+
+        let mut buf = [0u8; 65000];
+        let mut chunk = 0;
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    chunk += 1;
+                    self.send_message(
+                        CarrierEvent::WriteFileChunk(chunk, Vec::from(&buf[..n])),
+                        endpoint,
+                    );
+                }
+                Err(_) => break,
+            }
+        }
+
+        self.send_message(CarrierEvent::EndFileTransfer(file_info), endpoint);
+        Ok(())
     }
 
     fn get_peers(&self) -> std::collections::HashSet<SocketAddr> {
