@@ -1,57 +1,62 @@
 //! Handle synchronization
 
 mod file_watcher;
-pub(crate) mod file_watcher_event_blocker;
+mod synchronization_session;
 pub mod synchronizer;
 
 use crate::fs::FileInfo;
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-use tokio::sync::Notify;
 
 pub use synchronizer::Synchronizer;
 
-pub type BlockingEvent = (PathBuf, SocketAddr);
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub(crate) enum SyncType {
+    Full,
+    Partial,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum QueueEventType {
+    Signal,
+    Peer(u64),
+    Broadcast,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum CarrierEvent {
-    StartFullSync,
-    StartSync,
-    EndFullSync,
-    SyncRequestAccepted,
-    SyncRequestRejected,
+    StartSync(SyncType),
+    EndSync,
+    CloseConnections,
+    SetPeerId(u64),
+    StartSyncReply(bool),
     SyncNextStorage,
 
     BuildStorageIndex(String),
-    SetStorageIndex(Vec<FileInfo>),
+    SetStorageIndex(Option<Vec<FileInfo>>),
     ConsumeSyncQueue,
 
     DeleteFile(FileInfo),
-    SendFile(FileInfo, SocketAddr),
+    SendFile(FileInfo, u64),
+    BroadcastFile(FileInfo),
     RequestFile(FileInfo),
     PrepareFileTransfer(FileInfo, u64),
     WriteFileChunk(u64, Vec<u8>),
     EndFileTransfer(FileInfo),
+    MoveFile(FileInfo, FileInfo),
+
+    FileWatcherEvent(WatcherEvent),
 }
 
-/// Synchronization Event Types
-#[derive(Debug)]
-pub enum SyncEvent {
-    /// Add peer to synchronization list
-    EnqueueSyncToPeer(SocketAddr, bool),
-
-    /// Peer signaled to start synchronization
-    PeerRequestedSync(SocketAddr, Arc<Notify>, Arc<Notify>),
-
-    /// Broadcast event to all configurated peers
-    BroadcastToAllPeers(FileAction, Vec<SocketAddr>),
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) enum WatcherEvent {
+    Created(FileInfo),
+    Updated(FileInfo),
+    Moved(FileInfo, FileInfo),
+    Deleted(FileInfo),
 }
 
-#[derive(Debug)]
-pub enum FileAction {
-    Create(FileInfo),
-    Update(FileInfo),
-    Move(FileInfo, FileInfo),
-    Remove(FileInfo),
-    Request(FileInfo),
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub(crate) enum Origin {
+    Initiator,
+    Peer(u64),
 }

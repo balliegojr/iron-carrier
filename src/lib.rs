@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod config;
-mod crypto;
 mod deletion_tracker;
 mod fs;
 // mod network;
+mod hash_helper;
 pub mod sync;
 
 /// Result<T, IronCarrierError> alias
@@ -72,8 +72,9 @@ impl From<bincode::Error> for IronCarrierError {
     }
 }
 
-pub async fn run(config: config::Config) -> Result<()> {
-    let mut s = sync::Synchronizer::new(config);
-    // s.start().await
-    Ok(())
+pub fn run(config: config::Config) -> crate::Result<()> {
+    match sync::Synchronizer::new(config) {
+        Ok(_) => Ok(()),
+        Err(err) => Err(err),
+    }
 }

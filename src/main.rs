@@ -50,7 +50,7 @@ async fn main() {
         }
     };
 
-    if let Err(e) = iron_carrier::run(config).await {
+    if let Err(e) = iron_carrier::run(config) {
         log::error!("{}", e);
         exit(-1)
     };

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, thread, time::Duration};
 
 use rand::Rng;
 
@@ -25,14 +25,22 @@ async fn prepare_files() -> ([u8; 1024], [u8; 1024]) {
     (contents_a, contents_b)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn test_iron_carrier() {
+    stderrlog::new()
+        .verbosity(5)
+        .timestamp(stderrlog::Timestamp::Second)
+        .init()
+        .unwrap();
+
     let (contents_a, contents_b) = prepare_files().await;
 
     let config_a = iron_carrier::config::Config::new_from_str(
         r#"
 port=8090
 delay_watcher_events=1
+enable_service_discovery=false
+peers = ["127.0.0.1:8091"]
 [paths]
 a = "./tmp/peer_a"
 "#
@@ -44,17 +52,22 @@ a = "./tmp/peer_a"
         r#"
 port=8091
 delay_watcher_events=1
+enable_service_discovery=false
+peers = ["127.0.0.1:8090"]
 [paths]
 a = "./tmp/peer_b"
 "#
         .to_string(),
     )
     .unwrap();
+    thread::spawn(move || {
+        iron_carrier::run(config_a);
+    });
+    thread::spawn(move || {
+        iron_carrier::run(config_b);
+    });
 
-    tokio::spawn(async move { iron_carrier::run(config_a).await });
-    tokio::spawn(async move { iron_carrier::run(config_b).await });
-
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
 
     assert_eq!(10, std::fs::read_dir("tmp/peer_a").unwrap().count());
     assert_eq!(10, std::fs::read_dir("tmp/peer_b").unwrap().count());
@@ -72,9 +85,12 @@ a = "./tmp/peer_b"
     }
 
     let _ = tokio::fs::write("tmp/peer_a/c_file_1", &contents_a).await;
-    tokio::time::sleep(Duration::from_secs(15)).await;
+    let _ = tokio::fs::remove_file("tmp/peer_a/a_file_1").await;
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
     assert_eq!(
         &contents_a[..],
         &std::fs::read("./tmp/peer_b/c_file_1").unwrap()[..]
     );
+    assert!(!PathBuf::from("tmp/peer_b/a_file_1").exists());
 }

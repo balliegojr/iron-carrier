@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ord,
-    collections::HashMap,
     fs::{self, File},
     hash::Hash,
     path::{Path, PathBuf},
@@ -81,20 +80,6 @@ impl FileInfo {
             || self.size != other.size
     }
 
-    pub fn is_local_file_newer(&self, config: &Config) -> bool {
-        if self.deleted_at.is_some() {
-            true
-        } else {
-            self.get_absolute_path(config)
-                .ok()
-                .and_then(|path| path.metadata().ok())
-                .and_then(|metadata| metadata.modified().ok())
-                .and_then(system_time_to_secs)
-                .and_then(|created_at| Some(created_at > self.modified_at.unwrap()))
-                .unwrap_or(false)
-        }
-    }
-
     /// Returns the absolute path of the file for this file system  
     /// Using the provided root path for the alias in [Config]
     pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
@@ -152,35 +137,6 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
         .map(|duration| duration.as_secs())
         .ok()
 }
-
-/// This function returns the result of [walk_path] along with the hash for the file list
-// pub fn  get_files_with_hash<'a>(path: &Path, alias: &'a str) -> crate::Result<(u64, Vec<FileInfo>)> {
-//     let files = walk_path(path, alias)?;
-//     let hash = crate::crypto::calculate_hash(&files);
-
-//     log::debug!(
-//         "found {} files for alias {} with hash {}",
-//         files.len(),
-//         alias,
-//         hash
-//     );
-
-//     return Ok((hash, files));
-// }
-
-/// This function will return a [HashMap] containing the alias as key and the hash as value
-// pub fn get_hash_for_alias(
-//     alias_path: &HashMap<String, PathBuf>,
-// ) -> crate::Result<HashMap<String, u64>> {
-//     let mut result = HashMap::new();
-
-//     for (alias, path) in alias_path {
-//         let (hash, _) = get_files_with_hash(path.as_path(), alias)?;
-//         result.insert(alias.to_string(), hash);
-//     }
-
-//     Ok(result)
-// }
 
 /// Returns a sorted vector with the entire folder structure for the given path
 ///
@@ -242,7 +198,7 @@ pub fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     Ok(())
 }
 
-pub async fn move_file<'b>(
+pub fn move_file<'b>(
     src_file: &'b FileInfo,
     dest_file: &'b FileInfo,
     config: &Config,
@@ -252,7 +208,7 @@ pub async fn move_file<'b>(
 
     log::debug!("moving file {:?} to {:?}", src_path, dest_path);
 
-    tokio::fs::rename(src_path, dest_path).await?;
+    std::fs::rename(src_path, dest_path)?;
 
     Ok(())
 }
@@ -325,8 +281,9 @@ pub fn is_special_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::hash_helper::calculate_hash;
+
     use super::*;
-    use crate::crypto::calculate_hash;
 
     #[test]
     fn can_read_local_files() -> Result<(), Box<dyn std::error::Error>> {
@@ -346,18 +303,20 @@ mod tests {
 
     #[test]
     fn calc_hash() {
-        let file = FileInfo {
+        let mut file = FileInfo {
             alias: "a".to_owned(),
-            created_at: Some(0),
-            modified_at: Some(0),
             path: Path::new("./some_file_path").to_owned(),
-            size: Some(100),
+            created_at: None,
+            modified_at: None,
+            size: None,
             deleted_at: None,
             permissions: 0,
         };
 
-        let files = vec![file];
-        assert_eq!(calculate_hash(&files), 1762848629165523426);
+        assert_eq!(calculate_hash(&file), 17615170043123433502);
+
+        file.path = Path::new("./some_other_file").to_owned();
+        assert_ne!(calculate_hash(&file), 17615170043123433502);
     }
 
     #[test]
@@ -368,35 +327,36 @@ mod tests {
     }
 
     #[test]
-    fn is_local_file_newer() {
-        std::fs::create_dir_all("./tmp/fs").unwrap();
-
-        let path = PathBuf::from("./tmp/fs/mtime");
-        std::fs::File::create(&path).unwrap();
-        filetime::set_file_mtime(
-            &path,
-            filetime::FileTime::from_system_time(SystemTime::UNIX_EPOCH),
-        )
-        .unwrap();
-
-        let file = FileInfo {
-            alias: "a".to_string(),
-            modified_at: system_time_to_secs(SystemTime::now()),
-            created_at: None,
+    fn test_is_out_of_sync() {
+        let mut file_info = FileInfo {
+            alias: "a".to_owned(),
+            created_at: Some(0),
+            modified_at: Some(0),
+            path: Path::new("./some_file_path").to_owned(),
+            size: Some(100),
             deleted_at: None,
-            path: PathBuf::from("mtime"),
-            size: None,
             permissions: 0,
         };
 
-        let config = Config::new_from_str(
-            "
-        [paths]
-        a = \"./tmp/fs\""
-                .to_string(),
-        )
-        .unwrap();
+        let mut other_file = file_info.clone();
+        assert!(!file_info.is_out_of_sync(&other_file));
 
-        assert!(!file.is_local_file_newer(&config));
+        other_file.modified_at = Some(1);
+        assert!(file_info.is_out_of_sync(&other_file));
+
+        let mut other_file = file_info.clone();
+        other_file.size = Some(101);
+
+        assert!(file_info.is_out_of_sync(&other_file));
+
+        let mut other_file = file_info.clone();
+        other_file.deleted_at = Some(1);
+        assert!(file_info.is_out_of_sync(&other_file));
+
+        let mut other_file = file_info.clone();
+        other_file.deleted_at = Some(10);
+        file_info.deleted_at = Some(1);
+
+        assert!(!file_info.is_out_of_sync(&other_file));
     }
 }
