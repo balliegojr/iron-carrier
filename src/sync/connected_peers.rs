@@ -70,4 +70,7 @@ impl ConnectedPeers {
     pub fn get_all_identified_endpoints(&self) -> Vec<Endpoint> {
         self.id_endpoint.values().cloned().collect()
     }
+    pub fn has_connected_peers(&self) -> bool {
+        !self.id_endpoint.is_empty()
+    }
 }

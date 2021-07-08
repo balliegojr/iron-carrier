@@ -88,7 +88,6 @@ impl Synchronizer {
             Duration::from_secs_f64(wait),
         );
 
-        // Listen for TCP, UDP and WebSocket messages at the same time.
         self.handler
             .network()
             .listen(
@@ -99,40 +98,38 @@ impl Synchronizer {
 
         // Read incoming network events.
         listener.for_each(move |event| match event {
-            node::NodeEvent::Network(net_event) => {
-                match net_event {
-                    NetEvent::Connected(endpoint, _) | NetEvent::Accepted(endpoint, _) => {
-                        log::debug!("Peer connected:  {}", endpoint);
-                        send_message(
-                            &self.handler,
-                            &CarrierEvent::SetPeerId(self.node_id),
-                            endpoint,
-                        );
-                    }
-                    NetEvent::Message(endpoint, data) => {
-                        match bincode::deserialize(data) {
-                            Ok(message) => {
-                                if let Err(err) = self.process_event(message, Some(endpoint)) {
-                                    log::error!("Error processing event: {}", err);
-                                }
-                            }
-                            Err(err) => {
-                                log::error!("Invalid message: {:?}", err);
-                            }
-                        };
-                    }
-                    NetEvent::Disconnected(endpoint) => {
-                        log::debug!("Peer disconnected:  {}", endpoint);
-                        if let Some(session) = self.session_state.as_mut() {
-                            if let Some(id) = self.connected_peers.get_peer_id(endpoint) {
-                                session.remove_peer_from_session(id)
+            node::NodeEvent::Network(net_event) => match net_event {
+                NetEvent::Connected(endpoint, _) | NetEvent::Accepted(endpoint, _) => {
+                    log::debug!("Peer connected:  {}", endpoint);
+                    send_message(
+                        &self.handler,
+                        &CarrierEvent::SetPeerId(self.node_id),
+                        endpoint,
+                    );
+                }
+                NetEvent::Message(endpoint, data) => {
+                    match bincode::deserialize(data) {
+                        Ok(message) => {
+                            if let Err(err) = self.process_event(message, Some(endpoint)) {
+                                log::error!("Error processing event: {}", err);
                             }
                         }
-                        self.connected_peers.remove_endpoint(endpoint);
-                        // TODO: pause sync when there are no more connected peers
-                    }
+                        Err(err) => {
+                            log::error!("Invalid message: {:?}", err);
+                        }
+                    };
                 }
-            }
+                NetEvent::Disconnected(endpoint) => {
+                    log::debug!("Peer disconnected:  {}", endpoint);
+                    if let Some(session) = self.session_state.as_mut() {
+                        if let Some(id) = self.connected_peers.get_peer_id(endpoint) {
+                            session.remove_peer_from_session(id)
+                        }
+                    }
+                    self.connected_peers.remove_endpoint(endpoint);
+                    self.abort_sync_if_no_more_peers();
+                }
+            },
             node::NodeEvent::Signal(signal_event) => {
                 if let Err(err) = self.process_event(signal_event, None) {
                     log::error!("Error processing event: {}", err);
@@ -469,6 +466,13 @@ impl Synchronizer {
         };
 
         Ok(())
+    }
+
+    fn abort_sync_if_no_more_peers(&mut self) {
+        if !self.connected_peers.has_connected_peers() {
+            self.events_queue.clear();
+            self.handler.signals().send(CarrierEvent::EndSync);
+        }
     }
 
     fn add_queue_event(&mut self, event: CarrierEvent, event_type: QueueEventType) {
