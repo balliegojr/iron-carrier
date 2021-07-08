@@ -2,8 +2,7 @@ use clap::{App, Arg};
 use iron_carrier::config::Config;
 use std::process::exit;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let matches = App::new("Iron Carrier")
         .version("0.1")
         .author("Ilson Roberto Balliego Junior <ilson.balliego@gmail.com>")

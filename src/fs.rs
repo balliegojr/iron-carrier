@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ord,
-    fs::{self, File},
+    fs,
     hash::Hash,
     path::{Path, PathBuf},
     time::Duration,
@@ -213,36 +213,15 @@ pub fn move_file<'b>(
     Ok(())
 }
 
-pub fn get_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<File> {
-    let mut temp_path = file_info.get_absolute_path(config)?;
-    temp_path.set_extension("ironcarrier");
-
-    if let Some(parent) = temp_path.parent() {
-        if !parent.exists() {
-            log::debug!("creating folders {:?}", parent);
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-
-    log::debug!("creating temp file {:?}", temp_path);
-    Ok(File::create(&temp_path)?)
-}
-
-pub fn flush_temp_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
-    let final_path = file_info.get_absolute_path(config)?;
-    let mut temp_path = final_path.clone();
-
-    temp_path.set_extension("ironcarrier");
-
-    log::debug!("moving temp file to {:?}", final_path);
-    std::fs::rename(&temp_path, &final_path)?;
+pub fn fix_times_and_permissions(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
+    let file_path = file_info.get_absolute_path(config)?;
 
     log::debug!("setting file modification time");
     let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.modified_at.unwrap());
-    filetime::set_file_mtime(&final_path, filetime::FileTime::from_system_time(mod_time))?;
+    filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mod_time))?;
 
     if file_info.permissions > 0 {
-        set_file_permissions(&final_path, file_info.permissions)?;
+        set_file_permissions(&file_path, file_info.permissions)?;
     }
 
     Ok(())
@@ -260,13 +239,13 @@ fn get_permissions(metadata: &std::fs::Metadata) -> u32 {
 }
 
 #[cfg(unix)]
-fn set_file_permissions(path: &Path, perm: u32) -> tokio::io::Result<()> {
+fn set_file_permissions(path: &Path, perm: u32) -> std::io::Result<()> {
     let perm = std::fs::Permissions::from_mode(perm);
     std::fs::set_permissions(path, perm)
 }
 
 #[cfg(not(unix))]
-fn set_file_permissions(path: &Path, perm: u32) -> tokio::io::Result<()> {
+fn set_file_permissions(path: &Path, perm: u32) -> std::io::Result<()> {
     //TODO: figure out how to handle windows permissions
     Ok(())
 }
@@ -281,6 +260,8 @@ pub fn is_special_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+
     use crate::hash_helper::calculate_hash;
 
     use super::*;

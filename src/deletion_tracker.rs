@@ -5,8 +5,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use tokio::io::AsyncWriteExt;
-
 pub(crate) struct DeletionTracker {
     log_path: PathBuf,
 }
@@ -94,39 +92,32 @@ impl DeletionTracker {
             .collect()
     }
 
-    pub async fn add_entry(&self, path: &Path) -> crate::Result<()> {
+    pub fn add_entry(&self, path: &Path) -> crate::Result<()> {
         log::debug!("adding entry to log file: {:?}", path);
-        let mut log_file = tokio::fs::OpenOptions::new()
+        let mut log_file = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
-            .open(&self.log_path)
-            .await?;
+            .open(&self.log_path)?;
 
-        log_file
-            .write_all(&self.create_line(path, &SystemTime::now()).as_bytes())
-            .await?;
-
-        log_file.flush().await?;
+        log_file.write_all(&self.create_line(path, &SystemTime::now()).as_bytes())?;
+        log_file.flush()?;
 
         Ok(())
     }
 
-    pub async fn remove_entry(&self, path: &Path) -> crate::Result<()> {
+    pub fn remove_entry(&self, path: &Path) -> crate::Result<()> {
         if !self.log_path.exists() {
             return Ok(());
         }
 
         log::debug!("removing entry {:?} from log", path);
-        let mut log_file = tokio::fs::OpenOptions::new()
+        let mut log_file = std::fs::OpenOptions::new()
             .append(true)
-            .open(&self.log_path)
-            .await?;
+            .open(&self.log_path)?;
 
-        log_file
-            .write_all(&self.create_line(path, &SystemTime::UNIX_EPOCH).as_bytes())
-            .await?;
+        log_file.write_all(&self.create_line(path, &SystemTime::UNIX_EPOCH).as_bytes())?;
 
-        log_file.flush().await?;
+        log_file.flush()?;
 
         Ok(())
     }

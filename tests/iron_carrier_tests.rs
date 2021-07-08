@@ -1,13 +1,15 @@
+use std::io::Write;
+use std::iter::Iterator;
+use std::path::Path;
 use std::{path::PathBuf, thread, time::Duration};
 
+use bytes::Buf;
 use rand::Rng;
 
-async fn prepare_files() -> ([u8; 1024], [u8; 1024]) {
-    let _ = tokio::fs::remove_dir_all("tmp/peer_a").await;
-    let _ = tokio::fs::remove_dir_all("tmp/peer_b").await;
-
-    let _ = tokio::fs::create_dir_all("tmp/peer_a").await;
-    let _ = tokio::fs::create_dir_all("tmp/peer_b").await;
+fn prepare_files() -> ([u8; 1024], [u8; 1024]) {
+    cleanup();
+    let _ = std::fs::create_dir_all("tmp/peer_a");
+    let _ = std::fs::create_dir_all("tmp/peer_b");
 
     let mut rng = rand::thread_rng();
 
@@ -17,23 +19,34 @@ async fn prepare_files() -> ([u8; 1024], [u8; 1024]) {
     let mut contents_b = [0u8; 1024];
     rng.fill(&mut contents_b);
 
-    for file in 1..=5 {
-        let _ = tokio::fs::write(format!("tmp/peer_a/a_file_{}", file), &contents_a).await;
-        let _ = tokio::fs::write(format!("tmp/peer_b/b_file_{}", file), &contents_b).await;
+    for file in 1..=2 {
+        let _ = std::fs::write(format!("tmp/peer_a/a_file_{}", file), &contents_a);
+        let _ = std::fs::write(format!("tmp/peer_b/b_file_{}", file), &contents_b);
     }
 
     (contents_a, contents_b)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
-async fn test_iron_carrier() {
+fn cleanup() {
+    let _ = std::fs::remove_dir_all("tmp/peer_a");
+    let _ = std::fs::remove_dir_all("tmp/peer_b");
+}
+
+fn append_content<P: AsRef<Path>>(path: P, content: &[u8]) {
+    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    f.write(content).unwrap();
+}
+
+#[test]
+fn test_iron_carrier() {
     stderrlog::new()
-        .verbosity(5)
+        .verbosity(4)
+        .module("iron_carrier")
         .timestamp(stderrlog::Timestamp::Second)
         .init()
         .unwrap();
 
-    let (contents_a, contents_b) = prepare_files().await;
+    let (contents_a, contents_b) = prepare_files();
 
     let config_a = iron_carrier::config::Config::new_from_str(
         r#"
@@ -67,12 +80,12 @@ a = "./tmp/peer_b"
         iron_carrier::run(config_b);
     });
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    thread::sleep(Duration::from_secs(5));
 
-    assert_eq!(10, std::fs::read_dir("tmp/peer_a").unwrap().count());
-    assert_eq!(10, std::fs::read_dir("tmp/peer_b").unwrap().count());
+    assert_eq!(4, std::fs::read_dir("tmp/peer_a").unwrap().count());
+    assert_eq!(4, std::fs::read_dir("tmp/peer_b").unwrap().count());
 
-    for file in 1..=5 {
+    for file in 1..=2 {
         assert_eq!(
             &contents_b[..],
             &std::fs::read(format!("tmp/peer_a/b_file_{}", file)).unwrap()[..]
@@ -84,13 +97,23 @@ a = "./tmp/peer_b"
         );
     }
 
-    let _ = tokio::fs::write("tmp/peer_a/c_file_1", &contents_a).await;
-    let _ = tokio::fs::remove_file("tmp/peer_a/a_file_1").await;
+    let _ = std::fs::write("tmp/peer_a/c_file_1", &contents_a);
+    let _ = std::fs::remove_file("tmp/peer_a/a_file_1");
+    let _ = std::fs::write("tmp/peer_a/c_file_2", b"some random content");
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    thread::sleep(Duration::from_secs(2));
+
+    append_content("tmp/peer_a/c_file_2", b" more content to the file");
+
+    thread::sleep(Duration::from_secs(10));
     assert_eq!(
         &contents_a[..],
         &std::fs::read("./tmp/peer_b/c_file_1").unwrap()[..]
+    );
+
+    assert_eq!(
+        b"some random content more content to the file",
+        &std::fs::read("./tmp/peer_b/c_file_2").unwrap()[..]
     );
     assert!(!PathBuf::from("tmp/peer_b/a_file_1").exists());
 }
