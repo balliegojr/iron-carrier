@@ -142,6 +142,14 @@ impl FileTransferMan {
         endpoint: Endpoint,
     ) -> crate::Result<()> {
         let file_path = file_info.get_absolute_path(&self.config)?;
+
+        if let Some(parent) = file_path.parent() {
+            if !parent.exists() {
+                log::debug!("creating folders {:?}", parent);
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
         let mut file_handler = OpenOptions::new()
             .write(true)
             .create(true)
