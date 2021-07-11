@@ -9,23 +9,20 @@ use std::{
 use super::{
     connected_peers::ConnectedPeers, file_transfer_man::FileTransferMan, file_watcher::FileWatcher,
     send_message, synchronization_session::SynchronizationSession, CarrierEvent, Origin,
-    QueueEventType,
+    QueueEventType, COMMAND_MESSAGE, STREAM_MESSAGE,
 };
 use crate::{
     config::Config,
     fs::{self, FileInfo},
     hash_helper,
-    sync::SyncType,
+    sync::{broadcast_message_to, SyncType, TRANSPORT_PROTOCOL},
 };
 
 use message_io::{
     network::Endpoint,
     node::{self, NodeHandler},
 };
-use message_io::{
-    network::{NetEvent, Transport},
-    node::NodeListener,
-};
+use message_io::{network::NetEvent, node::NodeListener};
 
 use rand::Rng;
 
@@ -90,6 +87,7 @@ impl Synchronizer {
         log::debug!("starting syncronizer");
         let mut rng = rand::thread_rng();
         let wait = rng.gen_range(3.0..5.0);
+
         self.handler.signals().send_with_timer(
             CarrierEvent::StartSync(SyncType::Full),
             Duration::from_secs_f64(wait),
@@ -97,37 +95,56 @@ impl Synchronizer {
 
         self.handler
             .network()
-            .listen(
-                Transport::FramedTcp,
-                format!("0.0.0.0:{}", self.config.port),
-            )
+            .listen(TRANSPORT_PROTOCOL, format!("0.0.0.0:{}", self.config.port))
             .unwrap();
 
-        // Read incoming network events.
         listener.for_each(move |event| match event {
             node::NodeEvent::Network(net_event) => match net_event {
                 NetEvent::Connected(endpoint, _) | NetEvent::Accepted(endpoint, _) => {
-                    log::debug!("Peer connected:  {}", endpoint);
+                    // Whenever we connect to a peer or accept a new connection, we send the node_id of this peer
+                    log::info!("Peer connected:  {}", endpoint);
                     send_message(
                         &self.handler,
                         &CarrierEvent::SetPeerId(self.node_id),
                         endpoint,
                     );
                 }
-                NetEvent::Message(endpoint, data) => {
-                    match bincode::deserialize(data) {
-                        Ok(message) => {
-                            if let Err(err) = self.process_event(message, Some(endpoint)) {
-                                log::error!("Error processing event: {}", err);
+                // When we receive a network message, we first verify it's prefix
+                // This is necessary to avoid calling bincode serde for every file block,
+                // which was hurting performance really bad
+                NetEvent::Message(endpoint, data) => match data[0] {
+                    COMMAND_MESSAGE => {
+                        match bincode::deserialize(&data[1..]) {
+                            Ok(message) => {
+                                if let Err(err) = self.handle_carrier_event(message, Some(endpoint))
+                                {
+                                    log::error!("Error processing event: {}", err);
+                                }
                             }
+                            Err(err) => {
+                                log::error!("Invalid message: {:?}", err);
+                            }
+                        };
+                    }
+                    STREAM_MESSAGE => {
+                        let usize_size = std::mem::size_of::<usize>();
+                        let file_hash = bincode::deserialize(&data[1..9]).unwrap();
+                        let block_index = bincode::deserialize(&data[9..9 + usize_size]).unwrap();
+                        let buf = &data[17..];
+                        if let Err(err) =
+                            self.file_transfer_man
+                                .handle_write_block(file_hash, block_index, buf)
+                        {
+                            log::error!("{}", err);
                         }
-                        Err(err) => {
-                            log::error!("Invalid message: {:?}", err);
-                        }
-                    };
-                }
+                    }
+                    message_type => {
+                        log::error!("Invalid message prefix {:?}", message_type);
+                    }
+                },
                 NetEvent::Disconnected(endpoint) => {
-                    log::debug!("Peer disconnected:  {}", endpoint);
+                    // Whenever a peer disconnects, we remove it's id from the connected peers and verify if we should abort current sync
+                    log::info!("Peer disconnected:  {}", endpoint);
                     if let Some(session) = self.session_state.as_mut() {
                         if let Some(id) = self.connected_peers.get_peer_id(endpoint) {
                             session.remove_peer_from_session(id)
@@ -138,7 +155,7 @@ impl Synchronizer {
                 }
             },
             node::NodeEvent::Signal(signal_event) => {
-                if let Err(err) = self.process_event(signal_event, None) {
+                if let Err(err) = self.handle_carrier_event(signal_event, None) {
                     log::error!("Error processing event: {}", err);
                 }
             }
@@ -147,7 +164,7 @@ impl Synchronizer {
         Ok(())
     }
 
-    fn process_event(
+    fn handle_carrier_event(
         &mut self,
         event: CarrierEvent,
         endpoint: Option<Endpoint>,
@@ -258,7 +275,8 @@ impl Synchronizer {
                 }
 
                 if endpoint.is_none() {
-                    self.broadcast_message_to(
+                    broadcast_message_to(
+                        &self.handler,
                         CarrierEvent::EndSync,
                         self.connected_peers.get_all_identified_endpoints(),
                     );
@@ -332,7 +350,8 @@ impl Synchronizer {
                         self.handler
                             .signals()
                             .send(CarrierEvent::BuildStorageIndex(storage.clone()));
-                        self.broadcast_message_to(
+                        broadcast_message_to(
+                            &self.handler,
                             CarrierEvent::BuildStorageIndex(storage),
                             self.connected_peers.get_all_identified_endpoints(),
                         );
@@ -379,22 +398,27 @@ impl Synchronizer {
                             }
                         }
                         QueueEventType::Broadcast => {
-                            self.broadcast_message_to(
+                            broadcast_message_to(
+                                &self.handler,
                                 event,
                                 self.connected_peers.get_all_identified_endpoints(),
                             );
                             self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                         }
-                        QueueEventType::BroadcastAndWait => self.broadcast_message_to(
+                        QueueEventType::BroadcastAndWait => broadcast_message_to(
+                            &self.handler,
                             event,
                             self.connected_peers.get_all_identified_endpoints(),
                         ),
-                        QueueEventType::BroadcastExcept(to_be_ignored) => self
-                            .broadcast_message_to(
+                        QueueEventType::BroadcastExcept(to_be_ignored) => {
+                            broadcast_message_to(
+                                &self.handler,
                                 event,
                                 self.connected_peers
                                     .get_all_identified_endpoints_except(to_be_ignored),
-                            ),
+                            );
+                            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+                        }
                     },
                     None => {
                         let is_initiator = match self.node_status {
@@ -554,17 +578,6 @@ impl Synchronizer {
 
         if *c == 0 {
             self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
-        }
-    }
-
-    fn broadcast_message_to<'a, T: Iterator<Item = &'a Endpoint>>(
-        &'a self,
-        message: CarrierEvent,
-        endpoints: T,
-    ) {
-        let data = bincode::serialize(&message).unwrap();
-        for endpoint in endpoints {
-            self.handler.network().send(*endpoint, &data);
         }
     }
 

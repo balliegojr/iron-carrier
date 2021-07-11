@@ -7,10 +7,15 @@ mod synchronization_session;
 pub mod synchronizer;
 
 use crate::fs::FileInfo;
-use message_io::{network::Endpoint, node::NodeHandler};
+use message_io::{
+    network::{Endpoint, Transport},
+    node::NodeHandler,
+};
 use serde::{Deserialize, Serialize};
 
 pub use synchronizer::Synchronizer;
+
+const TRANSPORT_PROTOCOL: Transport = Transport::FramedTcp;
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub(crate) enum SyncType {
@@ -134,8 +139,25 @@ impl std::fmt::Display for FileSyncEvent {
         }
     }
 }
+const COMMAND_MESSAGE: u8 = 1;
+const STREAM_MESSAGE: u8 = 2;
 
+/// send a [message](`CarrierEvent`) to [endpoint](`message_io::network::Endpoint`) with message prefix 1
 fn send_message(handler: &NodeHandler<CarrierEvent>, message: &CarrierEvent, endpoint: Endpoint) {
-    let data = bincode::serialize(message).unwrap();
+    let mut data = vec![COMMAND_MESSAGE];
+    data.extend(bincode::serialize(message).unwrap());
     handler.network().send(endpoint, &data);
+}
+
+/// broadcast a [message](`CarrierEvent`) to given [endpoints](`message_io::network::Endpoint`) with message prefix 1
+fn broadcast_message_to<'a, T: Iterator<Item = &'a Endpoint>>(
+    handler: &NodeHandler<CarrierEvent>,
+    message: CarrierEvent,
+    endpoints: T,
+) {
+    let mut data = vec![COMMAND_MESSAGE];
+    data.extend(bincode::serialize(&message).unwrap());
+    for endpoint in endpoints {
+        handler.network().send(*endpoint, &data);
+    }
 }

@@ -3,12 +3,9 @@ use std::{
     net::SocketAddr,
 };
 
-use message_io::{
-    network::{Endpoint, Transport},
-    node::NodeHandler,
-};
+use message_io::{network::Endpoint, node::NodeHandler};
 
-use super::CarrierEvent;
+use super::{CarrierEvent, TRANSPORT_PROTOCOL};
 
 pub(crate) struct ConnectedPeers {
     id_endpoint: HashMap<u64, Endpoint>,
@@ -31,11 +28,7 @@ impl ConnectedPeers {
 
         for address in addresses.difference(&connected_peers) {
             log::debug!("Connecting to peer {:?}", address);
-            if let Err(_) = self
-                .handler
-                .network()
-                .connect(Transport::FramedTcp, *address)
-            {
+            if let Err(_) = self.handler.network().connect(TRANSPORT_PROTOCOL, *address) {
                 log::error!("Error connecting to peer");
             }
         }
@@ -63,9 +56,6 @@ impl ConnectedPeers {
         self.id_endpoint
             .iter()
             .find_map(|(id, e)| if *e == endpoint { Some(*id) } else { None })
-    }
-    pub fn get_all_peers_ids(&self) -> Vec<u64> {
-        self.id_endpoint.keys().cloned().collect()
     }
     pub fn get_all_identified_endpoints(&self) -> impl Iterator<Item = &Endpoint> {
         self.id_endpoint.values().into_iter()

@@ -14,6 +14,7 @@ use crate::{
     config::Config,
     fs::{self, FileInfo},
     hash_helper,
+    sync::STREAM_MESSAGE,
 };
 
 use super::{send_message, CarrierEvent, FileSyncEvent};
@@ -144,7 +145,7 @@ impl FileTransferMan {
                 self.handle_end_sync(file_hash, peer_id, received_file_events)
             }
             FileSyncEvent::WriteChunk(file_hash, block_index, buf) => {
-                self.handle_write_block(file_hash, block_index, buf)
+                self.handle_write_block(file_hash, block_index, &buf)
             }
         }
     }
@@ -226,8 +227,15 @@ impl FileTransferMan {
                 .file_handler
                 .read_exact_at(&mut buf[..bytes_to_read], position as u64)?;
 
-            let event = FileSyncEvent::WriteChunk(file_hash, index, buf);
-            send_message(&self.handler, &CarrierEvent::FileSyncEvent(event), endpoint);
+            // let event = FileSyncEvent::WriteChunk(file_hash, index, buf);
+            // send_message(&self.handler, &CarrierEvent::FileSyncEvent(event), endpoint);
+            Self::send_write_block(
+                &mut self.handler,
+                file_hash,
+                index,
+                &buf[..bytes_to_read],
+                endpoint,
+            );
         }
         send_message(
             &self.handler,
@@ -243,11 +251,25 @@ impl FileTransferMan {
         Ok(())
     }
 
-    fn handle_write_block(
+    fn send_write_block(
+        handler: &mut NodeHandler<CarrierEvent>,
+        file_hash: u64,
+        block_index: usize,
+        data: &[u8],
+        endpoint: Endpoint,
+    ) {
+        let mut buf = vec![STREAM_MESSAGE];
+        buf.extend(bincode::serialize(&file_hash).unwrap());
+        buf.extend(bincode::serialize(&block_index).unwrap());
+        buf.extend(data);
+        handler.network().send(endpoint, &buf);
+    }
+
+    pub fn handle_write_block(
         &mut self,
         file_hash: u64,
         block_index: usize,
-        buf: Vec<u8>,
+        buf: &[u8],
     ) -> crate::Result<()> {
         let file_sync = self.sync_in.get_mut(&file_hash).unwrap();
         let (position, _) = file_sync.block_index[block_index];
@@ -277,7 +299,7 @@ impl FileTransferMan {
     }
 }
 
-const MIN_BLOCK_SIZE: u64 = 1024 * 512;
+const MIN_BLOCK_SIZE: u64 = 1024 * 128;
 const MAX_BLOCK_SIZE: u64 = 1024 * 1024 * 16;
 
 fn get_block_size(file_size: u64) -> u64 {
