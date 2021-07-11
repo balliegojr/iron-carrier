@@ -333,7 +333,7 @@ dependencies = [
  "log",
  "mio 0.7.13",
  "serde",
- "socket2",
+ "socket2 0.3.19",
  "strum",
 ]
 
@@ -573,15 +573,15 @@ dependencies = [
 
 [[package]]
 name = "simple-mdns"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "805adbe33dc92c91d1b21033d42ce6565ede9806beeba25ee21de4963844ed28"
+checksum = "46ebe9548bb53446dca34d7de1acd100c0be25f80cda8dd6dc0d565e54b3c7b2"
 dependencies = [
  "lazy_static",
  "log",
  "rand",
  "simple-dns",
- "socket2",
+ "socket2 0.4.0",
  "thiserror",
 ]
 
@@ -598,6 +598,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "122e570113d28d773067fab24266b66753f6ea915758651696b6e35e49f88d6e"
 dependencies = [
  "cfg-if 1.0.0",
+ "libc",
+ "winapi 0.3.9",
+]
+
+[[package]]
+name = "socket2"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e3dfc207c526015c632472a77be09cf1b6e46866581aecae5cc38fb4235dea2"
+dependencies = [
  "libc",
  "winapi 0.3.9",
 ]

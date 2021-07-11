@@ -11,7 +11,12 @@ use super::{
     send_message, synchronization_session::SynchronizationSession, CarrierEvent, Origin,
     QueueEventType,
 };
-use crate::{config::Config, fs, hash_helper, sync::SyncType};
+use crate::{
+    config::Config,
+    fs::{self, FileInfo},
+    hash_helper,
+    sync::SyncType,
+};
 
 use message_io::{
     network::Endpoint,
@@ -49,6 +54,7 @@ pub struct Synchronizer {
     connected_peers: ConnectedPeers,
     file_transfer_man: FileTransferMan,
     events_queue: LinkedList<(CarrierEvent, QueueEventType)>,
+    received_file_events: HashMap<FileInfo, u64>,
 }
 
 impl Synchronizer {
@@ -73,6 +79,7 @@ impl Synchronizer {
             session_state: None,
             file_transfer_man,
             events_queue: LinkedList::new(),
+            received_file_events: HashMap::new(),
         };
 
         s.start(listener)?;
@@ -251,7 +258,10 @@ impl Synchronizer {
                 }
 
                 if endpoint.is_none() {
-                    self.broadcast_message(CarrierEvent::EndSync);
+                    self.broadcast_message_to(
+                        CarrierEvent::EndSync,
+                        self.connected_peers.get_all_identified_endpoints(),
+                    );
                 }
                 self.set_node_status(NodeStatus::Idle);
                 self.handler
@@ -322,7 +332,10 @@ impl Synchronizer {
                         self.handler
                             .signals()
                             .send(CarrierEvent::BuildStorageIndex(storage.clone()));
-                        self.broadcast_message(CarrierEvent::BuildStorageIndex(storage));
+                        self.broadcast_message_to(
+                            CarrierEvent::BuildStorageIndex(storage),
+                            self.connected_peers.get_all_identified_endpoints(),
+                        );
                     }
                     None => {
                         self.handler.signals().send(CarrierEvent::EndSync);
@@ -361,16 +374,27 @@ impl Synchronizer {
                                 Some(endpoint) => send_message(&self.handler, &event, endpoint),
                                 None => {
                                     log::debug!("peer is offline, cant receive message");
-                                    // TODO: add retry logic
                                     self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                                 }
                             }
                         }
                         QueueEventType::Broadcast => {
-                            self.broadcast_message(event);
+                            self.broadcast_message_to(
+                                event,
+                                self.connected_peers.get_all_identified_endpoints(),
+                            );
                             self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                         }
-                        QueueEventType::BroadcastAndWait => self.broadcast_message(event),
+                        QueueEventType::BroadcastAndWait => self.broadcast_message_to(
+                            event,
+                            self.connected_peers.get_all_identified_endpoints(),
+                        ),
+                        QueueEventType::BroadcastExcept(to_be_ignored) => self
+                            .broadcast_message_to(
+                                event,
+                                self.connected_peers
+                                    .get_all_identified_endpoints_except(to_be_ignored),
+                            ),
                     },
                     None => {
                         let is_initiator = match self.node_status {
@@ -392,35 +416,55 @@ impl Synchronizer {
 
                 if endpoint.is_none() {
                     self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+                } else if self.file_watcher.is_some() {
+                    self.received_file_events.insert(
+                        file,
+                        self.connected_peers.get_peer_id(endpoint.unwrap()).unwrap(),
+                    );
                 }
             }
-            CarrierEvent::SendFile(file_info, peer_id) => {
+            CarrierEvent::SendFile(file_info, peer_id, is_new) => {
                 match self.connected_peers.get_peer_endpoint(peer_id) {
                     Some(endpoint) => {
                         self.file_transfer_man
-                            .send_file_to_peer(file_info, endpoint, peer_id)?;
+                            .send_file_to_peer(file_info, endpoint, is_new)?;
                     }
                     None => {
                         self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                     }
                 }
             }
-            CarrierEvent::BroadcastFile(file_info) => {
-                for peer in self.connected_peers.get_all_peers_ids() {
-                    self.events_queue.push_front((
-                        CarrierEvent::SendFile(file_info.clone(), peer),
-                        QueueEventType::Signal,
-                    ));
-                }
+            CarrierEvent::BroadcastFile(file_info, is_new) => {
+                match self.received_file_events.remove(&file_info) {
+                    Some(peer_id) => {
+                        for peer in self
+                            .connected_peers
+                            .get_all_identified_endpoints_except(peer_id)
+                        {
+                            self.file_transfer_man.send_file_to_peer(
+                                file_info.clone(),
+                                *peer,
+                                is_new,
+                            )?;
+                        }
+                    }
+                    None => {
+                        for peer in self.connected_peers.get_all_identified_endpoints() {
+                            self.file_transfer_man.send_file_to_peer(
+                                file_info.clone(),
+                                *peer,
+                                is_new,
+                            )?;
+                        }
+                    }
+                };
+
                 self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
             }
-            CarrierEvent::RequestFile(file_info) => {
+            CarrierEvent::RequestFile(file_info, is_new) => {
                 let endpoint = endpoint.unwrap();
-                self.file_transfer_man.send_file_to_peer(
-                    file_info,
-                    endpoint,
-                    self.connected_peers.get_peer_id(endpoint).unwrap(),
-                )?;
+                self.file_transfer_man
+                    .send_file_to_peer(file_info, endpoint, is_new)?;
             }
 
             CarrierEvent::MoveFile(src, dst) => {
@@ -429,23 +473,38 @@ impl Synchronizer {
                 }
                 if endpoint.is_none() {
                     self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+                } else if self.file_watcher.is_none() {
+                    self.received_file_events.insert(
+                        src,
+                        self.connected_peers.get_peer_id(endpoint.unwrap()).unwrap(),
+                    );
                 }
             }
             CarrierEvent::FileWatcherEvent(watcher_event) => {
-                // TODO: prevent unecessary events
                 let (event, event_type) = match watcher_event {
-                    super::WatcherEvent::Created(file_info)
-                    | super::WatcherEvent::Updated(file_info) => (
-                        CarrierEvent::BroadcastFile(file_info),
+                    super::WatcherEvent::Created(file_info) => (
+                        CarrierEvent::BroadcastFile(file_info, true),
+                        QueueEventType::Signal,
+                    ),
+                    super::WatcherEvent::Updated(file_info) => (
+                        CarrierEvent::BroadcastFile(file_info, false),
                         QueueEventType::Signal,
                     ),
                     super::WatcherEvent::Moved(src, dst) => {
-                        (CarrierEvent::MoveFile(src, dst), QueueEventType::Broadcast)
+                        let broadcast_type = match self.received_file_events.remove(&src) {
+                            Some(peer_id) => QueueEventType::BroadcastExcept(peer_id),
+                            None => QueueEventType::Broadcast,
+                        };
+                        (CarrierEvent::MoveFile(src, dst), broadcast_type)
                     }
-                    super::WatcherEvent::Deleted(file_info) => (
-                        CarrierEvent::DeleteFile(file_info),
-                        QueueEventType::Broadcast,
-                    ),
+                    super::WatcherEvent::Deleted(file_info) => {
+                        let broadcast_type = match self.received_file_events.remove(&file_info) {
+                            Some(peer_id) => QueueEventType::BroadcastExcept(peer_id),
+                            None => QueueEventType::Broadcast,
+                        };
+
+                        (CarrierEvent::DeleteFile(file_info), broadcast_type)
+                    }
                 };
 
                 self.add_queue_event(event, event_type);
@@ -461,6 +520,7 @@ impl Synchronizer {
                     ev,
                     endpoint,
                     self.connected_peers.get_peer_id(endpoint).unwrap(),
+                    &mut self.received_file_events,
                 )?;
             }
         };
@@ -497,10 +557,14 @@ impl Synchronizer {
         }
     }
 
-    fn broadcast_message(&self, message: CarrierEvent) {
+    fn broadcast_message_to<'a, T: Iterator<Item = &'a Endpoint>>(
+        &'a self,
+        message: CarrierEvent,
+        endpoints: T,
+    ) {
         let data = bincode::serialize(&message).unwrap();
-        for endpoint in self.connected_peers.get_all_identified_endpoints() {
-            self.handler.network().send(endpoint, &data);
+        for endpoint in endpoints {
+            self.handler.network().send(*endpoint, &data);
         }
     }
 

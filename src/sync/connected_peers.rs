@@ -67,8 +67,16 @@ impl ConnectedPeers {
     pub fn get_all_peers_ids(&self) -> Vec<u64> {
         self.id_endpoint.keys().cloned().collect()
     }
-    pub fn get_all_identified_endpoints(&self) -> Vec<Endpoint> {
-        self.id_endpoint.values().cloned().collect()
+    pub fn get_all_identified_endpoints(&self) -> impl Iterator<Item = &Endpoint> {
+        self.id_endpoint.values().into_iter()
+    }
+    pub fn get_all_identified_endpoints_except(
+        &self,
+        peer_id: u64,
+    ) -> impl Iterator<Item = &Endpoint> {
+        self.id_endpoint
+            .iter()
+            .filter_map(move |(key, value)| if *key != peer_id { Some(value) } else { None })
     }
     pub fn has_connected_peers(&self) -> bool {
         !self.id_endpoint.is_empty()

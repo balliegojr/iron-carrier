@@ -1,6 +1,6 @@
 use std::{
     cmp,
-    collections::HashMap,
+    collections::{HashMap, LinkedList},
     fs::{File, OpenOptions},
     io::{Read, Write},
     os::unix::prelude::{FileExt, MetadataExt},
@@ -23,7 +23,7 @@ pub(crate) struct FileTransferMan {
     handler: NodeHandler<CarrierEvent>,
     sync_out: HashMap<u64, FileSync>,
     sync_in: HashMap<u64, FileSync>,
-    received_files: HashMap<FileInfo, u64>,
+    queue_out: LinkedList<(u64, Endpoint)>,
 }
 
 impl FileTransferMan {
@@ -33,53 +33,60 @@ impl FileTransferMan {
             config,
             sync_out: HashMap::new(),
             sync_in: HashMap::new(),
-            received_files: HashMap::new(),
+            queue_out: LinkedList::new(),
         }
     }
 
     pub fn has_pending_transfers(&self) -> bool {
-        self.sync_out.len() > 0 || self.sync_in.len() > 0
+        !self.sync_out.is_empty() || !self.sync_in.is_empty() || !self.queue_out.is_empty()
     }
 
     pub fn send_file_to_peer(
         &mut self,
         file_info: FileInfo,
         peer: Endpoint,
-        peer_id: u64,
+        is_new_file: bool,
     ) -> crate::Result<()> {
-        if self.is_file_from_peer(&file_info, peer_id) {
-            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
-            return Ok(());
-        }
+        log::info!("Sending file {:?} to peer", file_info.path);
 
         let file_hash = hash_helper::calculate_hash(&file_info);
-        let file_path = file_info.get_absolute_path(&self.config)?;
-        let mut file_handler = std::fs::File::open(file_path)?;
+        let event = match self.sync_out.get_mut(&file_hash) {
+            Some(file_sync) => {
+                file_sync.peers_count += 1;
 
-        let file_size = file_info.size.unwrap();
-        let block_size = get_block_size(file_size);
-        let block_index = self.get_file_block_index(&mut file_handler, block_size, file_size);
+                FileSyncEvent::PrepareSync(
+                    file_info.clone(),
+                    file_hash,
+                    file_sync.block_index.clone(),
+                )
+            }
+            None => {
+                let file_path = file_info.get_absolute_path(&self.config)?;
+                let mut file_handler = std::fs::File::open(file_path)?;
+                let file_size = file_info.size.unwrap();
+                let block_size = get_block_size(file_size);
+                let block_index = self.get_file_block_index(
+                    &mut file_handler,
+                    block_size,
+                    file_size,
+                    !is_new_file,
+                );
 
-        let event = FileSyncEvent::PrepareSync(file_info.clone(), file_hash, block_index.clone());
-
-        let file_sync = FileSync {
-            file_info,
-            file_handler,
-            block_index,
-            block_size,
+                let file_sync = FileSync {
+                    file_info: file_info.clone(),
+                    file_handler,
+                    block_index: block_index.clone(),
+                    block_size,
+                    peers_count: 1,
+                };
+                self.sync_out.insert(file_hash, file_sync);
+                FileSyncEvent::PrepareSync(file_info, file_hash, block_index.clone())
+            }
         };
-
-        self.sync_out.insert(file_hash, file_sync);
 
         send_message(&self.handler, &CarrierEvent::FileSyncEvent(event), peer);
 
         Ok(())
-    }
-
-    fn is_file_from_peer(&self, file_info: &FileInfo, peer_id: u64) -> bool {
-        self.received_files
-            .get(file_info)
-            .map_or(false, |v| *v == peer_id)
     }
 
     fn get_file_block_index(
@@ -87,6 +94,7 @@ impl FileTransferMan {
         file: &mut File,
         block_size: u64,
         file_size: u64,
+        calculate_hash: bool,
     ) -> Vec<(usize, u64)> {
         //TODO: implement proper hashing/checksum
 
@@ -104,7 +112,11 @@ impl FileTransferMan {
             let current_read = std::cmp::min(file_size as usize - position, block_size as usize);
             match file.read_exact(&mut buf[..current_read]) {
                 Ok(_) => {
-                    block_index.push((position, hash_helper::calculate_hash(&buf)));
+                    if calculate_hash {
+                        block_index.push((position, hash_helper::calculate_hash(&buf)));
+                    } else {
+                        block_index.push((position, 0))
+                    }
                     position += current_read;
                 }
                 Err(_) => todo!(),
@@ -119,6 +131,7 @@ impl FileTransferMan {
         event: FileSyncEvent,
         endpoint: Endpoint,
         peer_id: u64,
+        received_file_events: &mut HashMap<FileInfo, u64>,
     ) -> crate::Result<()> {
         match event {
             FileSyncEvent::PrepareSync(file_info, file_hash, block_index) => {
@@ -127,7 +140,9 @@ impl FileTransferMan {
             FileSyncEvent::SyncBlocks(file_hash, out_of_sync) => {
                 self.handle_sync_blocks(file_hash, out_of_sync, endpoint)
             }
-            FileSyncEvent::EndSync(file_hash) => self.handle_end_sync(file_hash, peer_id),
+            FileSyncEvent::EndSync(file_hash) => {
+                self.handle_end_sync(file_hash, peer_id, received_file_events)
+            }
             FileSyncEvent::WriteChunk(file_hash, block_index, buf) => {
                 self.handle_write_block(file_hash, block_index, buf)
             }
@@ -160,7 +175,7 @@ impl FileTransferMan {
 
         let block_size = get_block_size(file_info.size.unwrap());
         let local_block_index =
-            self.get_file_block_index(&mut file_handler, block_size, local_file_size);
+            self.get_file_block_index(&mut file_handler, block_size, local_file_size, true);
 
         let out_of_sync = block_index
             .iter()
@@ -182,6 +197,7 @@ impl FileTransferMan {
             file_handler,
             block_index,
             block_size,
+            peers_count: 1,
         };
 
         self.sync_in.insert(file_hash, file_sync);
@@ -219,7 +235,11 @@ impl FileTransferMan {
             endpoint,
         );
         self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
-        self.sync_out.remove(&file_hash);
+        file_sync.peers_count -= 1;
+        if file_sync.peers_count == 0 {
+            self.sync_out.remove(&file_hash);
+        }
+
         Ok(())
     }
 
@@ -238,26 +258,36 @@ impl FileTransferMan {
         Ok(())
     }
 
-    fn handle_end_sync(&mut self, file_hash: u64, peer_id: u64) -> crate::Result<()> {
+    fn handle_end_sync(
+        &mut self,
+        file_hash: u64,
+        peer_id: u64,
+        received_file_events: &mut HashMap<FileInfo, u64>,
+    ) -> crate::Result<()> {
         let mut file_sync = self.sync_in.remove(&file_hash).unwrap();
         file_sync.file_handler.flush()?;
 
         fs::fix_times_and_permissions(&file_sync.file_info, &self.config)?;
 
         let file_info = { file_sync.file_info };
-        self.received_files.insert(file_info, peer_id);
+        received_file_events.insert(file_info, peer_id);
 
         self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
         Ok(())
     }
 }
 
-const CHUNK_SIZE: u64 = 65536;
-const MIN_BLOCK_SIZE: u64 = CHUNK_SIZE * 2;
+const MIN_BLOCK_SIZE: u64 = 128000;
 
-fn get_block_size(_file_size: u64) -> u64 {
+fn get_block_size(file_size: u64) -> u64 {
     //TODO: implement block size
-    MIN_BLOCK_SIZE
+
+    let mut block_size = MIN_BLOCK_SIZE;
+    while file_size / block_size > 2000 {
+        block_size *= 2;
+    }
+
+    block_size
 }
 
 #[derive(Debug)]
@@ -266,4 +296,5 @@ struct FileSync {
     file_handler: File,
     block_size: u64,
     block_index: Vec<(usize, u64)>,
+    peers_count: u32,
 }

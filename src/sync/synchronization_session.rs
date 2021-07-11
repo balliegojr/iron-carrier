@@ -75,6 +75,7 @@ impl SynchronizationSession {
 
         consolidated_index
     }
+    /// convert each line of the consolidated index to a vec of actions
     fn convert_index_to_events(
         &self,
         files: &HashMap<&Origin, &FileInfo>,
@@ -91,27 +92,13 @@ impl SynchronizationSession {
 
         match *source {
             Origin::Initiator => {
-                actions.extend(
-                    self.peers
-                        .iter()
-                        .filter(|peer| match files.get(&Origin::Peer(**peer)) {
-                            Some(f) => f.is_out_of_sync(source_file),
-                            None => !source_file.is_deleted(),
-                        })
-                        .map(|peer| {
-                            if source_file.is_deleted() {
-                                (
-                                    CarrierEvent::DeleteFile((*source_file).clone()),
-                                    QueueEventType::Peer(*peer),
-                                )
-                            } else {
-                                (
-                                    CarrierEvent::SendFile((*source_file).clone(), *peer),
-                                    QueueEventType::Signal,
-                                )
-                            }
-                        }),
-                );
+                actions.extend(self.peers.iter().filter_map(|peer_id| {
+                    self.get_action_for_peer_file(
+                        source_file,
+                        files.get(&Origin::Peer(*peer_id)),
+                        *peer_id,
+                    )
+                }));
             }
             Origin::Peer(origin_peer) => {
                 actions.push(if source_file.is_deleted() {
@@ -121,37 +108,58 @@ impl SynchronizationSession {
                     )
                 } else {
                     (
-                        CarrierEvent::RequestFile((*source_file).clone()),
+                        CarrierEvent::RequestFile(
+                            (*source_file).clone(),
+                            !files.contains_key(&Origin::Initiator),
+                        ),
                         QueueEventType::Peer(*origin_peer),
                     )
                 });
                 actions.extend(
                     self.peers
                         .iter()
-                        .filter(|peer| {
-                            **peer != *origin_peer
-                                && match files.get(&Origin::Peer(**peer)) {
-                                    Some(f) => f.is_out_of_sync(source_file),
-                                    None => !source_file.is_deleted(),
-                                }
-                        })
-                        .map(|peer| {
-                            if source_file.is_deleted() {
-                                (
-                                    CarrierEvent::DeleteFile((*source_file).clone()),
-                                    QueueEventType::Peer(*peer),
-                                )
-                            } else {
-                                (
-                                    CarrierEvent::SendFile((*source_file).clone(), *peer),
-                                    QueueEventType::Signal,
-                                )
-                            }
+                        .filter(|peer| **peer != *origin_peer)
+                        .filter_map(|peer_id| {
+                            self.get_action_for_peer_file(
+                                source_file,
+                                files.get(&Origin::Peer(*peer_id)),
+                                *peer_id,
+                            )
                         }),
                 );
             }
         }
 
         return actions;
+    }
+
+    fn get_action_for_peer_file(
+        &self,
+        source_file: &FileInfo,
+        peer_file: Option<&&FileInfo>,
+        peer_id: u64,
+    ) -> Option<(CarrierEvent, QueueEventType)> {
+        match peer_file {
+            Some(peer_file) => {
+                if source_file.is_out_of_sync(&peer_file) {
+                    Some((
+                        CarrierEvent::SendFile(source_file.clone(), peer_id, false),
+                        QueueEventType::Signal,
+                    ))
+                } else {
+                    None
+                }
+            }
+            None => {
+                if source_file.is_deleted() {
+                    None
+                } else {
+                    Some((
+                        CarrierEvent::SendFile(source_file.clone(), peer_id, true),
+                        QueueEventType::Signal,
+                    ))
+                }
+            }
+        }
     }
 }

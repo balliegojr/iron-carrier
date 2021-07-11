@@ -24,6 +24,7 @@ pub(crate) enum QueueEventType {
     Peer(u64),
     Broadcast,
     BroadcastAndWait,
+    BroadcastExcept(u64),
 }
 
 impl std::fmt::Display for QueueEventType {
@@ -32,7 +33,10 @@ impl std::fmt::Display for QueueEventType {
             QueueEventType::Signal => write!(f, "Signal"),
             QueueEventType::Peer(peer) => write!(f, "To Peer {}", peer),
             QueueEventType::Broadcast => write!(f, "Broadcast"),
-            &QueueEventType::BroadcastAndWait => write!(f, "Broadcast and wait"),
+            QueueEventType::BroadcastAndWait => write!(f, "Broadcast and wait"),
+            QueueEventType::BroadcastExcept(peer_id) => {
+                write!(f, "Broadcast to all peers except {}", peer_id)
+            }
         }
     }
 }
@@ -51,12 +55,9 @@ pub(crate) enum CarrierEvent {
     ConsumeSyncQueue,
 
     DeleteFile(FileInfo),
-    SendFile(FileInfo, u64),
-    BroadcastFile(FileInfo),
-    RequestFile(FileInfo),
-    // PrepareFileTransfer(FileInfo, u64),
-    // WriteFileChunk(u64, Vec<u8>),
-    // EndFileTransfer(FileInfo),
+    SendFile(FileInfo, u64, bool),
+    BroadcastFile(FileInfo, bool),
+    RequestFile(FileInfo, bool),
     MoveFile(FileInfo, FileInfo),
 
     FileWatcherEvent(WatcherEvent),
@@ -78,16 +79,11 @@ impl std::fmt::Display for CarrierEvent {
             CarrierEvent::SetStorageIndex(_) => write!(f, "Set Storage Index"),
             CarrierEvent::ConsumeSyncQueue => write!(f, "Consume next event in queue"),
             CarrierEvent::DeleteFile(file) => write!(f, "Delete file {:?}", file.path),
-            CarrierEvent::SendFile(file, peer_id) => {
+            CarrierEvent::SendFile(file, peer_id, _) => {
                 write!(f, "Send file {:?} to {}", file.path, peer_id)
             }
-            CarrierEvent::BroadcastFile(file) => write!(f, "Broadcast file to all peers"),
-            CarrierEvent::RequestFile(file) => write!(f, "Request File {:?}", file.path),
-            // CarrierEvent::PrepareFileTransfer(file, peer_id) => {
-            //     write!(f, "Prepare file {:?} to trasnfer to {}", file.path, peer_id)
-            // }
-            // CarrierEvent::WriteFileChunk(chunk, _) => write!(f, "Write file chunk: {:?}", chunk),
-            // CarrierEvent::EndFileTransfer(file) => write!(f, "End file transfer {:?}", file.path),
+            CarrierEvent::BroadcastFile(_, _) => write!(f, "Broadcast file to all peers"),
+            CarrierEvent::RequestFile(file, _) => write!(f, "Request File {:?}", file.path),
             CarrierEvent::MoveFile(src, dest) => {
                 write!(f, "Move file from {:?} to {:?}", src.path, dest.path)
             }
