@@ -277,13 +277,12 @@ impl FileTransferMan {
     }
 }
 
-const MIN_BLOCK_SIZE: u64 = 128000;
+const MIN_BLOCK_SIZE: u64 = 1024 * 512;
+const MAX_BLOCK_SIZE: u64 = 1024 * 1024 * 16;
 
 fn get_block_size(file_size: u64) -> u64 {
-    //TODO: implement block size
-
     let mut block_size = MIN_BLOCK_SIZE;
-    while file_size / block_size > 2000 {
+    while block_size < MAX_BLOCK_SIZE && file_size / block_size > 2000 {
         block_size *= 2;
     }
 
