@@ -1,6 +1,6 @@
 use clap::{App, Arg};
 use iron_carrier::config::Config;
-use std::process::exit;
+use std::{path::PathBuf, process::exit};
 
 fn main() {
     let matches = App::new("Iron Carrier")
@@ -11,15 +11,9 @@ fn main() {
             Arg::with_name("config")
                 .help("Sets the config file to use")
                 .value_name("Config")
-                .required(true)
+                .required(false)
                 .takes_value(true),
         )
-        // .arg(
-        //     Arg::with_name("auto-exit")
-        //         .help("Auto exit after sync")
-        //         .long("auto-exit")
-        //         .short("e"),
-        // )
         .arg(
             Arg::with_name("v")
                 .short("v")
@@ -28,9 +22,6 @@ fn main() {
         )
         .get_matches();
 
-    let config = matches
-        .value_of("config")
-        .expect("You must provide a configuration path");
     let verbosity = matches.occurrences_of("v") as usize;
     // let auto_exit = matches.is_present("auto-exit");
 
@@ -41,7 +32,16 @@ fn main() {
         .init()
         .unwrap();
 
-    let config = match Config::new(config) {
+    let config = match matches.value_of("config") {
+        Some(config) => config.into(),
+        None => {
+            let mut config_dir = get_project_dir();
+            config_dir.push("config.toml");
+
+            config_dir
+        }
+    };
+    let config = match Config::new(&config) {
         Ok(config) => config,
         Err(e) => {
             log::error!("{}", e);
@@ -53,4 +53,15 @@ fn main() {
         log::error!("{}", e);
         exit(-1)
     };
+}
+
+fn get_project_dir() -> PathBuf {
+    let mut config_path = dirs::config_dir().expect("Failed to access home folder");
+    config_path.push(".iron_carrier");
+
+    if !config_path.exists() {
+        std::fs::create_dir(&config_path).expect("Failed to create Iron Carrier folder");
+    }
+
+    config_path
 }

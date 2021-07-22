@@ -13,7 +13,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::{config::Config, deletion_tracker::DeletionTracker, IronCarrierError};
+use crate::{config::Config, IronCarrierError};
 
 /// Holds the information for a file inside a mapped folder  
 ///
@@ -145,12 +145,14 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 pub fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Vec<FileInfo>> {
     let mut paths = vec![root_path.to_owned()];
 
-    let deletion_tracker = DeletionTracker::new(root_path);
-    let mut files: Vec<FileInfo> = deletion_tracker
-        .get_files()?
-        .into_iter()
-        .map(|(k, v)| FileInfo::new_deleted(alias.to_owned(), k, Some(v)))
-        .collect();
+    // TODO: reimplmeent deleted files
+    // let deletion_tracker = DeletionTracker::new(root_path);
+    // let mut files: Vec<FileInfo> = deletion_tracker
+    //     .get_files()?
+    //     .into_iter()
+    //     .map(|(k, v)| FileInfo::new_deleted(alias.to_owned(), k, Some(v)))
+    //     .collect();
+    let mut files = Vec::new();
 
     while let Some(path) = paths.pop() {
         for entry in fs::read_dir(path)? {

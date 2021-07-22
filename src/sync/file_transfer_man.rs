@@ -15,9 +15,10 @@ use crate::{
     fs::{self, FileInfo},
     hash_helper,
     sync::STREAM_MESSAGE,
+    transaction_log::{EventStatus, EventType, TransactionLogWriter},
 };
 
-use super::{send_message, CarrierEvent, FileSyncEvent};
+use super::{file_watcher::FileWatcher, send_message, CarrierEvent, FileSyncEvent};
 
 pub(crate) struct FileTransferMan {
     config: Arc<Config>,
@@ -55,11 +56,7 @@ impl FileTransferMan {
             Some(file_sync) => {
                 file_sync.peers_count += 1;
 
-                FileSyncEvent::PrepareSync(
-                    file_info.clone(),
-                    file_hash,
-                    file_sync.block_index.clone(),
-                )
+                FileSyncEvent::PrepareSync(file_info, file_hash, file_sync.block_index.clone())
             }
             None => {
                 let file_path = file_info.get_absolute_path(&self.config)?;
@@ -81,7 +78,7 @@ impl FileTransferMan {
                     peers_count: 1,
                 };
                 self.sync_out.insert(file_hash, file_sync);
-                FileSyncEvent::PrepareSync(file_info, file_hash, block_index.clone())
+                FileSyncEvent::PrepareSync(file_info, file_hash, block_index)
             }
         };
 
@@ -131,18 +128,18 @@ impl FileTransferMan {
         &mut self,
         event: FileSyncEvent,
         endpoint: Endpoint,
-        peer_id: u64,
-        received_file_events: &mut HashMap<FileInfo, u64>,
+        file_watcher: &mut Option<FileWatcher>,
+        log_writer: &mut TransactionLogWriter<File>,
     ) -> crate::Result<()> {
         match event {
             FileSyncEvent::PrepareSync(file_info, file_hash, block_index) => {
-                self.handle_prepare_sync(file_info, file_hash, block_index, endpoint)
+                self.handle_prepare_sync(file_info, file_hash, block_index, endpoint, log_writer)
             }
             FileSyncEvent::SyncBlocks(file_hash, out_of_sync) => {
                 self.handle_sync_blocks(file_hash, out_of_sync, endpoint)
             }
             FileSyncEvent::EndSync(file_hash) => {
-                self.handle_end_sync(file_hash, peer_id, received_file_events)
+                self.handle_end_sync(file_hash, file_watcher, log_writer)
             }
             FileSyncEvent::WriteChunk(file_hash, block_index, buf) => {
                 self.handle_write_block(file_hash, block_index, &buf)
@@ -156,6 +153,7 @@ impl FileTransferMan {
         file_hash: u64,
         block_index: Vec<(usize, u64)>,
         endpoint: Endpoint,
+        log_writer: &mut TransactionLogWriter<File>,
     ) -> crate::Result<()> {
         let file_path = file_info.get_absolute_path(&self.config)?;
 
@@ -165,6 +163,11 @@ impl FileTransferMan {
                 std::fs::create_dir_all(parent)?;
             }
         }
+
+        log_writer.append(
+            EventType::FileWrite(file_info.alias.clone(), file_info.path.clone()),
+            EventStatus::Started,
+        )?;
 
         let mut file_handler = OpenOptions::new()
             .write(true)
@@ -273,9 +276,7 @@ impl FileTransferMan {
     ) -> crate::Result<()> {
         let file_sync = self.sync_in.get_mut(&file_hash).unwrap();
         let (position, _) = file_sync.block_index[block_index];
-        file_sync
-            .file_handler
-            .write_all_at(&buf[..], position as u64)?;
+        file_sync.file_handler.write_all_at(&buf, position as u64)?;
 
         Ok(())
     }
@@ -283,8 +284,8 @@ impl FileTransferMan {
     fn handle_end_sync(
         &mut self,
         file_hash: u64,
-        peer_id: u64,
-        received_file_events: &mut HashMap<FileInfo, u64>,
+        file_watcher: &mut Option<FileWatcher>,
+        log_writer: &mut TransactionLogWriter<File>,
     ) -> crate::Result<()> {
         let mut file_sync = self.sync_in.remove(&file_hash).unwrap();
         file_sync.file_handler.flush()?;
@@ -292,7 +293,14 @@ impl FileTransferMan {
         fs::fix_times_and_permissions(&file_sync.file_info, &self.config)?;
 
         let file_info = { file_sync.file_info };
-        received_file_events.insert(file_info, peer_id);
+        log_writer.append(
+            EventType::FileWrite(file_info.alias.clone(), file_info.path.clone()),
+            EventStatus::Finished,
+        )?;
+
+        if let Some(ref mut file_watcher) = file_watcher {
+            file_watcher.supress_next_event(file_info);
+        }
 
         self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
         Ok(())

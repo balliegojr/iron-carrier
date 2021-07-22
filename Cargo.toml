@@ -22,3 +22,4 @@ if-addrs = "0.6.5"
 message-io = { version = "0.14", default-features = false, features = ["tcp", "udp"] }
 rand = "^0.8"
 machine-uid = "^0.2"
+dirs = "^3.0"

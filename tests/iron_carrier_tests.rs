@@ -1,119 +1,153 @@
+use std::collections::HashMap;
+use std::fs;
 use std::io::Write;
 use std::iter::Iterator;
 use std::path::Path;
 use std::{path::PathBuf, thread, time::Duration};
 
-use bytes::Buf;
+use iron_carrier::config::Config;
 use rand::Rng;
 
-fn prepare_files() -> ([u8; 1024], [u8; 1024]) {
-    cleanup();
-    let _ = std::fs::create_dir_all("tmp/peer_a");
-    let _ = std::fs::create_dir_all("tmp/peer_b");
+fn prepare_files(peer_name: &str) -> [u8; 1024] {
+    let _ = std::fs::remove_dir_all(format!("tmp/peer_{}", peer_name));
+    let _ = std::fs::create_dir_all(format!("tmp/peer_{}", peer_name));
 
     let mut rng = rand::thread_rng();
 
-    let mut contents_a = [0u8; 1024];
-    rng.fill(&mut contents_a);
-
-    let mut contents_b = [0u8; 1024];
-    rng.fill(&mut contents_b);
+    let mut file_content = [0u8; 1024];
+    rng.fill(&mut file_content);
 
     for file in 1..=2 {
-        let _ = std::fs::write(format!("tmp/peer_a/a_file_{}", file), &contents_a);
-        let _ = std::fs::write(format!("tmp/peer_b/b_file_{}", file), &contents_b);
+        let _ = std::fs::write(
+            format!("tmp/peer_{}/{}_file_{}", peer_name, peer_name, file),
+            &file_content,
+        );
     }
 
-    (contents_a, contents_b)
-}
-
-fn cleanup() {
-    let _ = std::fs::remove_dir_all("tmp/peer_a");
-    let _ = std::fs::remove_dir_all("tmp/peer_b");
+    file_content
 }
 
 fn append_content<P: AsRef<Path>>(path: P, content: &[u8]) {
     let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
-    f.write(content).unwrap();
+    f.write_all(content).unwrap();
 }
 
-#[test]
-fn test_iron_carrier() {
+fn enable_logs(verbosity: usize) {
     stderrlog::new()
-        .verbosity(4)
+        .verbosity(verbosity)
         .module("iron_carrier")
         .timestamp(stderrlog::Timestamp::Second)
         .init()
         .unwrap();
+}
 
-    let (contents_a, contents_b) = prepare_files();
+#[test]
+fn test_full_sync() {
+    // enable_logs(2);
+    let mut contents = HashMap::new();
+    let mut port = 8090;
+    for peer_name in ["a", "b", "c"] {
+        contents.insert(peer_name, prepare_files(peer_name));
+        fs::remove_file(format!("./tmp/peer_{}.log", peer_name))
+            .expect("failed to remove log file");
 
-    let config_a = iron_carrier::config::Config::new_from_str(
-        r#"
-port=8090
-delay_watcher_events=1
-enable_service_discovery=false
-peers = ["127.0.0.1:8091"]
+        let config = iron_carrier::config::Config::new_from_str(format!(
+            r#"
+port={}
+log_path = "./tmp/peer_{}.log"
 [paths]
-a = "./tmp/peer_a"
-"#
-        .to_string(),
-    )
-    .unwrap();
+a = "./tmp/peer_{}"
+"#,
+            port, peer_name, peer_name
+        ))
+        .expect("Failed to create config");
 
-    let config_b = iron_carrier::config::Config::new_from_str(
-        r#"
-port=8091
-delay_watcher_events=1
-enable_service_discovery=false
-peers = ["127.0.0.1:8090"]
-[paths]
-a = "./tmp/peer_b"
-"#
-        .to_string(),
-    )
-    .unwrap();
-    thread::spawn(move || {
-        iron_carrier::run(config_a);
-    });
-    thread::spawn(move || {
-        iron_carrier::run(config_b);
-    });
+        port += 1;
+
+        thread::spawn(move || {
+            iron_carrier::run(config).expect("Iron carrier failed");
+        });
+    }
 
     thread::sleep(Duration::from_secs(5));
 
-    assert_eq!(4, std::fs::read_dir("tmp/peer_a").unwrap().count());
-    assert_eq!(4, std::fs::read_dir("tmp/peer_b").unwrap().count());
+    assert_eq!(6, std::fs::read_dir("tmp/peer_a").unwrap().count());
+    assert_eq!(6, std::fs::read_dir("tmp/peer_b").unwrap().count());
+    assert_eq!(6, std::fs::read_dir("tmp/peer_c").unwrap().count());
 
-    for file in 1..=2 {
-        assert_eq!(
-            &contents_b[..],
-            &std::fs::read(format!("tmp/peer_a/b_file_{}", file)).unwrap()[..]
+    for peer_name in ["a", "b", "c"] {
+        for file in 1..=2 {
+            assert_eq!(
+                &contents[peer_name][..],
+                &std::fs::read(format!(
+                    "tmp/peer_{}/{}_file_{}",
+                    peer_name, peer_name, file
+                ))
+                .unwrap()[..]
+            );
+        }
+    }
+}
+
+#[test]
+fn test_partial_sync() {
+    enable_logs(2);
+    let mut port = 8090u16;
+    for peer_name in ["a", "b", "c"] {
+        fs::remove_dir_all(format!("./tmp/peer_{}", peer_name)).expect("Failed to cleanup tmp dir");
+        fs::remove_file(format!("./tmp/peer_{}.log", peer_name))
+            .expect("Faield to remove log file");
+
+        let config = format!(
+            r#"
+port={}
+log_path = "./tmp/peer_{}.log"
+delay_watcher_events=1
+[paths]
+a = "./tmp/peer_{}"
+"#,
+            port, peer_name, peer_name
         );
+        port += 1;
 
+        let config = Config::new_from_str(config).unwrap();
+        thread::spawn(move || {
+            iron_carrier::run(config).expect("Carrier failed");
+        });
+    }
+
+    thread::sleep(Duration::from_secs(5));
+
+    let _ = std::fs::write("tmp/peer_a/new_file_1", b"some nice content for a new file");
+    let _ = std::fs::write(
+        "tmp/peer_a/new_file_2",
+        b"some random content for another new file",
+    );
+
+    thread::sleep(Duration::from_secs(5));
+
+    for peer_name in ["a", "b", "c"] {
         assert_eq!(
-            &contents_a[..],
-            &std::fs::read(format!("tmp/peer_b/a_file_{}", file)).unwrap()[..]
+            b"some nice content for a new file",
+            &std::fs::read(format!("./tmp/peer_{}/new_file_1", peer_name)).unwrap()[..]
+        );
+        assert_eq!(
+            b"some random content for another new file",
+            &std::fs::read(format!("./tmp/peer_{}/new_file_2", peer_name)).unwrap()[..]
         );
     }
 
-    let _ = std::fs::write("tmp/peer_a/c_file_1", &contents_a);
-    let _ = std::fs::remove_file("tmp/peer_a/a_file_1");
-    let _ = std::fs::write("tmp/peer_a/c_file_2", b"some random content");
+    append_content("./tmp/peer_a/new_file_1", b" more content");
+    std::fs::remove_file("./tmp/peer_a/new_file_2").expect("failed to remove test file");
 
-    thread::sleep(Duration::from_secs(2));
+    thread::sleep(Duration::from_secs(5));
 
-    append_content("tmp/peer_a/c_file_2", b" more content to the file");
+    for peer_name in ["a", "b", "c"] {
+        assert_eq!(
+            b"some nice content for a new file more content",
+            &std::fs::read(format!("./tmp/peer_{}/new_file_1", peer_name)).unwrap()[..]
+        );
 
-    thread::sleep(Duration::from_secs(10));
-    assert_eq!(
-        &contents_a[..],
-        &std::fs::read("./tmp/peer_b/c_file_1").unwrap()[..]
-    );
-
-    assert_eq!(
-        b"some random content more content to the file",
-        &std::fs::read("./tmp/peer_b/c_file_2").unwrap()[..]
-    );
-    assert!(!PathBuf::from("tmp/peer_b/a_file_1").exists());
+        assert!(!PathBuf::from(format!("./tmp/peer_{}/new_file_2", peer_name)).exists());
+    }
 }

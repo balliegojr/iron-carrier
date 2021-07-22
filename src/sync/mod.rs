@@ -17,7 +17,7 @@ pub use synchronizer::Synchronizer;
 
 const TRANSPORT_PROTOCOL: Transport = Transport::FramedTcp;
 
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Copy, Clone)]
 pub(crate) enum SyncType {
     Full,
     Partial,
@@ -29,7 +29,6 @@ pub(crate) enum QueueEventType {
     Peer(u64),
     Broadcast,
     BroadcastAndWait,
-    BroadcastExcept(u64),
 }
 
 impl std::fmt::Display for QueueEventType {
@@ -39,9 +38,6 @@ impl std::fmt::Display for QueueEventType {
             QueueEventType::Peer(peer) => write!(f, "To Peer {}", peer),
             QueueEventType::Broadcast => write!(f, "Broadcast"),
             QueueEventType::BroadcastAndWait => write!(f, "Broadcast and wait"),
-            QueueEventType::BroadcastExcept(peer_id) => {
-                write!(f, "Broadcast to all peers except {}", peer_id)
-            }
         }
     }
 }

@@ -26,10 +26,20 @@ impl ConnectedPeers {
             .map(|(_, peer)| peer.addr())
             .collect();
 
-        for address in addresses.difference(&connected_peers) {
-            log::debug!("Connecting to peer {:?}", address);
-            if let Err(_) = self.handler.network().connect(TRANSPORT_PROTOCOL, *address) {
-                log::error!("Error connecting to peer");
+        let addresses: Vec<&SocketAddr> = addresses.difference(&connected_peers).collect();
+        if addresses.is_empty() {
+            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+        } else {
+            for address in addresses {
+                log::debug!("Connecting to peer {:?}", address);
+                if self
+                    .handler
+                    .network()
+                    .connect(TRANSPORT_PROTOCOL, *address)
+                    .is_err()
+                {
+                    log::error!("Error connecting to peer");
+                }
             }
         }
     }
@@ -57,8 +67,11 @@ impl ConnectedPeers {
             .iter()
             .find_map(|(id, e)| if *e == endpoint { Some(*id) } else { None })
     }
+    pub fn get_all_identifications(&self) -> impl Iterator<Item = &u64> {
+        self.id_endpoint.keys()
+    }
     pub fn get_all_identified_endpoints(&self) -> impl Iterator<Item = &Endpoint> {
-        self.id_endpoint.values().into_iter()
+        self.id_endpoint.values()
     }
     pub fn get_all_identified_endpoints_except(
         &self,
@@ -68,6 +81,7 @@ impl ConnectedPeers {
             .iter()
             .filter_map(move |(key, value)| if *key != peer_id { Some(value) } else { None })
     }
+
     pub fn has_connected_peers(&self) -> bool {
         !self.id_endpoint.is_empty()
     }

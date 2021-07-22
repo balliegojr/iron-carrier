@@ -1,24 +1,33 @@
 //! Handles configuration
 
 use serde::Deserialize;
-use std::{collections::HashMap, fs::read_to_string, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs::read_to_string,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use crate::IronCarrierError;
 
 fn default_port() -> u16 {
-    8090
+    25230
 }
 fn default_enable_watcher() -> bool {
     true
 }
 fn default_watcher_debounce() -> u64 {
-    10
+    5
 }
 fn default_enable_service_discovery() -> bool {
     true
 }
+fn default_log_path() -> PathBuf {
+    let mut log_path = dirs::config_dir().expect("Cant access home folder");
+    log_path.push(".iron_carrier/iron_carrier.log");
+    log_path
+}
 
-const MAX_PORT: u16 = 65535;
 /// Represents the configuration for the current machine
 #[derive(Deserialize)]
 pub struct Config {
@@ -27,10 +36,10 @@ pub struct Config {
     /// **Value** is the path itself  
     pub paths: HashMap<String, PathBuf>,
     /// contains the address for the other peers  
-    /// in the format IPV4:PORT (**192.168.1.1:9090**)
+    /// in the format IPV4:PORT (**192.168.1.1:25230**)
     pub peers: Option<Vec<SocketAddr>>,
 
-    /// Port to listen to connections, defaults to 8090
+    /// Port to listen to connections, defaults to 25230
     #[serde(default = "default_port")]
     pub port: u16,
 
@@ -45,6 +54,10 @@ pub struct Config {
     /// Enable service discovery
     #[serde(default = "default_enable_service_discovery")]
     pub enable_service_discovery: bool,
+
+    /// path to the log file
+    #[serde(default = "default_log_path")]
+    pub log_path: PathBuf,
 }
 
 impl Config {
@@ -53,8 +66,8 @@ impl Config {
     /// [Ok]`(`[Config]`)` if successful  
     /// [IronCarrierError::ConfigFileNotFound] if the provided path doesn't exists   
     /// [IronCarrierError::ConfigFileIsInvalid] if the provided configuration is not valid   
-    pub fn new(config_path: &str) -> crate::Result<Self> {
-        log::debug!("reading config file {}", config_path);
+    pub fn new(config_path: &Path) -> crate::Result<Self> {
+        log::debug!("reading config file {:?}", config_path);
 
         Config::new_from_str(read_to_string(config_path)?)
     }
@@ -65,7 +78,7 @@ impl Config {
     }
 
     fn validate(self) -> crate::Result<Self> {
-        if 0 == self.port || self.port > MAX_PORT {
+        if 0 == self.port {
             log::error!("Invalid port number");
             return Err(IronCarrierError::ConfigFileIsInvalid("invalid port number".into()).into());
         }

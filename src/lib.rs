@@ -1,6 +1,3 @@
-#![warn(missing_docs)]
-#![warn(missing_doc_code_examples)]
-
 //! Keep your files in sync!
 //!
 //! Synchronize your files in differents machines on the same network
@@ -11,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod config;
-mod deletion_tracker;
 mod fs;
+mod transaction_log;
 // mod network;
 mod hash_helper;
 pub mod sync;

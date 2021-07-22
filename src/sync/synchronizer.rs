@@ -1,6 +1,7 @@
 use simple_mdns::ServiceDiscovery;
 use std::{
     collections::{HashMap, LinkedList},
+    fs::File,
     net::{IpAddr, SocketAddr},
     sync::Arc,
     time::Duration,
@@ -16,6 +17,7 @@ use crate::{
     fs::{self, FileInfo},
     hash_helper,
     sync::{broadcast_message_to, SyncType, TRANSPORT_PROTOCOL},
+    transaction_log::{self, EventStatus, EventType, TransactionLogWriter},
 };
 
 use message_io::{
@@ -51,7 +53,7 @@ pub struct Synchronizer {
     connected_peers: ConnectedPeers,
     file_transfer_man: FileTransferMan,
     events_queue: LinkedList<(CarrierEvent, QueueEventType)>,
-    received_file_events: HashMap<FileInfo, u64>,
+    log_writer: Option<TransactionLogWriter<File>>,
 }
 
 impl Synchronizer {
@@ -76,7 +78,7 @@ impl Synchronizer {
             session_state: None,
             file_transfer_man,
             events_queue: LinkedList::new(),
-            received_file_events: HashMap::new(),
+            log_writer: None,
         };
 
         s.start(listener)?;
@@ -116,8 +118,7 @@ impl Synchronizer {
                     COMMAND_MESSAGE => {
                         match bincode::deserialize(&data[1..]) {
                             Ok(message) => {
-                                if let Err(err) = self.handle_carrier_event(message, Some(endpoint))
-                                {
+                                if let Err(err) = self.handle_network_event(message, endpoint) {
                                     log::error!("Error processing event: {}", err);
                                 }
                             }
@@ -145,18 +146,13 @@ impl Synchronizer {
                 NetEvent::Disconnected(endpoint) => {
                     // Whenever a peer disconnects, we remove it's id from the connected peers and verify if we should abort current sync
                     log::info!("Peer disconnected:  {}", endpoint);
-                    if let Some(session) = self.session_state.as_mut() {
-                        if let Some(id) = self.connected_peers.get_peer_id(endpoint) {
-                            session.remove_peer_from_session(id)
-                        }
-                    }
                     self.connected_peers.remove_endpoint(endpoint);
                     self.abort_sync_if_no_more_peers();
                 }
             },
             node::NodeEvent::Signal(signal_event) => {
-                if let Err(err) = self.handle_carrier_event(signal_event, None) {
-                    log::error!("Error processing event: {}", err);
+                if let Err(err) = self.handle_signal(signal_event) {
+                    log::error!("Error processing signal: {}", err);
                 }
             }
         });
@@ -164,79 +160,40 @@ impl Synchronizer {
         Ok(())
     }
 
-    fn handle_carrier_event(
-        &mut self,
-        event: CarrierEvent,
-        endpoint: Option<Endpoint>,
-    ) -> crate::Result<()> {
-        log::debug!(
-            "{} - Received {} {} ",
-            self.node_id,
-            if endpoint.is_none() {
-                "Signal"
-            } else {
-                "Event"
-            },
-            event
-        );
-        match event {
-            CarrierEvent::SetPeerId(peer_id) => {
-                self.connected_peers.add_peer(endpoint.unwrap(), peer_id);
+    fn handle_signal(&mut self, signal: CarrierEvent) -> crate::Result<()> {
+        log::debug!("{} - Received Signal {} ", self.node_id, signal);
+        match signal {
+            CarrierEvent::StartSync(sync_type) => {
                 if self.node_status != NodeStatus::Idle {
-                    self.increment_step(SyncStep::PeerIdentification);
+                    return Ok(());
                 }
-            }
-            CarrierEvent::StartSync(sync_type) => match (sync_type, endpoint) {
-                (super::SyncType::Full, None) => {
-                    if self.set_node_status(NodeStatus::BusyFullSync(true)) {
-                        let addresses = self.get_peer_addresses();
 
-                        if addresses.is_empty() {
-                            self.set_node_status(NodeStatus::Idle);
-                        } else {
-                            let storages = self.config.paths.keys().cloned().collect();
-                            self.session_state = Some(SynchronizationSession::new(storages));
-                            self.file_watcher = None;
-                            self.sync_steps = HashMap::new();
-                            self.sync_steps
-                                .insert(SyncStep::PeerIdentification, addresses.len());
-                            self.sync_steps
-                                .insert(SyncStep::PeerSyncReply, addresses.len());
-                            self.connected_peers.connect_all(addresses);
+                let addresses = self.get_peer_addresses();
+                if addresses.is_empty() {
+                    return Ok(());
+                }
 
-                            self.add_queue_event(
-                                CarrierEvent::StartSync(SyncType::Full),
-                                QueueEventType::BroadcastAndWait,
-                            );
-
-                            self.add_queue_event(
-                                CarrierEvent::SyncNextStorage,
-                                QueueEventType::Signal,
-                            );
+                match sync_type {
+                    SyncType::Full => {
+                        if !self.set_node_status(NodeStatus::BusyFullSync(true)) {
+                            return Ok(());
                         }
-                    }
-                }
-                (super::SyncType::Full, Some(endpoint)) => {
-                    if self.set_node_status(NodeStatus::BusyFullSync(false)) {
-                        send_message(&self.handler, &CarrierEvent::StartSyncReply(true), endpoint);
+
+                        let storages = self.config.paths.keys().cloned().collect();
+                        self.session_state = Some(SynchronizationSession::new(storages));
                         self.file_watcher = None;
-                    } else {
-                        send_message(
-                            &self.handler,
-                            &CarrierEvent::StartSyncReply(false),
-                            endpoint,
+
+                        self.add_queue_event(
+                            CarrierEvent::StartSync(SyncType::Full),
+                            QueueEventType::BroadcastAndWait,
                         );
+
+                        self.add_queue_event(CarrierEvent::SyncNextStorage, QueueEventType::Signal);
                     }
-                }
-                (super::SyncType::Partial, None) => {
-                    if self.set_node_status(NodeStatus::BusyPartialSync(true)) {
-                        let addresses = self.get_peer_addresses();
-                        self.sync_steps = HashMap::new();
-                        self.sync_steps
-                            .insert(SyncStep::PeerIdentification, addresses.len());
-                        self.sync_steps
-                            .insert(SyncStep::PeerSyncReply, addresses.len());
-                        self.connected_peers.connect_all(addresses);
+                    SyncType::Partial => {
+                        if !self.set_node_status(NodeStatus::BusyPartialSync(true)) {
+                            return Ok(());
+                        }
 
                         self.events_queue.push_front((
                             CarrierEvent::StartSync(SyncType::Partial),
@@ -244,20 +201,16 @@ impl Synchronizer {
                         ));
                     }
                 }
-                (super::SyncType::Partial, Some(endpoint)) => {
-                    if self.set_node_status(NodeStatus::BusyPartialSync(false)) {
-                        send_message(&self.handler, &CarrierEvent::StartSyncReply(true), endpoint);
-                    } else {
-                        send_message(
-                            &self.handler,
-                            &CarrierEvent::StartSyncReply(false),
-                            endpoint,
-                        );
-                    }
-                }
-            },
+
+                self.sync_steps = HashMap::new();
+                self.sync_steps
+                    .insert(SyncStep::PeerIdentification, addresses.len());
+                self.sync_steps
+                    .insert(SyncStep::PeerSyncReply, addresses.len());
+                self.connected_peers.connect_all(addresses);
+            }
             CarrierEvent::EndSync => {
-                match self.node_status {
+                let sync_type = match self.node_status {
                     NodeStatus::Idle => {
                         return Ok(());
                     }
@@ -265,84 +218,42 @@ impl Synchronizer {
                         self.session_state = None;
                         self.file_watcher =
                             get_file_watcher(self.config.clone(), self.handler.clone());
+                        SyncType::Full
                     }
-                    NodeStatus::BusyPartialSync(initiator) => {
-                        if initiator && !self.events_queue.is_empty() {
+                    NodeStatus::BusyPartialSync(is_initiator) => {
+                        if is_initiator && !self.events_queue.is_empty() {
                             self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                             return Ok(());
                         }
+                        SyncType::Partial
                     }
-                }
+                };
 
-                if endpoint.is_none() {
-                    broadcast_message_to(
-                        &self.handler,
-                        CarrierEvent::EndSync,
-                        self.connected_peers.get_all_identified_endpoints(),
-                    );
-                }
+                let mut log_writer = self.log_writer.take().unwrap();
+                self.connected_peers
+                    .get_all_identifications()
+                    .try_for_each(|id| {
+                        log_writer.append(EventType::Sync(sync_type, *id), EventStatus::Finished)
+                    })?;
+
+                broadcast_message_to(
+                    &self.handler,
+                    CarrierEvent::EndSync,
+                    self.connected_peers.get_all_identified_endpoints(),
+                );
                 self.set_node_status(NodeStatus::Idle);
                 self.handler
                     .signals()
                     .send_with_timer(CarrierEvent::CloseConnections, Duration::from_secs(15));
             }
-
             CarrierEvent::CloseConnections => {
                 if self.node_status == NodeStatus::Idle {
                     self.connected_peers.disconnect_all();
                 } else {
-                    self.handler.signals().send_with_timer(
-                        CarrierEvent::CloseConnections,
-                        Duration::from_secs(1 * 60),
-                    );
+                    self.handler
+                        .signals()
+                        .send_with_timer(CarrierEvent::CloseConnections, Duration::from_secs(60));
                 }
-            }
-
-            CarrierEvent::BuildStorageIndex(storage) => {
-                log::info!("Building index for {}", storage);
-                match self.config.paths.get(&storage) {
-                    Some(storage_path) => {
-                        let index = fs::walk_path(&storage_path, &storage).unwrap();
-
-                        log::debug!("Read {} files ", index.len());
-
-                        match endpoint {
-                            Some(endpoint) => {
-                                send_message(
-                                    &self.handler,
-                                    &CarrierEvent::SetStorageIndex(Some(index)),
-                                    endpoint,
-                                );
-                            }
-                            None => self
-                                .handler
-                                .signals()
-                                .send(CarrierEvent::SetStorageIndex(Some(index))),
-                        };
-                    }
-                    None => {
-                        log::debug!("There is no such storage: {}", &storage);
-                        send_message(
-                            &self.handler,
-                            &CarrierEvent::SetStorageIndex(None),
-                            endpoint.unwrap(),
-                        );
-                    }
-                }
-            }
-            CarrierEvent::StartSyncReply(accepted) => {
-                if accepted {
-                    if let NodeStatus::BusyFullSync(_) = self.node_status {
-                        let session = self.session_state.as_mut().unwrap();
-                        if let Some(peer_id) = self.connected_peers.get_peer_id(endpoint.unwrap()) {
-                            session.add_peer_to_session(peer_id);
-                        }
-                    }
-                } else {
-                    self.connected_peers.remove_endpoint(endpoint.unwrap());
-                }
-
-                self.increment_step(SyncStep::PeerSyncReply);
             }
             CarrierEvent::SyncNextStorage => {
                 match self.session_state.as_mut().unwrap().get_next_storage() {
@@ -361,21 +272,38 @@ impl Synchronizer {
                     }
                 }
             }
-            CarrierEvent::SetStorageIndex(index) => {
-                let origin = match endpoint {
-                    Some(endpoint) => {
-                        Origin::Peer(self.connected_peers.get_peer_id(endpoint).unwrap())
+            CarrierEvent::BuildStorageIndex(storage) => {
+                log::info!("Building index for {}", storage);
+                match self.config.paths.get(&storage) {
+                    Some(storage_path) => {
+                        let index = fs::walk_path(&storage_path, &storage).unwrap();
+                        log::debug!("Read {} files ", index.len());
+
+                        self.handler
+                            .signals()
+                            .send(CarrierEvent::SetStorageIndex(Some(index)));
                     }
-                    None => Origin::Initiator,
-                };
+                    None => {
+                        unreachable!()
+                    }
+                }
+            }
+            CarrierEvent::SetStorageIndex(index) => {
+                let origin = Origin::Initiator;
 
                 log::debug!("Setting index with origin {:?}", origin);
 
                 let session = self.session_state.as_mut().unwrap();
                 session.set_storage_index(origin, index);
 
-                if session.have_all_indexes_loaded() {
-                    let mut event_queue = session.get_event_queue();
+                let peers: Vec<u64> = self
+                    .connected_peers
+                    .get_all_identifications()
+                    .copied()
+                    .collect();
+
+                if session.have_index_for_peers(&peers[..]) {
+                    let mut event_queue = session.get_event_queue(&peers[..]);
                     self.events_queue.append(&mut event_queue);
                     self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                 }
@@ -410,15 +338,6 @@ impl Synchronizer {
                             event,
                             self.connected_peers.get_all_identified_endpoints(),
                         ),
-                        QueueEventType::BroadcastExcept(to_be_ignored) => {
-                            broadcast_message_to(
-                                &self.handler,
-                                event,
-                                self.connected_peers
-                                    .get_all_identified_endpoints_except(to_be_ignored),
-                            );
-                            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
-                        }
                     },
                     None => {
                         let is_initiator = match self.node_status {
@@ -434,18 +353,8 @@ impl Synchronizer {
                 }
             }
             CarrierEvent::DeleteFile(file) => {
-                if let Err(err) = fs::delete_file(&file, &self.config) {
-                    log::error!("Failed to delete file {}", err);
-                }
-
-                if endpoint.is_none() {
-                    self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
-                } else if self.file_watcher.is_some() {
-                    self.received_file_events.insert(
-                        file,
-                        self.connected_peers.get_peer_id(endpoint.unwrap()).unwrap(),
-                    );
-                }
+                self.delete_file(&file)?;
+                self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
             }
             CarrierEvent::SendFile(file_info, peer_id, is_new) => {
                 match self.connected_peers.get_peer_endpoint(peer_id) {
@@ -459,75 +368,64 @@ impl Synchronizer {
                 }
             }
             CarrierEvent::BroadcastFile(file_info, is_new) => {
-                match self.received_file_events.remove(&file_info) {
-                    Some(peer_id) => {
-                        for peer in self
-                            .connected_peers
-                            .get_all_identified_endpoints_except(peer_id)
-                        {
-                            self.file_transfer_man.send_file_to_peer(
-                                file_info.clone(),
-                                *peer,
-                                is_new,
-                            )?;
-                        }
-                    }
-                    None => {
-                        for peer in self.connected_peers.get_all_identified_endpoints() {
-                            self.file_transfer_man.send_file_to_peer(
-                                file_info.clone(),
-                                *peer,
-                                is_new,
-                            )?;
-                        }
-                    }
-                };
+                for peer in self.connected_peers.get_all_identified_endpoints() {
+                    self.file_transfer_man
+                        .send_file_to_peer(file_info.clone(), *peer, is_new)?;
+                }
 
                 self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
             }
-            CarrierEvent::RequestFile(file_info, is_new) => {
-                let endpoint = endpoint.unwrap();
-                self.file_transfer_man
-                    .send_file_to_peer(file_info, endpoint, is_new)?;
-            }
-
             CarrierEvent::MoveFile(src, dst) => {
-                if let Err(err) = fs::move_file(&src, &dst, &self.config) {
-                    log::error!("Failed to move file: {}", err)
-                }
-                if endpoint.is_none() {
-                    self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
-                } else if self.file_watcher.is_none() {
-                    self.received_file_events.insert(
-                        src,
-                        self.connected_peers.get_peer_id(endpoint.unwrap()).unwrap(),
-                    );
-                }
+                self.move_file(&src, &dst)?;
+                self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
             }
             CarrierEvent::FileWatcherEvent(watcher_event) => {
                 let (event, event_type) = match watcher_event {
-                    super::WatcherEvent::Created(file_info) => (
-                        CarrierEvent::BroadcastFile(file_info, true),
-                        QueueEventType::Signal,
-                    ),
-                    super::WatcherEvent::Updated(file_info) => (
-                        CarrierEvent::BroadcastFile(file_info, false),
-                        QueueEventType::Signal,
-                    ),
+                    super::WatcherEvent::Created(file_info) => {
+                        self.get_log_writer()?.append(
+                            EventType::FileWrite(file_info.alias.clone(), file_info.path.clone()),
+                            EventStatus::Finished,
+                        )?;
+
+                        (
+                            CarrierEvent::BroadcastFile(file_info, true),
+                            QueueEventType::Signal,
+                        )
+                    }
+                    super::WatcherEvent::Updated(file_info) => {
+                        self.get_log_writer()?.append(
+                            EventType::FileWrite(file_info.alias.clone(), file_info.path.clone()),
+                            EventStatus::Finished,
+                        )?;
+
+                        (
+                            CarrierEvent::BroadcastFile(file_info, false),
+                            QueueEventType::Signal,
+                        )
+                    }
+
                     super::WatcherEvent::Moved(src, dst) => {
-                        let broadcast_type = match self.received_file_events.remove(&src) {
-                            Some(peer_id) => QueueEventType::BroadcastExcept(peer_id),
-                            None => QueueEventType::Broadcast,
-                        };
-                        (CarrierEvent::MoveFile(src, dst), broadcast_type)
+                        self.get_log_writer()?.append(
+                            EventType::FileMove(
+                                src.alias.clone(),
+                                src.path.clone(),
+                                dst.path.clone(),
+                            ),
+                            EventStatus::Finished,
+                        )?;
+
+                        (CarrierEvent::MoveFile(src, dst), QueueEventType::Broadcast)
                     }
                     super::WatcherEvent::Deleted(file_info) => {
-                        let broadcast_type = match self.received_file_events.remove(&file_info) {
-                            Some(peer_id) => QueueEventType::BroadcastExcept(peer_id),
-                            None => QueueEventType::Broadcast,
-                        };
+                        self.get_log_writer()?.append(
+                            EventType::FileDelete(file_info.alias.clone(), file_info.path.clone()),
+                            EventStatus::Finished,
+                        )?;
 
-                        (CarrierEvent::DeleteFile(file_info), broadcast_type)
+                        (
+                            CarrierEvent::DeleteFile(file_info),
+                            QueueEventType::Broadcast,
+                        )
                     }
                 };
 
@@ -538,16 +436,199 @@ impl Synchronizer {
                         .send(CarrierEvent::StartSync(SyncType::Partial));
                 }
             }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    fn handle_network_event(
+        &mut self,
+        event: CarrierEvent,
+        endpoint: Endpoint,
+    ) -> crate::Result<()> {
+        log::debug!("{} - Received Event {} ", self.node_id, event);
+        match event {
+            CarrierEvent::StartSync(sync_type) => {
+                if self.node_status != NodeStatus::Idle {
+                    send_message(
+                        &self.handler,
+                        &CarrierEvent::StartSyncReply(false),
+                        endpoint,
+                    );
+                    return Ok(());
+                }
+
+                match sync_type {
+                    SyncType::Full => {
+                        self.set_node_status(NodeStatus::BusyFullSync(false));
+                        self.file_watcher = None;
+                    }
+                    SyncType::Partial => {
+                        self.set_node_status(NodeStatus::BusyPartialSync(false));
+                    }
+                }
+                let peer_id = self.connected_peers.get_peer_id(endpoint).unwrap();
+                self.get_log_writer()?
+                    .append(EventType::Sync(sync_type, peer_id), EventStatus::Started)?;
+
+                send_message(&self.handler, &CarrierEvent::StartSyncReply(true), endpoint);
+            }
+            CarrierEvent::EndSync => {
+                let sync_type = match self.node_status {
+                    NodeStatus::Idle => {
+                        return Ok(());
+                    }
+                    NodeStatus::BusyFullSync(_) => {
+                        self.session_state = None;
+                        self.file_watcher =
+                            get_file_watcher(self.config.clone(), self.handler.clone());
+                        SyncType::Full
+                    }
+                    NodeStatus::BusyPartialSync(_) => SyncType::Partial,
+                };
+
+                let peer_id = self.connected_peers.get_peer_id(endpoint).unwrap();
+                self.get_log_writer()?
+                    .append(EventType::Sync(sync_type, peer_id), EventStatus::Finished)?;
+
+                self.set_node_status(NodeStatus::Idle);
+                self.handler
+                    .signals()
+                    .send_with_timer(CarrierEvent::CloseConnections, Duration::from_secs(15));
+            }
+            CarrierEvent::SetPeerId(peer_id) => {
+                self.connected_peers.add_peer(endpoint, peer_id);
+                if self.node_status != NodeStatus::Idle {
+                    self.increment_step(SyncStep::PeerIdentification);
+                }
+            }
+            CarrierEvent::StartSyncReply(accepted) => {
+                if !accepted {
+                    self.connected_peers.remove_endpoint(endpoint);
+                }
+
+                let sync_type = match self.node_status {
+                    NodeStatus::Idle => unreachable!(),
+                    NodeStatus::BusyFullSync(_) => SyncType::Full,
+                    NodeStatus::BusyPartialSync(_) => SyncType::Partial,
+                };
+
+                let peer_id = self.connected_peers.get_peer_id(endpoint).unwrap();
+                self.get_log_writer()?
+                    .append(EventType::Sync(sync_type, peer_id), EventStatus::Started)?;
+
+                self.increment_step(SyncStep::PeerSyncReply);
+            }
+            CarrierEvent::BuildStorageIndex(storage) => {
+                log::info!("Building index for {}", storage);
+                let index = match self.config.paths.get(&storage) {
+                    Some(storage_path) => {
+                        let index = fs::walk_path(&storage_path, &storage).unwrap();
+                        log::debug!("Read {} files ", index.len());
+
+                        Some(index)
+                    }
+                    None => {
+                        log::debug!("There is no such storage: {}", &storage);
+                        None
+                    }
+                };
+
+                send_message(
+                    &self.handler,
+                    &CarrierEvent::SetStorageIndex(index),
+                    endpoint,
+                );
+            }
+            CarrierEvent::SetStorageIndex(index) => {
+                let origin = Origin::Peer(self.connected_peers.get_peer_id(endpoint).unwrap());
+
+                log::debug!("Setting index with origin {:?}", origin);
+
+                let session = self.session_state.as_mut().unwrap();
+                session.set_storage_index(origin, index);
+
+                let peers: Vec<u64> = self
+                    .connected_peers
+                    .get_all_identifications()
+                    .copied()
+                    .collect();
+                if session.have_index_for_peers(&peers[..]) {
+                    let mut event_queue = session.get_event_queue(&peers[..]);
+                    self.events_queue.append(&mut event_queue);
+                    self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+                }
+            }
+            CarrierEvent::DeleteFile(file) => {
+                self.delete_file(&file)?;
+
+                if let Some(ref mut file_watcher) = self.file_watcher {
+                    file_watcher.supress_next_event(file);
+                }
+            }
+            CarrierEvent::RequestFile(file_info, is_new) => {
+                self.file_transfer_man
+                    .send_file_to_peer(file_info, endpoint, is_new)?;
+            }
+            CarrierEvent::MoveFile(src, dst) => {
+                self.move_file(&src, &dst)?;
+                if let Some(ref mut file_watcher) = self.file_watcher {
+                    file_watcher.supress_next_event(src);
+                }
+            }
             CarrierEvent::FileSyncEvent(ev) => {
-                let endpoint = endpoint.unwrap();
                 self.file_transfer_man.file_sync_event(
                     ev,
                     endpoint,
-                    self.connected_peers.get_peer_id(endpoint).unwrap(),
-                    &mut self.received_file_events,
+                    &mut self.file_watcher,
+                    self.log_writer.as_mut().unwrap(),
                 )?;
             }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    fn get_log_writer(&mut self) -> crate::Result<&mut TransactionLogWriter<File>> {
+        match self.log_writer {
+            Some(ref mut log_writer) => Ok(log_writer),
+            None => {
+                let log_writer = transaction_log::get_log_writer(&self.config.log_path)?;
+                self.log_writer = Some(log_writer);
+                Ok(self.log_writer.as_mut().unwrap())
+            }
+        }
+    }
+
+    fn delete_file(&mut self, file: &FileInfo) -> crate::Result<()> {
+        let event_status = match fs::delete_file(&file, &self.config) {
+            Ok(_) => EventStatus::Finished,
+            Err(err) => {
+                log::error!("Failed to delete file {}", err);
+                EventStatus::Failed
+            }
         };
+        self.get_log_writer()?.append(
+            EventType::FileDelete(file.alias.to_string(), file.path.clone()),
+            event_status,
+        )?;
+
+        Ok(())
+    }
+
+    fn move_file(&mut self, src: &FileInfo, dest: &FileInfo) -> crate::Result<()> {
+        let event_status = match fs::move_file(src, dest, &self.config) {
+            Err(err) => {
+                log::error!("Failed to move file: {}", err);
+                EventStatus::Failed
+            }
+            Ok(_) => EventStatus::Finished,
+        };
+
+        self.get_log_writer()?.append(
+            EventType::FileMove(src.alias.clone(), src.path.clone(), dest.path.clone()),
+            event_status,
+        )?;
 
         Ok(())
     }
@@ -587,10 +668,9 @@ impl Synchronizer {
                 NodeStatus::Idle => false,
                 NodeStatus::BusyFullSync(_) | NodeStatus::BusyPartialSync(_) => true,
             },
-            NodeStatus::BusyFullSync(_) | NodeStatus::BusyPartialSync(_) => match new_status {
-                NodeStatus::Idle => true,
-                _ => false,
-            },
+            NodeStatus::BusyFullSync(_) | NodeStatus::BusyPartialSync(_) => {
+                matches!(new_status, NodeStatus::Idle)
+            }
         };
 
         if is_valid_state_change {
@@ -621,7 +701,7 @@ impl Synchronizer {
             .config
             .peers
             .iter()
-            .flat_map(|peers| peers.iter().cloned());
+            .flat_map(|peers| peers.iter().copied());
 
         from_sd.chain(from_config).collect()
     }
