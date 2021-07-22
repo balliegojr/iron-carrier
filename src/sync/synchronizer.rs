@@ -274,19 +274,12 @@ impl Synchronizer {
             }
             CarrierEvent::BuildStorageIndex(storage) => {
                 log::info!("Building index for {}", storage);
-                match self.config.paths.get(&storage) {
-                    Some(storage_path) => {
-                        let index = fs::walk_path(&storage_path, &storage).unwrap();
-                        log::debug!("Read {} files ", index.len());
+                let index = fs::walk_path(&self.config, &storage).unwrap();
+                log::debug!("Read {} files ", index.len());
 
-                        self.handler
-                            .signals()
-                            .send(CarrierEvent::SetStorageIndex(Some(index)));
-                    }
-                    None => {
-                        unreachable!()
-                    }
-                }
+                self.handler
+                    .signals()
+                    .send(CarrierEvent::SetStorageIndex(Some(index)));
             }
             CarrierEvent::SetStorageIndex(index) => {
                 let origin = Origin::Initiator;
@@ -521,14 +514,14 @@ impl Synchronizer {
             }
             CarrierEvent::BuildStorageIndex(storage) => {
                 log::info!("Building index for {}", storage);
-                let index = match self.config.paths.get(&storage) {
-                    Some(storage_path) => {
-                        let index = fs::walk_path(&storage_path, &storage).unwrap();
+                let index = match self.config.paths.contains_key(&storage) {
+                    true => {
+                        let index = fs::walk_path(&self.config, &storage).unwrap();
                         log::debug!("Read {} files ", index.len());
 
                         Some(index)
                     }
-                    None => {
+                    false => {
                         log::debug!("There is no such storage: {}", &storage);
                         None
                     }

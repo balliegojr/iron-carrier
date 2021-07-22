@@ -2,7 +2,7 @@ use crate::sync::SyncType;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
     time::SystemTime,
@@ -24,6 +24,11 @@ pub(crate) fn get_log_writer(log_path: &Path) -> std::io::Result<TransactionLogW
         .open(log_path)?;
 
     Ok(TransactionLogWriter::new(file))
+}
+
+pub(crate) fn get_log_reader(log_path: &Path) -> std::io::Result<TransactionLogReader<File>> {
+    let file = File::open(log_path)?;
+    Ok(TransactionLogReader::new(file))
 }
 
 pub(crate) struct TransactionLogWriter<T: Write> {
@@ -63,30 +68,6 @@ impl<T: Read> TransactionLogReader<T> {
     pub fn get_log_events(self) -> TransactionLogIter<T> {
         TransactionLogIter::new(self.log_stream)
     }
-
-    //     pub fn get_log_events_for_storage<'a>(
-    //         self,
-    //         storage: &'a str,
-    //     ) -> impl Iterator<Item = LogEvent> + 'a {
-    //         let iter = self.get_log_events();
-    //         iter.filter_map(|event| match event {
-    //             Ok(event) => match &event.event_type {
-    //                 EventType::SyncStorage(s)
-    //                 | EventType::FileDelete(s, _)
-    //                 | EventType::FileCreate(s, _)
-    //                 | EventType::FileWrite(s, _)
-    //                 | EventType::FileMove(s, _, _) => {
-    //                     if s == storage {
-    //                         Some(event)
-    //                     } else {
-    //                         None
-    //                     }
-    //                 }
-    //                 _ => None,
-    //             },
-    //             Err(_) => None,
-    //         })
-    //     }
 }
 
 pub(crate) struct TransactionLogIter<T: Read> {
@@ -125,10 +106,10 @@ pub enum TransactionLogError {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LogEvent {
-    timestamp: u64,
-    event_type: EventType,
-    event_status: EventStatus,
+pub(crate) struct LogEvent {
+    pub timestamp: u64,
+    pub event_type: EventType,
+    pub event_status: EventStatus,
 }
 
 impl std::fmt::Display for LogEvent {
@@ -163,7 +144,6 @@ impl FromStr for LogEvent {
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum EventType {
     Sync(SyncType, u64),
-    SyncStorage(String),
     FileDelete(String, PathBuf),
     FileCreate(String, PathBuf),
     FileWrite(String, PathBuf),
@@ -174,7 +154,6 @@ impl std::fmt::Display for EventType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EventType::Sync(sync_type, peer_id) => write!(f, "Sync:{:?}:{}", sync_type, peer_id),
-            EventType::SyncStorage(storage) => write!(f, "SyncStorage:{}", storage),
             EventType::FileDelete(storage, file_path) => {
                 write!(
                     f,
@@ -229,7 +208,6 @@ impl FromStr for EventType {
 
                 Ok(EventType::Sync(sync_type, next_or()?.parse()?))
             }
-            "SyncStorage" => Ok(EventType::SyncStorage(next_or()?.into())),
             "FileDelete" => Ok(EventType::FileDelete(next_or()?.into(), next_or()?.into())),
             "FileCreate" => Ok(EventType::FileCreate(next_or()?.into(), next_or()?.into())),
             "FileWrite" => Ok(EventType::FileWrite(next_or()?.into(), next_or()?.into())),
@@ -277,15 +255,11 @@ mod tests {
 
     fn sample_log_stream() -> Cursor<Vec<u8>> {
         let bytes = br#"10,Sync:Full:1,Started
-11,SyncStorage:books,Started
 12,FileDelete:books:some/file/deleted,Finished
 13,FileCreate:books:some/file/created,Finished
 14,FileWrite:books:some/file/update,Started
 15,FileWrite:books:some/file/update,Finished
 16,FileMove:books:some/file/source:some/file/destination,Finished
-17,SyncStorage:books,Finished
-18,SyncStorage:movies,Started
-19,SyncStorage:movies,Finished
 "#
         .to_vec();
         Cursor::new(bytes)
@@ -298,14 +272,6 @@ mod tests {
             let mut log = TransactionLogWriter::new(&mut stream);
 
             log.append(EventType::Sync(SyncType::Full, 1), EventStatus::Started)?;
-            log.append(
-                EventType::SyncStorage("a".to_string()),
-                EventStatus::Started,
-            )?;
-            log.append(
-                EventType::SyncStorage("a".to_string()),
-                EventStatus::Finished,
-            )?;
             log.append(
                 EventType::FileCreate("books".into(), "some/path".into()),
                 EventStatus::Finished,
@@ -326,14 +292,12 @@ mod tests {
 
         stream.set_position(0);
         let lines: Vec<String> = stream.lines().map(|x| x.unwrap()).collect();
-        assert_eq!(7, lines.len());
+        assert_eq!(5, lines.len());
         assert!(lines[0].ends_with("Sync:Full:1,Started"));
-        assert!(lines[1].ends_with("SyncStorage:a,Started"));
-        assert!(lines[2].ends_with("SyncStorage:a,Finished"));
-        assert!(lines[3].ends_with("FileCreate:books:some/path,Finished"));
-        assert!(lines[4].ends_with("FileDelete:books:some/path,Finished"));
-        assert!(lines[5].ends_with("FileWrite:books:some/path,Finished"));
-        assert!(lines[6].ends_with("FileMove:books:source/path:dest/path,Finished"));
+        assert!(lines[1].ends_with("FileCreate:books:some/path,Finished"));
+        assert!(lines[2].ends_with("FileDelete:books:some/path,Finished"));
+        assert!(lines[3].ends_with("FileWrite:books:some/path,Finished"));
+        assert!(lines[4].ends_with("FileMove:books:source/path:dest/path,Finished"));
         Ok(())
     }
 
@@ -352,19 +316,11 @@ mod tests {
         );
         assert_eq!(
             LogEvent {
-                timestamp: 11,
-                event_type: EventType::SyncStorage("books".to_string()),
-                event_status: EventStatus::Started
-            },
-            events[1]
-        );
-        assert_eq!(
-            LogEvent {
                 timestamp: 12,
                 event_type: EventType::FileDelete("books".to_string(), "some/file/deleted".into()),
                 event_status: EventStatus::Finished
             },
-            events[2]
+            events[1]
         );
         assert_eq!(
             LogEvent {
@@ -372,7 +328,7 @@ mod tests {
                 event_type: EventType::FileCreate("books".to_string(), "some/file/created".into()),
                 event_status: EventStatus::Finished
             },
-            events[3]
+            events[2]
         );
         assert_eq!(
             LogEvent {
@@ -380,7 +336,7 @@ mod tests {
                 event_type: EventType::FileWrite("books".to_string(), "some/file/update".into()),
                 event_status: EventStatus::Started
             },
-            events[4]
+            events[3]
         );
         assert_eq!(
             LogEvent {
@@ -388,7 +344,7 @@ mod tests {
                 event_type: EventType::FileWrite("books".to_string(), "some/file/update".into()),
                 event_status: EventStatus::Finished
             },
-            events[5]
+            events[4]
         );
         assert_eq!(
             LogEvent {
@@ -400,25 +356,12 @@ mod tests {
                 ),
                 event_status: EventStatus::Finished
             },
-            events[6]
-        );
-        assert_eq!(
-            LogEvent {
-                timestamp: 17,
-                event_type: EventType::SyncStorage("books".to_string()),
-                event_status: EventStatus::Finished
-            },
-            events[7]
+            events[5]
         );
     }
 
     #[test]
     pub fn test_compact_log() {
-        todo!()
-    }
-
-    #[test]
-    pub fn test_get_log_events_for_store() {
         todo!()
     }
 

@@ -73,14 +73,6 @@ impl ConnectedPeers {
     pub fn get_all_identified_endpoints(&self) -> impl Iterator<Item = &Endpoint> {
         self.id_endpoint.values()
     }
-    pub fn get_all_identified_endpoints_except(
-        &self,
-        peer_id: u64,
-    ) -> impl Iterator<Item = &Endpoint> {
-        self.id_endpoint
-            .iter()
-            .filter_map(move |(key, value)| if *key != peer_id { Some(value) } else { None })
-    }
 
     pub fn has_connected_peers(&self) -> bool {
         !self.id_endpoint.is_empty()

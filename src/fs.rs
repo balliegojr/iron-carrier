@@ -13,7 +13,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::{config::Config, IronCarrierError};
+use crate::{config::Config, transaction_log::get_log_reader, IronCarrierError};
 
 /// Holds the information for a file inside a mapped folder  
 ///
@@ -52,11 +52,7 @@ impl FileInfo {
         self.deleted_at.is_some()
     }
 
-    pub fn new_deleted(
-        alias: String,
-        relative_path: PathBuf,
-        deleted_at: Option<SystemTime>,
-    ) -> Self {
+    pub fn new_deleted(alias: String, relative_path: PathBuf, deleted_at: Option<u64>) -> Self {
         FileInfo {
             alias,
             path: relative_path,
@@ -64,8 +60,7 @@ impl FileInfo {
             modified_at: None,
             size: None,
             deleted_at: deleted_at
-                .or_else(|| Some(SystemTime::now()))
-                .and_then(system_time_to_secs),
+                .or_else(|| Some(SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs())),
             permissions: 0,
         }
     }
@@ -142,17 +137,11 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 ///
 /// This function will look for deletes files in the [DeletionTracker] log and append all entries to the return list  
 /// files with name or extension `.ironcarrier` will be ignored
-pub fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Vec<FileInfo>> {
+pub fn walk_path(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>> {
+    let root_path = config.paths.get(storage).expect("Unexpected storage");
     let mut paths = vec![root_path.to_owned()];
 
-    // TODO: reimplmeent deleted files
-    // let deletion_tracker = DeletionTracker::new(root_path);
-    // let mut files: Vec<FileInfo> = deletion_tracker
-    //     .get_files()?
-    //     .into_iter()
-    //     .map(|(k, v)| FileInfo::new_deleted(alias.to_owned(), k, Some(v)))
-    //     .collect();
-    let mut files = Vec::new();
+    let mut files = get_deleted_files(config, storage)?;
 
     while let Some(path) = paths.pop() {
         for entry in fs::read_dir(path)? {
@@ -170,7 +159,7 @@ pub fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Vec<File
 
             let metadata = path.metadata()?;
             files.push(FileInfo::new(
-                alias.to_owned(),
+                storage.to_owned(),
                 path.strip_prefix(root_path)?.to_owned(),
                 metadata,
             ));
@@ -179,7 +168,30 @@ pub fn walk_path<'a>(root_path: &Path, alias: &'a str) -> crate::Result<Vec<File
 
     files.sort();
 
-    return Ok(files);
+    Ok(files)
+}
+
+fn get_deleted_files(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>> {
+    match get_log_reader(&config.log_path) {
+        Ok(log_reader) => {
+            let files = log_reader
+                .get_log_events()
+                .filter_map(|event| match event {
+                    Ok(event) => match event.event_type {
+                        crate::transaction_log::EventType::FileDelete(s, file_path)
+                            if s == storage =>
+                        {
+                            Some(FileInfo::new_deleted(s, file_path, Some(event.timestamp)))
+                        }
+                        _ => None,
+                    },
+                    Err(_) => None,
+                })
+                .collect();
+            Ok(files)
+        }
+        Err(_) => Ok(Vec::new()),
+    }
 }
 
 pub fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
@@ -274,7 +286,17 @@ mod tests {
         File::create("./tmp/fs/read_local_files/file_1")?;
         File::create("./tmp/fs/read_local_files/file_2")?;
 
-        let files = walk_path(&PathBuf::from("./tmp/fs/read_local_files"), "a").unwrap();
+        let config = Config::new_from_str(
+            r#"
+log_path = "./tmp/fs/logfile.log"
+[paths]
+a = "./tmp/fs/read_local_files"
+"#
+            .to_string(),
+        )
+        .expect("Failed to parse config");
+
+        let files = walk_path(&config, "a").unwrap();
 
         assert_eq!(files[0].path.to_str(), Some("file_1"));
         assert_eq!(files[1].path.to_str(), Some("file_2"));

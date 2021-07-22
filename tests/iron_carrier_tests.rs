@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::iter::Iterator;
 use std::path::Path;
+use std::time::SystemTime;
 use std::{path::PathBuf, thread, time::Duration};
 
 use iron_carrier::config::Config;
@@ -91,7 +92,7 @@ a = "./tmp/peer_{}"
 
 #[test]
 fn test_partial_sync() {
-    enable_logs(2);
+    // enable_logs(2);
     let mut port = 8090u16;
     for peer_name in ["a", "b", "c"] {
         fs::remove_dir_all(format!("./tmp/peer_{}", peer_name)).expect("Failed to cleanup tmp dir");
@@ -149,5 +150,48 @@ a = "./tmp/peer_{}"
         );
 
         assert!(!PathBuf::from(format!("./tmp/peer_{}/new_file_2", peer_name)).exists());
+    }
+}
+
+#[test]
+fn test_sync_deleted_files() {
+    // enable_logs(2);
+    let mut port = 8090u16;
+    for peer_name in ["a", "b"] {
+        fs::remove_dir_all(format!("./tmp/peer_{}", peer_name)).expect("Failed to cleanup tmp dir");
+        fs::remove_file(format!("./tmp/peer_{}.log", peer_name))
+            .expect("Faield to remove log file");
+    }
+
+    let log_line = format!(
+        "{},FileDelete:a:deleted_file,Finished\n",
+        SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 5
+    );
+    let _ = std::fs::write("./tmp/peer_a.log", log_line.as_bytes());
+    let _ = std::fs::write("./tmp/peer_b/deleted_file", b"this file will be deleted");
+
+    for peer_name in ["a", "b"] {
+        let config = format!(
+            r#"
+port={}
+log_path = "./tmp/peer_{}.log"
+delay_watcher_events=1
+[paths]
+a = "./tmp/peer_{}"
+"#,
+            port, peer_name, peer_name
+        );
+        port += 1;
+
+        let config = Config::new_from_str(config).unwrap();
+        thread::spawn(move || {
+            iron_carrier::run(config).expect("Carrier failed");
+        });
+    }
+
+    thread::sleep(Duration::from_secs(5));
+
+    for peer_name in ["a", "b"] {
+        assert!(!PathBuf::from(format!("./tmp/peer_{}/deleted_file", peer_name)).exists());
     }
 }
