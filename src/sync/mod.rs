@@ -17,12 +17,6 @@ pub use synchronizer::Synchronizer;
 
 const TRANSPORT_PROTOCOL: Transport = Transport::FramedTcp;
 
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Copy, Clone)]
-pub(crate) enum SyncType {
-    Full,
-    Partial,
-}
-
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum QueueEventType {
     Signal,
@@ -44,7 +38,7 @@ impl std::fmt::Display for QueueEventType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum CarrierEvent {
-    StartSync(SyncType),
+    StartSync,
     EndSync,
     CloseConnections,
     SetPeerId(u64),
@@ -68,7 +62,7 @@ pub(crate) enum CarrierEvent {
 impl std::fmt::Display for CarrierEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CarrierEvent::StartSync(sync_type) => write!(f, "Start Sync ({:?})", sync_type),
+            CarrierEvent::StartSync => write!(f, "Start Sync"),
             CarrierEvent::EndSync => write!(f, "End Sync"),
             CarrierEvent::CloseConnections => write!(f, "Close all connections"),
             CarrierEvent::SetPeerId(peer_id) => write!(f, "Set peer id to {}", peer_id),
@@ -100,6 +94,13 @@ pub(crate) enum WatcherEvent {
     Updated(FileInfo),
     Moved(FileInfo, FileInfo),
     Deleted(FileInfo),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EventSupression {
+    Write,
+    Delete,
+    Rename,
 }
 
 #[derive(Debug, Hash, Eq, PartialEq)]

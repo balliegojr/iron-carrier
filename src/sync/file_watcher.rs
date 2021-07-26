@@ -10,12 +10,12 @@ use std::{
 use message_io::node::NodeHandler;
 use notify::{watcher, DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 
-use super::{CarrierEvent, WatcherEvent};
+use super::{CarrierEvent, EventSupression, WatcherEvent};
 use crate::{config::Config, fs::FileInfo};
 
 pub(crate) struct FileWatcher {
     _notify_watcher: RecommendedWatcher,
-    event_supression: Arc<Mutex<HashSet<FileInfo>>>,
+    event_supression: Arc<Mutex<HashMap<FileInfo, EventSupression>>>,
 }
 
 impl FileWatcher {
@@ -34,15 +34,18 @@ impl FileWatcher {
 
         let file_watcher = FileWatcher {
             _notify_watcher,
-            event_supression: Arc::new(Mutex::new(HashSet::new())),
+            event_supression: Arc::new(Mutex::new(HashMap::new())),
         };
         file_watcher.start_event_processing(rx, handler, config);
 
         Ok(file_watcher)
     }
 
-    pub fn supress_next_event(&self, file_info: FileInfo) {
-        self.event_supression.lock().unwrap().insert(file_info);
+    pub fn supress_next_event(&self, file_info: FileInfo, event_type: EventSupression) {
+        self.event_supression
+            .lock()
+            .unwrap()
+            .insert(file_info, event_type);
     }
 
     fn start_event_processing(
@@ -100,7 +103,7 @@ fn get_alias_for_path(
 fn map_to_carrier_event(
     event: DebouncedEvent,
     paths: &HashMap<String, PathBuf>,
-    event_supression: &mut HashSet<FileInfo>,
+    event_supression: &mut HashMap<FileInfo, EventSupression>,
 ) -> Option<CarrierEvent> {
     match event {
         notify::DebouncedEvent::Create(file_path) => {
@@ -113,10 +116,12 @@ fn map_to_carrier_event(
             let relative_path = file_path.strip_prefix(&root).ok()?;
 
             let file = FileInfo::new(alias, relative_path.to_owned(), metadata);
-            if event_supression.remove(&file) {
-                None
-            } else {
-                Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Created(file)))
+            match event_supression.get(&file) {
+                Some(supression) if *supression == EventSupression::Write => {
+                    event_supression.remove(&file);
+                    None
+                }
+                _ => Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Created(file))),
             }
         }
 
@@ -130,10 +135,12 @@ fn map_to_carrier_event(
             let relative_path = file_path.strip_prefix(&root).ok()?;
 
             let file = FileInfo::new(alias, relative_path.to_owned(), metadata);
-            if event_supression.remove(&file) {
-                None
-            } else {
-                Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Updated(file)))
+            match event_supression.get(&file) {
+                Some(supression) if *supression == EventSupression::Write => {
+                    event_supression.remove(&file);
+                    None
+                }
+                _ => Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Updated(file))),
             }
         }
         notify::DebouncedEvent::Remove(file_path) => {
@@ -145,10 +152,12 @@ fn map_to_carrier_event(
             let relative_path = file_path.strip_prefix(&root).ok()?;
 
             let file = FileInfo::new_deleted(alias, relative_path.to_owned(), None);
-            if event_supression.remove(&file) {
-                None
-            } else {
-                Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Deleted(file)))
+            match event_supression.get(&file) {
+                Some(supression) if *supression == EventSupression::Delete => {
+                    event_supression.remove(&file);
+                    None
+                }
+                _ => Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Deleted(file))),
             }
         }
         notify::DebouncedEvent::Rename(src_path, dest_path) => {
@@ -164,12 +173,14 @@ fn map_to_carrier_event(
             let relative_path = dest_path.strip_prefix(&root).ok()?;
             let dest_file = FileInfo::new(alias, relative_path.to_owned(), metadata?);
 
-            if event_supression.remove(&src_file) {
-                None
-            } else {
-                Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Moved(
+            match event_supression.get(&src_file) {
+                Some(supression) if *supression == EventSupression::Rename => {
+                    event_supression.remove(&src_file);
+                    None
+                }
+                _ => Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Moved(
                     src_file, dest_file,
-                )))
+                ))),
             }
         }
         _ => None,

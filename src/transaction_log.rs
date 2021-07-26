@@ -1,4 +1,3 @@
-use crate::sync::SyncType;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
@@ -143,7 +142,7 @@ impl FromStr for LogEvent {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum EventType {
-    Sync(SyncType, u64),
+    Sync(u64),
     FileDelete(String, PathBuf),
     FileCreate(String, PathBuf),
     FileWrite(String, PathBuf),
@@ -153,7 +152,7 @@ pub(crate) enum EventType {
 impl std::fmt::Display for EventType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EventType::Sync(sync_type, peer_id) => write!(f, "Sync:{:?}:{}", sync_type, peer_id),
+            EventType::Sync(peer_id) => write!(f, "Sync:{}", peer_id),
             EventType::FileDelete(storage, file_path) => {
                 write!(
                     f,
@@ -199,15 +198,7 @@ impl FromStr for EventType {
         let mut next_or = || parts.next().ok_or(TransactionLogError::InvalidStringFormat);
 
         match next_or()? {
-            "Sync" => {
-                let sync_type = match next_or()? {
-                    "Full" => SyncType::Full,
-                    "Partial" => SyncType::Partial,
-                    _ => return Err(TransactionLogError::InvalidStringFormat),
-                };
-
-                Ok(EventType::Sync(sync_type, next_or()?.parse()?))
-            }
+            "Sync" => Ok(EventType::Sync(next_or()?.parse()?)),
             "FileDelete" => Ok(EventType::FileDelete(next_or()?.into(), next_or()?.into())),
             "FileCreate" => Ok(EventType::FileCreate(next_or()?.into(), next_or()?.into())),
             "FileWrite" => Ok(EventType::FileWrite(next_or()?.into(), next_or()?.into())),
@@ -271,7 +262,7 @@ mod tests {
         {
             let mut log = TransactionLogWriter::new(&mut stream);
 
-            log.append(EventType::Sync(SyncType::Full, 1), EventStatus::Started)?;
+            log.append(EventType::Sync(1), EventStatus::Started)?;
             log.append(
                 EventType::FileCreate("books".into(), "some/path".into()),
                 EventStatus::Finished,
@@ -309,7 +300,7 @@ mod tests {
         assert_eq!(
             LogEvent {
                 timestamp: 10,
-                event_type: EventType::Sync(SyncType::Full, 1),
+                event_type: EventType::Sync(1),
                 event_status: EventStatus::Started
             },
             events[0]

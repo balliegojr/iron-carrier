@@ -10,6 +10,7 @@ use super::{CarrierEvent, TRANSPORT_PROTOCOL};
 pub(crate) struct ConnectedPeers {
     id_endpoint: HashMap<u64, Endpoint>,
     handler: NodeHandler<CarrierEvent>,
+    waiting_identification: HashSet<SocketAddr>,
 }
 
 impl ConnectedPeers {
@@ -17,31 +18,43 @@ impl ConnectedPeers {
         Self {
             id_endpoint: HashMap::new(),
             handler,
+            waiting_identification: HashSet::new(),
         }
     }
-    pub fn connect_all(&mut self, addresses: HashSet<SocketAddr>) {
+    pub fn connect_all(&mut self, addresses: HashSet<SocketAddr>) -> usize {
         let connected_peers: HashSet<SocketAddr> = self
             .id_endpoint
             .iter()
             .map(|(_, peer)| peer.addr())
             .collect();
 
+        log::info!(
+            "Received request to connect to {} peers, will connect to only {}",
+            addresses.len(),
+            connected_peers.len()
+        );
         let addresses: Vec<&SocketAddr> = addresses.difference(&connected_peers).collect();
         if addresses.is_empty() {
             self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
         } else {
-            for address in addresses {
+            for address in &addresses {
                 log::debug!("Connecting to peer {:?}", address);
-                if self
+                match self
                     .handler
                     .network()
-                    .connect(TRANSPORT_PROTOCOL, *address)
-                    .is_err()
+                    .connect(TRANSPORT_PROTOCOL, **address)
                 {
-                    log::error!("Error connecting to peer");
+                    Ok(_) => {
+                        self.waiting_identification.insert(**address);
+                    }
+                    Err(_) => {
+                        log::error!("Error connecting to peer");
+                    }
                 }
             }
         }
+
+        addresses.len()
     }
     pub fn disconnect_all(&mut self) {
         for (_, endpoint) in self.id_endpoint.drain() {
@@ -49,9 +62,19 @@ impl ConnectedPeers {
         }
     }
     pub fn add_peer(&mut self, endpoint: Endpoint, peer_id: u64) {
-        let old_endpoint = self.id_endpoint.insert(peer_id, endpoint);
-        if let Some(endpoint) = old_endpoint {
-            self.handler.network().remove(endpoint.resource_id());
+        match self.id_endpoint.contains_key(&peer_id) {
+            true => {
+                self.handler.network().remove(endpoint.resource_id());
+            }
+            false => {
+                self.id_endpoint.insert(peer_id, endpoint);
+            }
+        }
+
+        if self.waiting_identification.remove(&endpoint.addr())
+            && self.waiting_identification.is_empty()
+        {
+            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
         }
     }
     pub fn remove_endpoint(&mut self, endpoint: Endpoint) {

@@ -16,7 +16,7 @@ use crate::{
     config::Config,
     fs::{self, FileInfo},
     hash_helper,
-    sync::{broadcast_message_to, SyncType, TRANSPORT_PROTOCOL},
+    sync::{broadcast_message_to, EventSupression, TRANSPORT_PROTOCOL},
     transaction_log::{self, EventStatus, EventType, TransactionLogWriter},
 };
 
@@ -32,7 +32,6 @@ use rand::Rng;
 enum NodeStatus {
     Idle,
     BusyFullSync(bool),
-    BusyPartialSync(bool),
 }
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -90,11 +89,13 @@ impl Synchronizer {
         let mut rng = rand::thread_rng();
         let wait = rng.gen_range(3.0..5.0);
 
-        self.handler.signals().send_with_timer(
-            CarrierEvent::StartSync(SyncType::Full),
-            Duration::from_secs_f64(wait),
-        );
+        self.handler
+            .signals()
+            .send_with_timer(CarrierEvent::StartSync, Duration::from_secs_f64(wait));
 
+        self.listen_for_events(listener)
+    }
+    fn listen_for_events(&mut self, listener: NodeListener<CarrierEvent>) -> crate::Result<()> {
         self.handler
             .network()
             .listen(TRANSPORT_PROTOCOL, format!("0.0.0.0:{}", self.config.port))
@@ -163,7 +164,7 @@ impl Synchronizer {
     fn handle_signal(&mut self, signal: CarrierEvent) -> crate::Result<()> {
         log::debug!("{} - Received Signal {} ", self.node_id, signal);
         match signal {
-            CarrierEvent::StartSync(sync_type) => {
+            CarrierEvent::StartSync => {
                 if self.node_status != NodeStatus::Idle {
                     return Ok(());
                 }
@@ -173,34 +174,15 @@ impl Synchronizer {
                     return Ok(());
                 }
 
-                match sync_type {
-                    SyncType::Full => {
-                        if !self.set_node_status(NodeStatus::BusyFullSync(true)) {
-                            return Ok(());
-                        }
-
-                        let storages = self.config.paths.keys().cloned().collect();
-                        self.session_state = Some(SynchronizationSession::new(storages));
-                        self.file_watcher = None;
-
-                        self.add_queue_event(
-                            CarrierEvent::StartSync(SyncType::Full),
-                            QueueEventType::BroadcastAndWait,
-                        );
-
-                        self.add_queue_event(CarrierEvent::SyncNextStorage, QueueEventType::Signal);
-                    }
-                    SyncType::Partial => {
-                        if !self.set_node_status(NodeStatus::BusyPartialSync(true)) {
-                            return Ok(());
-                        }
-
-                        self.events_queue.push_front((
-                            CarrierEvent::StartSync(SyncType::Partial),
-                            QueueEventType::BroadcastAndWait,
-                        ));
-                    }
+                if !self.set_node_status(NodeStatus::BusyFullSync(true)) {
+                    return Ok(());
                 }
+
+                let storages = self.config.paths.keys().cloned().collect();
+                self.session_state = Some(SynchronizationSession::new(storages));
+
+                self.add_queue_event(CarrierEvent::StartSync, QueueEventType::BroadcastAndWait);
+                self.add_queue_event(CarrierEvent::SyncNextStorage, QueueEventType::Signal);
 
                 self.sync_steps = HashMap::new();
                 self.sync_steps
@@ -210,22 +192,12 @@ impl Synchronizer {
                 self.connected_peers.connect_all(addresses);
             }
             CarrierEvent::EndSync => {
-                let sync_type = match self.node_status {
+                match self.node_status {
                     NodeStatus::Idle => {
                         return Ok(());
                     }
                     NodeStatus::BusyFullSync(_) => {
                         self.session_state = None;
-                        self.file_watcher =
-                            get_file_watcher(self.config.clone(), self.handler.clone());
-                        SyncType::Full
-                    }
-                    NodeStatus::BusyPartialSync(is_initiator) => {
-                        if is_initiator && !self.events_queue.is_empty() {
-                            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
-                            return Ok(());
-                        }
-                        SyncType::Partial
                     }
                 };
 
@@ -233,7 +205,7 @@ impl Synchronizer {
                 self.connected_peers
                     .get_all_identifications()
                     .try_for_each(|id| {
-                        log_writer.append(EventType::Sync(sync_type, *id), EventStatus::Finished)
+                        log_writer.append(EventType::Sync(*id), EventStatus::Finished)
                     })?;
 
                 broadcast_message_to(
@@ -332,17 +304,18 @@ impl Synchronizer {
                             self.connected_peers.get_all_identified_endpoints(),
                         ),
                     },
-                    None => {
-                        let is_initiator = match self.node_status {
-                            NodeStatus::Idle => false,
-                            NodeStatus::BusyFullSync(is_initiator)
-                            | NodeStatus::BusyPartialSync(is_initiator) => is_initiator,
-                        };
-
-                        if is_initiator && !self.file_transfer_man.has_pending_transfers() {
-                            self.handler.signals().send(CarrierEvent::EndSync);
+                    None => match self.node_status {
+                        NodeStatus::Idle => {
+                            if !self.file_transfer_man.has_pending_transfers() {
+                                self.handler.signals().send(CarrierEvent::CloseConnections);
+                            }
                         }
-                    }
+                        NodeStatus::BusyFullSync(is_initiator) => {
+                            if is_initiator && !self.file_transfer_man.has_pending_transfers() {
+                                self.handler.signals().send(CarrierEvent::EndSync);
+                            }
+                        }
+                    },
                 }
             }
             CarrierEvent::DeleteFile(file) => {
@@ -373,6 +346,12 @@ impl Synchronizer {
                 self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
             }
             CarrierEvent::FileWatcherEvent(watcher_event) => {
+                dbg!(&watcher_event);
+                let addresses = self.get_peer_addresses();
+                if addresses.is_empty() {
+                    return Ok(());
+                }
+
                 let (event, event_type) = match watcher_event {
                     super::WatcherEvent::Created(file_info) => {
                         self.get_log_writer()?.append(
@@ -423,11 +402,8 @@ impl Synchronizer {
                 };
 
                 self.add_queue_event(event, event_type);
-                if self.node_status == NodeStatus::Idle {
-                    self.handler
-                        .signals()
-                        .send(CarrierEvent::StartSync(SyncType::Partial));
-                }
+                self.connected_peers.connect_all(addresses);
+                self.get_log_writer()?;
             }
             _ => unreachable!(),
         }
@@ -441,7 +417,7 @@ impl Synchronizer {
     ) -> crate::Result<()> {
         log::debug!("{} - Received Event {} ", self.node_id, event);
         match event {
-            CarrierEvent::StartSync(sync_type) => {
+            CarrierEvent::StartSync => {
                 if self.node_status != NodeStatus::Idle {
                     send_message(
                         &self.handler,
@@ -451,38 +427,27 @@ impl Synchronizer {
                     return Ok(());
                 }
 
-                match sync_type {
-                    SyncType::Full => {
-                        self.set_node_status(NodeStatus::BusyFullSync(false));
-                        self.file_watcher = None;
-                    }
-                    SyncType::Partial => {
-                        self.set_node_status(NodeStatus::BusyPartialSync(false));
-                    }
-                }
+                self.set_node_status(NodeStatus::BusyFullSync(false));
+
                 let peer_id = self.connected_peers.get_peer_id(endpoint).unwrap();
                 self.get_log_writer()?
-                    .append(EventType::Sync(sync_type, peer_id), EventStatus::Started)?;
+                    .append(EventType::Sync(peer_id), EventStatus::Started)?;
 
                 send_message(&self.handler, &CarrierEvent::StartSyncReply(true), endpoint);
             }
             CarrierEvent::EndSync => {
-                let sync_type = match self.node_status {
+                match self.node_status {
                     NodeStatus::Idle => {
                         return Ok(());
                     }
                     NodeStatus::BusyFullSync(_) => {
                         self.session_state = None;
-                        self.file_watcher =
-                            get_file_watcher(self.config.clone(), self.handler.clone());
-                        SyncType::Full
                     }
-                    NodeStatus::BusyPartialSync(_) => SyncType::Partial,
-                };
+                }
 
                 let peer_id = self.connected_peers.get_peer_id(endpoint).unwrap();
                 self.get_log_writer()?
-                    .append(EventType::Sync(sync_type, peer_id), EventStatus::Finished)?;
+                    .append(EventType::Sync(peer_id), EventStatus::Finished)?;
 
                 self.set_node_status(NodeStatus::Idle);
                 self.handler
@@ -491,24 +456,15 @@ impl Synchronizer {
             }
             CarrierEvent::SetPeerId(peer_id) => {
                 self.connected_peers.add_peer(endpoint, peer_id);
-                if self.node_status != NodeStatus::Idle {
-                    self.increment_step(SyncStep::PeerIdentification);
-                }
             }
             CarrierEvent::StartSyncReply(accepted) => {
                 if !accepted {
                     self.connected_peers.remove_endpoint(endpoint);
                 }
 
-                let sync_type = match self.node_status {
-                    NodeStatus::Idle => unreachable!(),
-                    NodeStatus::BusyFullSync(_) => SyncType::Full,
-                    NodeStatus::BusyPartialSync(_) => SyncType::Partial,
-                };
-
                 let peer_id = self.connected_peers.get_peer_id(endpoint).unwrap();
                 self.get_log_writer()?
-                    .append(EventType::Sync(sync_type, peer_id), EventStatus::Started)?;
+                    .append(EventType::Sync(peer_id), EventStatus::Started)?;
 
                 self.increment_step(SyncStep::PeerSyncReply);
             }
@@ -556,7 +512,7 @@ impl Synchronizer {
                 self.delete_file(&file)?;
 
                 if let Some(ref mut file_watcher) = self.file_watcher {
-                    file_watcher.supress_next_event(file);
+                    file_watcher.supress_next_event(file, EventSupression::Delete);
                 }
             }
             CarrierEvent::RequestFile(file_info, is_new) => {
@@ -566,10 +522,13 @@ impl Synchronizer {
             CarrierEvent::MoveFile(src, dst) => {
                 self.move_file(&src, &dst)?;
                 if let Some(ref mut file_watcher) = self.file_watcher {
-                    file_watcher.supress_next_event(src);
+                    file_watcher.supress_next_event(src, EventSupression::Rename);
                 }
             }
             CarrierEvent::FileSyncEvent(ev) => {
+                // TODO: fix this
+                self.get_log_writer()?;
+
                 self.file_transfer_man.file_sync_event(
                     ev,
                     endpoint,
@@ -659,9 +618,9 @@ impl Synchronizer {
         let is_valid_state_change = match &self.node_status {
             NodeStatus::Idle => match new_status {
                 NodeStatus::Idle => false,
-                NodeStatus::BusyFullSync(_) | NodeStatus::BusyPartialSync(_) => true,
+                NodeStatus::BusyFullSync(_) => true,
             },
-            NodeStatus::BusyFullSync(_) | NodeStatus::BusyPartialSync(_) => {
+            NodeStatus::BusyFullSync(_) => {
                 matches!(new_status, NodeStatus::Idle)
             }
         };

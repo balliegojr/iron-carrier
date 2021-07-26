@@ -299,7 +299,7 @@ impl FileTransferMan {
         )?;
 
         if let Some(ref mut file_watcher) = file_watcher {
-            file_watcher.supress_next_event(file_info);
+            file_watcher.supress_next_event(file_info, super::EventSupression::Write);
         }
 
         self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
