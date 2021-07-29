@@ -48,6 +48,7 @@ impl FileTransferMan {
         file_info: FileInfo,
         peer: Endpoint,
         is_new_file: bool,
+        is_request: bool,
     ) -> crate::Result<()> {
         log::info!("Sending file {:?} to peer", file_info.path);
 
@@ -56,7 +57,12 @@ impl FileTransferMan {
             Some(file_sync) => {
                 file_sync.peers_count += 1;
 
-                FileSyncEvent::PrepareSync(file_info, file_hash, file_sync.block_index.clone())
+                FileSyncEvent::PrepareSync(
+                    file_info,
+                    file_hash,
+                    file_sync.block_index.clone(),
+                    is_request,
+                )
             }
             None => {
                 let file_path = file_info.get_absolute_path(&self.config)?;
@@ -76,9 +82,10 @@ impl FileTransferMan {
                     block_index: block_index.clone(),
                     block_size,
                     peers_count: 1,
+                    consume_queue: !is_request,
                 };
                 self.sync_out.insert(file_hash, file_sync);
-                FileSyncEvent::PrepareSync(file_info, file_hash, block_index)
+                FileSyncEvent::PrepareSync(file_info, file_hash, block_index, is_request)
             }
         };
 
@@ -132,9 +139,15 @@ impl FileTransferMan {
         log_writer: &mut TransactionLogWriter<File>,
     ) -> crate::Result<()> {
         match event {
-            FileSyncEvent::PrepareSync(file_info, file_hash, block_index) => {
-                self.handle_prepare_sync(file_info, file_hash, block_index, endpoint, log_writer)
-            }
+            FileSyncEvent::PrepareSync(file_info, file_hash, block_index, consume_queue) => self
+                .handle_prepare_sync(
+                    file_info,
+                    file_hash,
+                    block_index,
+                    endpoint,
+                    log_writer,
+                    consume_queue,
+                ),
             FileSyncEvent::SyncBlocks(file_hash, out_of_sync) => {
                 self.handle_sync_blocks(file_hash, out_of_sync, endpoint)
             }
@@ -154,6 +167,7 @@ impl FileTransferMan {
         block_index: Vec<(usize, u64)>,
         endpoint: Endpoint,
         log_writer: &mut TransactionLogWriter<File>,
+        consume_queue: bool,
     ) -> crate::Result<()> {
         let file_path = file_info.get_absolute_path(&self.config)?;
 
@@ -202,6 +216,7 @@ impl FileTransferMan {
             block_index,
             block_size,
             peers_count: 1,
+            consume_queue,
         };
 
         self.sync_in.insert(file_hash, file_sync);
@@ -245,7 +260,9 @@ impl FileTransferMan {
             &CarrierEvent::FileSyncEvent(FileSyncEvent::EndSync(file_hash)),
             endpoint,
         );
-        self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+        if file_sync.consume_queue {
+            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+        }
         file_sync.peers_count -= 1;
         if file_sync.peers_count == 0 {
             self.sync_out.remove(&file_hash);
@@ -302,7 +319,9 @@ impl FileTransferMan {
             file_watcher.supress_next_event(file_info, super::EventSupression::Write);
         }
 
-        self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+        if file_sync.consume_queue {
+            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+        }
         Ok(())
     }
 }
@@ -326,4 +345,5 @@ struct FileSync {
     block_size: u64,
     block_index: Vec<(usize, u64)>,
     peers_count: u32,
+    consume_queue: bool,
 }

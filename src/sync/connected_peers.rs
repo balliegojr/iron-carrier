@@ -29,7 +29,7 @@ impl ConnectedPeers {
             .collect();
 
         log::info!(
-            "Received request to connect to {} peers, will connect to only {}",
+            "Received request to connect to {} peers, {} are already connected",
             addresses.len(),
             connected_peers.len()
         );
@@ -89,9 +89,6 @@ impl ConnectedPeers {
         self.id_endpoint
             .iter()
             .find_map(|(id, e)| if *e == endpoint { Some(*id) } else { None })
-    }
-    pub fn get_all_identifications(&self) -> impl Iterator<Item = &u64> {
-        self.id_endpoint.keys()
     }
     pub fn get_all_identified_endpoints(&self) -> impl Iterator<Item = &Endpoint> {
         self.id_endpoint.values()

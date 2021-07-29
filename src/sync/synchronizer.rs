@@ -9,7 +9,7 @@ use std::{
 
 use super::{
     connected_peers::ConnectedPeers, file_transfer_man::FileTransferMan, file_watcher::FileWatcher,
-    send_message, synchronization_session::SynchronizationSession, CarrierEvent, Origin,
+    send_message, synchronization_session::SynchronizationState, CarrierEvent, Origin,
     QueueEventType, COMMAND_MESSAGE, STREAM_MESSAGE,
 };
 use crate::{
@@ -28,31 +28,24 @@ use message_io::{network::NetEvent, node::NodeListener};
 
 use rand::Rng;
 
-#[derive(Debug, Eq, PartialEq)]
-enum NodeStatus {
-    Idle,
-    BusyFullSync(bool),
-}
-
-#[derive(Debug, Eq, PartialEq, Hash)]
-enum SyncStep {
-    PeerIdentification,
-    PeerSyncReply,
+enum StorageState {
+    CurrentHash(u64),
+    Sync,
+    SyncByPeer(u64),
 }
 
 pub struct Synchronizer {
     node_id: u64,
     config: Arc<Config>,
-    node_status: NodeStatus,
-    sync_steps: HashMap<SyncStep, usize>,
     file_watcher: Option<FileWatcher>,
     service_discovery: Option<ServiceDiscovery>,
     handler: NodeHandler<CarrierEvent>,
-    session_state: Option<SynchronizationSession>,
+    session_state: SynchronizationState,
     connected_peers: ConnectedPeers,
     file_transfer_man: FileTransferMan,
     events_queue: LinkedList<(CarrierEvent, QueueEventType)>,
     log_writer: Option<TransactionLogWriter<File>>,
+    storage_state: HashMap<String, StorageState>,
 }
 
 impl Synchronizer {
@@ -70,14 +63,13 @@ impl Synchronizer {
             config,
             file_watcher,
             service_discovery,
-            node_status: NodeStatus::Idle,
-            sync_steps: HashMap::new(),
             handler,
             connected_peers,
-            session_state: None,
+            session_state: SynchronizationState::new(),
             file_transfer_man,
             events_queue: LinkedList::new(),
             log_writer: None,
+            storage_state: HashMap::new(),
         };
 
         s.start(listener)?;
@@ -88,10 +80,16 @@ impl Synchronizer {
         log::debug!("starting syncronizer");
         let mut rng = rand::thread_rng();
         let wait = rng.gen_range(3.0..5.0);
-
         self.handler
             .signals()
             .send_with_timer(CarrierEvent::StartSync, Duration::from_secs_f64(wait));
+
+        for storage in self.config.paths.keys() {
+            self.storage_state.insert(
+                storage.clone(),
+                StorageState::CurrentHash(self.get_storage_state(&storage)?),
+            );
+        }
 
         self.listen_for_events(listener)
     }
@@ -165,61 +163,73 @@ impl Synchronizer {
         log::debug!("{} - Received Signal {} ", self.node_id, signal);
         match signal {
             CarrierEvent::StartSync => {
-                if self.node_status != NodeStatus::Idle {
-                    return Ok(());
-                }
-
                 let addresses = self.get_peer_addresses();
                 if addresses.is_empty() {
                     return Ok(());
                 }
 
-                if !self.set_node_status(NodeStatus::BusyFullSync(true)) {
+                if self
+                    .storage_state
+                    .values()
+                    .all(|state| !matches!(state, &StorageState::CurrentHash(_)))
+                {
                     return Ok(());
                 }
 
-                let storages = self.config.paths.keys().cloned().collect();
-                self.session_state = Some(SynchronizationSession::new(storages));
-
-                self.add_queue_event(CarrierEvent::StartSync, QueueEventType::BroadcastAndWait);
-                self.add_queue_event(CarrierEvent::SyncNextStorage, QueueEventType::Signal);
-
-                self.sync_steps = HashMap::new();
-                self.sync_steps
-                    .insert(SyncStep::PeerIdentification, addresses.len());
-                self.sync_steps
-                    .insert(SyncStep::PeerSyncReply, addresses.len());
+                self.add_queue_event(CarrierEvent::ExchangeStorageStates, QueueEventType::Signal);
                 self.connected_peers.connect_all(addresses);
             }
-            CarrierEvent::EndSync => {
-                match self.node_status {
-                    NodeStatus::Idle => {
-                        return Ok(());
-                    }
-                    NodeStatus::BusyFullSync(_) => {
-                        self.session_state = None;
-                    }
-                };
+            CarrierEvent::ExchangeStorageStates => {
+                let state = self
+                    .storage_state
+                    .iter()
+                    .filter_map(|(storage, state)| match state {
+                        StorageState::CurrentHash(state) => Some((storage.clone(), *state)),
+                        _ => None,
+                    })
+                    .collect();
 
-                let mut log_writer = self.log_writer.take().unwrap();
-                self.connected_peers
-                    .get_all_identifications()
-                    .try_for_each(|id| {
-                        log_writer.append(EventType::Sync(*id), EventStatus::Finished)
-                    })?;
+                let expected_replies = broadcast_message_to(
+                    &self.handler,
+                    CarrierEvent::QueryOutOfSyncStorages(state),
+                    self.connected_peers.get_all_identified_endpoints(),
+                );
+
+                self.session_state
+                    .start_sync_after_replies(expected_replies);
+            }
+            CarrierEvent::EndSync => {
+                let storages: Vec<String> = self
+                    .storage_state
+                    .iter()
+                    .filter(|(_, state)| matches!(**state, StorageState::Sync))
+                    .map(|(storage, _)| storage.clone())
+                    .collect();
+
+                if storages.is_empty() {
+                    self.handler
+                        .signals()
+                        .send_with_timer(CarrierEvent::CloseConnections, Duration::from_secs(15));
+                    return Ok(());
+                }
+
+                for storage in storages {
+                    let state = StorageState::CurrentHash(self.get_storage_state(&storage)?);
+                    self.storage_state.entry(storage).and_modify(|v| *v = state);
+                }
 
                 broadcast_message_to(
                     &self.handler,
                     CarrierEvent::EndSync,
                     self.connected_peers.get_all_identified_endpoints(),
                 );
-                self.set_node_status(NodeStatus::Idle);
+
                 self.handler
                     .signals()
-                    .send_with_timer(CarrierEvent::CloseConnections, Duration::from_secs(15));
+                    .send(CarrierEvent::ExchangeStorageStates);
             }
             CarrierEvent::CloseConnections => {
-                if self.node_status == NodeStatus::Idle {
+                if !self.file_transfer_man.has_pending_transfers() {
                     self.connected_peers.disconnect_all();
                 } else {
                     self.handler
@@ -227,23 +237,27 @@ impl Synchronizer {
                         .send_with_timer(CarrierEvent::CloseConnections, Duration::from_secs(60));
                 }
             }
-            CarrierEvent::SyncNextStorage => {
-                match self.session_state.as_mut().unwrap().get_next_storage() {
-                    Some(storage) => {
-                        self.handler
-                            .signals()
-                            .send(CarrierEvent::BuildStorageIndex(storage.clone()));
-                        broadcast_message_to(
-                            &self.handler,
-                            CarrierEvent::BuildStorageIndex(storage),
-                            self.connected_peers.get_all_identified_endpoints(),
-                        );
-                    }
-                    None => {
-                        self.handler.signals().send(CarrierEvent::EndSync);
-                    }
+            CarrierEvent::SyncNextStorage => match self.session_state.get_next_storage() {
+                Some((storage, peers)) => {
+                    self.handler
+                        .signals()
+                        .send(CarrierEvent::BuildStorageIndex(storage.clone()));
+
+                    let peers: Vec<Endpoint> = peers
+                        .into_iter()
+                        .filter_map(|peer_id| self.connected_peers.get_peer_endpoint(peer_id))
+                        .collect();
+
+                    broadcast_message_to(
+                        &self.handler,
+                        CarrierEvent::BuildStorageIndex(storage),
+                        peers.iter(),
+                    );
                 }
-            }
+                None => {
+                    self.handler.signals().send(CarrierEvent::EndSync);
+                }
+            },
             CarrierEvent::BuildStorageIndex(storage) => {
                 log::info!("Building index for {}", storage);
                 let index = fs::walk_path(&self.config, &storage).unwrap();
@@ -251,31 +265,29 @@ impl Synchronizer {
 
                 self.handler
                     .signals()
-                    .send(CarrierEvent::SetStorageIndex(Some(index)));
+                    .send(CarrierEvent::SetStorageIndex(index));
             }
             CarrierEvent::SetStorageIndex(index) => {
                 let origin = Origin::Initiator;
 
                 log::debug!("Setting index with origin {:?}", origin);
 
-                let session = self.session_state.as_mut().unwrap();
-                session.set_storage_index(origin, index);
-
-                let peers: Vec<u64> = self
-                    .connected_peers
-                    .get_all_identifications()
-                    .copied()
-                    .collect();
-
-                if session.have_index_for_peers(&peers[..]) {
-                    let mut event_queue = session.get_event_queue(&peers[..]);
+                let have_all_indexes = self.session_state.set_storage_index(origin, index);
+                if have_all_indexes {
+                    let mut event_queue = self.session_state.get_event_queue();
+                    log::debug!(
+                        "{} - there are {} actions to sync",
+                        self.node_id,
+                        event_queue.len()
+                    );
+                    log::debug!("{:?}", event_queue);
                     self.events_queue.append(&mut event_queue);
                     self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                 }
             }
             CarrierEvent::ConsumeSyncQueue => {
                 let action = self.events_queue.pop_front();
-                log::debug!("next queue action {:?}", action);
+                log::debug!("{} - next queue action {:?}", self.node_id, action);
                 match action {
                     Some((event, notification_type)) => match notification_type {
                         QueueEventType::Signal => {
@@ -298,24 +310,19 @@ impl Synchronizer {
                             );
                             self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                         }
-                        QueueEventType::BroadcastAndWait => broadcast_message_to(
-                            &self.handler,
-                            event,
-                            self.connected_peers.get_all_identified_endpoints(),
-                        ),
-                    },
-                    None => match self.node_status {
-                        NodeStatus::Idle => {
-                            if !self.file_transfer_man.has_pending_transfers() {
-                                self.handler.signals().send(CarrierEvent::CloseConnections);
-                            }
-                        }
-                        NodeStatus::BusyFullSync(is_initiator) => {
-                            if is_initiator && !self.file_transfer_man.has_pending_transfers() {
-                                self.handler.signals().send(CarrierEvent::EndSync);
-                            }
+                        QueueEventType::BroadcastAndWait => {
+                            broadcast_message_to(
+                                &self.handler,
+                                event,
+                                self.connected_peers.get_all_identified_endpoints(),
+                            );
                         }
                     },
+                    None => {
+                        if !self.file_transfer_man.has_pending_transfers() {
+                            self.handler.signals().send(CarrierEvent::CloseConnections);
+                        }
+                    }
                 }
             }
             CarrierEvent::DeleteFile(file) => {
@@ -326,7 +333,7 @@ impl Synchronizer {
                 match self.connected_peers.get_peer_endpoint(peer_id) {
                     Some(endpoint) => {
                         self.file_transfer_man
-                            .send_file_to_peer(file_info, endpoint, is_new)?;
+                            .send_file_to_peer(file_info, endpoint, is_new, false)?;
                     }
                     None => {
                         self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
@@ -335,8 +342,12 @@ impl Synchronizer {
             }
             CarrierEvent::BroadcastFile(file_info, is_new) => {
                 for peer in self.connected_peers.get_all_identified_endpoints() {
-                    self.file_transfer_man
-                        .send_file_to_peer(file_info.clone(), *peer, is_new)?;
+                    self.file_transfer_man.send_file_to_peer(
+                        file_info.clone(),
+                        *peer,
+                        is_new,
+                        false,
+                    )?;
                 }
 
                 self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
@@ -417,71 +428,81 @@ impl Synchronizer {
     ) -> crate::Result<()> {
         log::debug!("{} - Received Event {} ", self.node_id, event);
         match event {
-            CarrierEvent::StartSync => {
-                if self.node_status != NodeStatus::Idle {
-                    send_message(
-                        &self.handler,
-                        &CarrierEvent::StartSyncReply(false),
-                        endpoint,
-                    );
-                    return Ok(());
-                }
-
-                self.set_node_status(NodeStatus::BusyFullSync(false));
-
-                let peer_id = self.connected_peers.get_peer_id(endpoint).unwrap();
-                self.get_log_writer()?
-                    .append(EventType::Sync(peer_id), EventStatus::Started)?;
-
-                send_message(&self.handler, &CarrierEvent::StartSyncReply(true), endpoint);
-            }
             CarrierEvent::EndSync => {
-                match self.node_status {
-                    NodeStatus::Idle => {
-                        return Ok(());
-                    }
-                    NodeStatus::BusyFullSync(_) => {
-                        self.session_state = None;
-                    }
-                }
-
                 let peer_id = self.connected_peers.get_peer_id(endpoint).unwrap();
-                self.get_log_writer()?
-                    .append(EventType::Sync(peer_id), EventStatus::Finished)?;
+                let storages: Vec<String> = self
+                    .storage_state
+                    .iter()
+                    .filter(|(_, state)| match state {
+                        StorageState::SyncByPeer(p) => *p == peer_id,
+                        _ => false,
+                    })
+                    .map(|(storage, _)| storage.clone())
+                    .collect();
 
-                self.set_node_status(NodeStatus::Idle);
-                self.handler
-                    .signals()
-                    .send_with_timer(CarrierEvent::CloseConnections, Duration::from_secs(15));
+                for storage in storages {
+                    let state = StorageState::CurrentHash(self.get_storage_state(&storage)?);
+                    self.storage_state.entry(storage).and_modify(|v| *v = state);
+                }
             }
             CarrierEvent::SetPeerId(peer_id) => {
                 self.connected_peers.add_peer(endpoint, peer_id);
             }
-            CarrierEvent::StartSyncReply(accepted) => {
-                if !accepted {
-                    self.connected_peers.remove_endpoint(endpoint);
-                }
+            CarrierEvent::QueryOutOfSyncStorages(mut storages) => {
+                // keep only the storages that exists in this peer and have a different hash
+                storages.retain(|storage, peer_storage_hash| {
+                    match self.storage_state.get(storage) {
+                        Some(&StorageState::CurrentHash(hash)) => hash != *peer_storage_hash,
+                        _ => false,
+                    }
+                });
+
+                let storages: Vec<String> = storages.into_iter().map(|(key, _)| key).collect();
 
                 let peer_id = self.connected_peers.get_peer_id(endpoint).unwrap();
-                self.get_log_writer()?
-                    .append(EventType::Sync(peer_id), EventStatus::Started)?;
+                // Changes the storages state to SyncByPeer, to avoid double sync and premature connection close
+                storages.iter().for_each(|storage| {
+                    self.storage_state
+                        .entry(storage.clone())
+                        .and_modify(|v| *v = StorageState::SyncByPeer(peer_id));
+                });
 
-                self.increment_step(SyncStep::PeerSyncReply);
+                send_message(
+                    &self.handler,
+                    &CarrierEvent::ReplyOutOfSyncStorages(storages),
+                    endpoint,
+                );
+            }
+            CarrierEvent::ReplyOutOfSyncStorages(mut storages) => {
+                storages.retain(|storage| match self.storage_state.get(storage) {
+                    Some(state) => !matches!(state, &StorageState::SyncByPeer(_)),
+                    None => false,
+                });
+
+                storages.iter().for_each(|storage| {
+                    let state = self.storage_state.get_mut(storage).unwrap();
+                    *state = StorageState::Sync;
+                });
+
+                let have_all_replies = self.session_state.add_storages_to_sync(
+                    storages,
+                    self.connected_peers.get_peer_id(endpoint).unwrap(),
+                );
+
+                if have_all_replies {
+                    self.handler.signals().send(CarrierEvent::SyncNextStorage);
+                }
             }
             CarrierEvent::BuildStorageIndex(storage) => {
                 log::info!("Building index for {}", storage);
-                let index = match self.config.paths.contains_key(&storage) {
-                    true => {
-                        let index = fs::walk_path(&self.config, &storage).unwrap();
-                        log::debug!("Read {} files ", index.len());
+                if !self.config.paths.contains_key(&storage) {
+                    log::error!("There is no such storage: {}", &storage);
+                    // TODO: panic?
+                    return Ok(());
+                }
 
-                        Some(index)
-                    }
-                    false => {
-                        log::debug!("There is no such storage: {}", &storage);
-                        None
-                    }
-                };
+                let index = fs::walk_path(&self.config, &storage).unwrap();
+                log::debug!("Read {} files ", index.len());
 
                 send_message(
                     &self.handler,
@@ -494,16 +515,15 @@ impl Synchronizer {
 
                 log::debug!("Setting index with origin {:?}", origin);
 
-                let session = self.session_state.as_mut().unwrap();
-                session.set_storage_index(origin, index);
-
-                let peers: Vec<u64> = self
-                    .connected_peers
-                    .get_all_identifications()
-                    .copied()
-                    .collect();
-                if session.have_index_for_peers(&peers[..]) {
-                    let mut event_queue = session.get_event_queue(&peers[..]);
+                let have_all_indexes = self.session_state.set_storage_index(origin, index);
+                if have_all_indexes {
+                    let mut event_queue = self.session_state.get_event_queue();
+                    log::debug!(
+                        "{} - there are {} actions to sync",
+                        self.node_id,
+                        event_queue.len()
+                    );
+                    log::debug!("{:?}", event_queue);
                     self.events_queue.append(&mut event_queue);
                     self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                 }
@@ -517,7 +537,7 @@ impl Synchronizer {
             }
             CarrierEvent::RequestFile(file_info, is_new) => {
                 self.file_transfer_man
-                    .send_file_to_peer(file_info, endpoint, is_new)?;
+                    .send_file_to_peer(file_info, endpoint, is_new, true)?;
             }
             CarrierEvent::MoveFile(src, dst) => {
                 self.move_file(&src, &dst)?;
@@ -539,6 +559,11 @@ impl Synchronizer {
             _ => unreachable!(),
         }
         Ok(())
+    }
+
+    fn get_storage_state(&self, storage: &str) -> crate::Result<u64> {
+        let storage_index = fs::walk_path(&self.config, &storage)?;
+        Ok(fs::get_state_hash(&storage_index[..]))
     }
 
     fn get_log_writer(&mut self) -> crate::Result<&mut TransactionLogWriter<File>> {
@@ -600,48 +625,6 @@ impl Synchronizer {
             event_type
         );
         self.events_queue.push_back((event, event_type));
-    }
-
-    fn increment_step(&mut self, step: SyncStep) {
-        let c = self
-            .sync_steps
-            .get_mut(&step)
-            .expect("There should be a increment step at this point");
-        *c -= 1;
-
-        if *c == 0 {
-            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
-        }
-    }
-
-    fn set_node_status(&mut self, new_status: NodeStatus) -> bool {
-        let is_valid_state_change = match &self.node_status {
-            NodeStatus::Idle => match new_status {
-                NodeStatus::Idle => false,
-                NodeStatus::BusyFullSync(_) => true,
-            },
-            NodeStatus::BusyFullSync(_) => {
-                matches!(new_status, NodeStatus::Idle)
-            }
-        };
-
-        if is_valid_state_change {
-            log::info!(
-                "{} - Node Status: {:?} -> {:?}",
-                self.node_id,
-                self.node_status,
-                new_status
-            );
-            self.node_status = new_status;
-        } else {
-            log::info!(
-                "{} - Node Status: Invalid transition, node is already {:?}",
-                self.node_id,
-                self.node_status
-            );
-        }
-
-        is_valid_state_change
     }
 
     fn get_peer_addresses(&self) -> std::collections::HashSet<SocketAddr> {

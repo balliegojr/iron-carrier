@@ -142,7 +142,6 @@ impl FromStr for LogEvent {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum EventType {
-    Sync(u64),
     FileDelete(String, PathBuf),
     FileCreate(String, PathBuf),
     FileWrite(String, PathBuf),
@@ -152,7 +151,6 @@ pub(crate) enum EventType {
 impl std::fmt::Display for EventType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EventType::Sync(peer_id) => write!(f, "Sync:{}", peer_id),
             EventType::FileDelete(storage, file_path) => {
                 write!(
                     f,
@@ -198,7 +196,6 @@ impl FromStr for EventType {
         let mut next_or = || parts.next().ok_or(TransactionLogError::InvalidStringFormat);
 
         match next_or()? {
-            "Sync" => Ok(EventType::Sync(next_or()?.parse()?)),
             "FileDelete" => Ok(EventType::FileDelete(next_or()?.into(), next_or()?.into())),
             "FileCreate" => Ok(EventType::FileCreate(next_or()?.into(), next_or()?.into())),
             "FileWrite" => Ok(EventType::FileWrite(next_or()?.into(), next_or()?.into())),
@@ -245,7 +242,7 @@ mod tests {
     use super::*;
 
     fn sample_log_stream() -> Cursor<Vec<u8>> {
-        let bytes = br#"10,Sync:Full:1,Started
+        let bytes = br#"
 12,FileDelete:books:some/file/deleted,Finished
 13,FileCreate:books:some/file/created,Finished
 14,FileWrite:books:some/file/update,Started
@@ -262,7 +259,6 @@ mod tests {
         {
             let mut log = TransactionLogWriter::new(&mut stream);
 
-            log.append(EventType::Sync(1), EventStatus::Started)?;
             log.append(
                 EventType::FileCreate("books".into(), "some/path".into()),
                 EventStatus::Finished,
@@ -283,12 +279,11 @@ mod tests {
 
         stream.set_position(0);
         let lines: Vec<String> = stream.lines().map(|x| x.unwrap()).collect();
-        assert_eq!(5, lines.len());
-        assert!(lines[0].ends_with("Sync:Full:1,Started"));
-        assert!(lines[1].ends_with("FileCreate:books:some/path,Finished"));
-        assert!(lines[2].ends_with("FileDelete:books:some/path,Finished"));
-        assert!(lines[3].ends_with("FileWrite:books:some/path,Finished"));
-        assert!(lines[4].ends_with("FileMove:books:source/path:dest/path,Finished"));
+        assert_eq!(4, lines.len());
+        assert!(lines[0].ends_with("FileCreate:books:some/path,Finished"));
+        assert!(lines[1].ends_with("FileDelete:books:some/path,Finished"));
+        assert!(lines[2].ends_with("FileWrite:books:some/path,Finished"));
+        assert!(lines[3].ends_with("FileMove:books:source/path:dest/path,Finished"));
         Ok(())
     }
 
@@ -299,19 +294,11 @@ mod tests {
 
         assert_eq!(
             LogEvent {
-                timestamp: 10,
-                event_type: EventType::Sync(1),
-                event_status: EventStatus::Started
-            },
-            events[0]
-        );
-        assert_eq!(
-            LogEvent {
                 timestamp: 12,
                 event_type: EventType::FileDelete("books".to_string(), "some/file/deleted".into()),
                 event_status: EventStatus::Finished
             },
-            events[1]
+            events[0]
         );
         assert_eq!(
             LogEvent {
@@ -319,7 +306,7 @@ mod tests {
                 event_type: EventType::FileCreate("books".to_string(), "some/file/created".into()),
                 event_status: EventStatus::Finished
             },
-            events[2]
+            events[1]
         );
         assert_eq!(
             LogEvent {
@@ -327,7 +314,7 @@ mod tests {
                 event_type: EventType::FileWrite("books".to_string(), "some/file/update".into()),
                 event_status: EventStatus::Started
             },
-            events[3]
+            events[2]
         );
         assert_eq!(
             LogEvent {
@@ -335,7 +322,7 @@ mod tests {
                 event_type: EventType::FileWrite("books".to_string(), "some/file/update".into()),
                 event_status: EventStatus::Finished
             },
-            events[4]
+            events[3]
         );
         assert_eq!(
             LogEvent {
@@ -347,7 +334,7 @@ mod tests {
                 ),
                 event_status: EventStatus::Finished
             },
-            events[5]
+            events[4]
         );
     }
 

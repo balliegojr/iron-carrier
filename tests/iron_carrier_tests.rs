@@ -44,7 +44,7 @@ fn enable_logs(verbosity: usize) {
 
 #[test]
 fn test_full_sync() {
-    // enable_logs(2);
+    // enable_logs(3);
     let mut contents = HashMap::new();
     let mut port = 8090;
     for peer_name in ["a", "b", "c"] {
@@ -91,7 +91,7 @@ a = "./tmp/peer_{}"
 
 #[test]
 fn test_partial_sync() {
-    enable_logs(2);
+    enable_logs(3);
     let mut port = 8090u16;
     for peer_name in ["a", "b", "c"] {
         let _ = fs::remove_dir_all(format!("./tmp/peer_{}", peer_name));

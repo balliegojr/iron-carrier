@@ -6,6 +6,8 @@ mod file_watcher;
 mod synchronization_session;
 pub mod synchronizer;
 
+use std::collections::HashMap;
+
 use crate::fs::FileInfo;
 use message_io::{
     network::{Endpoint, Transport},
@@ -42,11 +44,15 @@ pub(crate) enum CarrierEvent {
     EndSync,
     CloseConnections,
     SetPeerId(u64),
-    StartSyncReply(bool),
+
+    ExchangeStorageStates,
+    QueryOutOfSyncStorages(HashMap<String, u64>),
+    ReplyOutOfSyncStorages(Vec<String>),
+
     SyncNextStorage,
 
     BuildStorageIndex(String),
-    SetStorageIndex(Option<Vec<FileInfo>>),
+    SetStorageIndex(Vec<FileInfo>),
     ConsumeSyncQueue,
 
     DeleteFile(FileInfo),
@@ -66,7 +72,6 @@ impl std::fmt::Display for CarrierEvent {
             CarrierEvent::EndSync => write!(f, "End Sync"),
             CarrierEvent::CloseConnections => write!(f, "Close all connections"),
             CarrierEvent::SetPeerId(peer_id) => write!(f, "Set peer id to {}", peer_id),
-            CarrierEvent::StartSyncReply(reply) => write!(f, "Start Sync Replied With {}", reply),
             CarrierEvent::SyncNextStorage => write!(f, "Sync next storage"),
             CarrierEvent::BuildStorageIndex(storage) => {
                 write!(f, "Build Storage Index: {}", storage)
@@ -84,6 +89,11 @@ impl std::fmt::Display for CarrierEvent {
             }
             CarrierEvent::FileWatcherEvent(_) => write!(f, "File watcher event"),
             CarrierEvent::FileSyncEvent(ev) => write!(f, "FileSync {}", ev),
+            CarrierEvent::ExchangeStorageStates => write!(f, "Exchange storage states"),
+            CarrierEvent::QueryOutOfSyncStorages(_storages) => write!(f, "Query storages"),
+            CarrierEvent::ReplyOutOfSyncStorages(storages) => {
+                write!(f, "Storages To Sync {:?}", storages)
+            }
         }
     }
 }
@@ -111,7 +121,7 @@ pub(crate) enum Origin {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum FileSyncEvent {
-    PrepareSync(FileInfo, u64, Vec<(usize, u64)>),
+    PrepareSync(FileInfo, u64, Vec<(usize, u64)>, bool),
     SyncBlocks(u64, Vec<usize>),
     WriteChunk(u64, usize, Vec<u8>),
     EndSync(u64),
@@ -120,7 +130,7 @@ pub(crate) enum FileSyncEvent {
 impl std::fmt::Display for FileSyncEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileSyncEvent::PrepareSync(file, file_hash, _) => {
+            FileSyncEvent::PrepareSync(file, file_hash, _, _) => {
                 write!(f, "Prepare Sync for file ({}) {:?}", file_hash, file.path)
             }
             FileSyncEvent::SyncBlocks(file_hash, blocks) => write!(
@@ -151,10 +161,14 @@ fn broadcast_message_to<'a, T: Iterator<Item = &'a Endpoint>>(
     handler: &NodeHandler<CarrierEvent>,
     message: CarrierEvent,
     endpoints: T,
-) {
+) -> usize {
+    let mut messages_sent = 0usize;
     let mut data = vec![COMMAND_MESSAGE];
     data.extend(bincode::serialize(&message).unwrap());
     for endpoint in endpoints {
         handler.network().send(*endpoint, &data);
+        messages_sent += 1;
     }
+
+    messages_sent
 }

@@ -3,8 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ord,
+    collections::hash_map::DefaultHasher,
     fs,
-    hash::Hash,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     time::Duration,
     time::SystemTime,
@@ -169,6 +170,20 @@ pub fn walk_path(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>>
     files.sort();
 
     Ok(files)
+}
+
+pub fn get_state_hash(files: &[FileInfo]) -> u64 {
+    let mut s = DefaultHasher::new();
+
+    for file in files {
+        file.alias.hash(&mut s);
+        file.path.hash(&mut s);
+        file.modified_at.hash(&mut s);
+        file.deleted_at.hash(&mut s);
+        file.size.hash(&mut s);
+    }
+
+    s.finish()
 }
 
 fn get_deleted_files(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>> {
