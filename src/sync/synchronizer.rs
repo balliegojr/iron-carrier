@@ -310,13 +310,6 @@ impl Synchronizer {
                             );
                             self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
                         }
-                        QueueEventType::BroadcastAndWait => {
-                            broadcast_message_to(
-                                &self.handler,
-                                event,
-                                self.connected_peers.get_all_identified_endpoints(),
-                            );
-                        }
                     },
                     None => {
                         if !self.file_transfer_man.has_pending_transfers() {
@@ -357,7 +350,6 @@ impl Synchronizer {
                 self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
             }
             CarrierEvent::FileWatcherEvent(watcher_event) => {
-                dbg!(&watcher_event);
                 let addresses = self.get_peer_addresses();
                 if addresses.is_empty() {
                     return Ok(());
@@ -366,7 +358,8 @@ impl Synchronizer {
                 let (event, event_type) = match watcher_event {
                     super::WatcherEvent::Created(file_info) => {
                         self.get_log_writer()?.append(
-                            EventType::FileWrite(file_info.alias.clone(), file_info.path.clone()),
+                            file_info.alias.clone(),
+                            EventType::Write(file_info.path.clone()),
                             EventStatus::Finished,
                         )?;
 
@@ -377,7 +370,8 @@ impl Synchronizer {
                     }
                     super::WatcherEvent::Updated(file_info) => {
                         self.get_log_writer()?.append(
-                            EventType::FileWrite(file_info.alias.clone(), file_info.path.clone()),
+                            file_info.alias.clone(),
+                            EventType::Write(file_info.path.clone()),
                             EventStatus::Finished,
                         )?;
 
@@ -389,11 +383,8 @@ impl Synchronizer {
 
                     super::WatcherEvent::Moved(src, dst) => {
                         self.get_log_writer()?.append(
-                            EventType::FileMove(
-                                src.alias.clone(),
-                                src.path.clone(),
-                                dst.path.clone(),
-                            ),
+                            src.alias.clone(),
+                            EventType::Move(src.path.clone(), dst.path.clone()),
                             EventStatus::Finished,
                         )?;
 
@@ -401,7 +392,8 @@ impl Synchronizer {
                     }
                     super::WatcherEvent::Deleted(file_info) => {
                         self.get_log_writer()?.append(
-                            EventType::FileDelete(file_info.alias.clone(), file_info.path.clone()),
+                            file_info.alias.clone(),
+                            EventType::Delete(file_info.path.clone()),
                             EventStatus::Finished,
                         )?;
 
@@ -562,8 +554,8 @@ impl Synchronizer {
     }
 
     fn get_storage_state(&self, storage: &str) -> crate::Result<u64> {
-        let storage_index = fs::walk_path(&self.config, &storage)?;
-        Ok(fs::get_state_hash(&storage_index[..]))
+        let storage_index = fs::walk_path(&self.config, storage)?;
+        Ok(fs::get_state_hash(storage_index.iter()))
     }
 
     fn get_log_writer(&mut self) -> crate::Result<&mut TransactionLogWriter<File>> {
@@ -586,7 +578,8 @@ impl Synchronizer {
             }
         };
         self.get_log_writer()?.append(
-            EventType::FileDelete(file.alias.to_string(), file.path.clone()),
+            file.alias.to_string(),
+            EventType::Delete(file.path.clone()),
             event_status,
         )?;
 
@@ -603,7 +596,8 @@ impl Synchronizer {
         };
 
         self.get_log_writer()?.append(
-            EventType::FileMove(src.alias.clone(), src.path.clone(), dest.path.clone()),
+            src.alias.clone(),
+            EventType::Move(src.path.clone(), dest.path.clone()),
             event_status,
         )?;
 

@@ -6,7 +6,7 @@ mod file_watcher;
 mod synchronization_session;
 pub mod synchronizer;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::fs::FileInfo;
 use message_io::{
@@ -24,7 +24,6 @@ pub(crate) enum QueueEventType {
     Signal,
     Peer(u64),
     Broadcast,
-    BroadcastAndWait,
 }
 
 impl std::fmt::Display for QueueEventType {
@@ -33,7 +32,6 @@ impl std::fmt::Display for QueueEventType {
             QueueEventType::Signal => write!(f, "Signal"),
             QueueEventType::Peer(peer) => write!(f, "To Peer {}", peer),
             QueueEventType::Broadcast => write!(f, "Broadcast"),
-            QueueEventType::BroadcastAndWait => write!(f, "Broadcast and wait"),
         }
     }
 }
@@ -52,7 +50,7 @@ pub(crate) enum CarrierEvent {
     SyncNextStorage,
 
     BuildStorageIndex(String),
-    SetStorageIndex(Vec<FileInfo>),
+    SetStorageIndex(HashSet<FileInfo>),
     ConsumeSyncQueue,
 
     DeleteFile(FileInfo),

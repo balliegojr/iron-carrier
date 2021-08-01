@@ -7,7 +7,7 @@ use super::{CarrierEvent, Origin, QueueEventType};
 #[derive(Debug)]
 pub(crate) struct SynchronizationState {
     storage_state: HashMap<String, HashSet<u64>>,
-    current_storage_index: HashMap<Origin, Vec<FileInfo>>,
+    current_storage_index: HashMap<Origin, HashSet<FileInfo>>,
     current_storage_peers: HashSet<u64>,
     expected_state_replies: usize,
 }
@@ -57,7 +57,7 @@ impl SynchronizationState {
         Some((storage, peers))
     }
 
-    pub fn set_storage_index(&mut self, origin: Origin, index: Vec<FileInfo>) -> bool {
+    pub fn set_storage_index(&mut self, origin: Origin, index: HashSet<FileInfo>) -> bool {
         self.current_storage_index.insert(origin, index);
         self.current_storage_peers.len() == self.current_storage_index.len() - 1
     }

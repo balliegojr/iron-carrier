@@ -179,7 +179,8 @@ impl FileTransferMan {
         }
 
         log_writer.append(
-            EventType::FileWrite(file_info.alias.clone(), file_info.path.clone()),
+            file_info.alias.clone(),
+            EventType::Write(file_info.path.clone()),
             EventStatus::Started,
         )?;
 
@@ -311,7 +312,8 @@ impl FileTransferMan {
 
         let file_info = { file_sync.file_info };
         log_writer.append(
-            EventType::FileWrite(file_info.alias.clone(), file_info.path.clone()),
+            file_info.alias.clone(),
+            EventType::Write(file_info.path.clone()),
             EventStatus::Finished,
         )?;
 

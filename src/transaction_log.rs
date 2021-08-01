@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -41,6 +42,7 @@ impl<T: Write> TransactionLogWriter<T> {
 
     pub fn append(
         &mut self,
+        storage: String,
         event_type: EventType,
         event_status: EventStatus,
     ) -> Result<(), TransactionLogError> {
@@ -48,6 +50,7 @@ impl<T: Write> TransactionLogWriter<T> {
             timestamp: SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs(),
             event_type,
             event_status,
+            storage,
         };
         self.log_stream
             .write_all(format!("{}{}", event, LINE_ENDING).as_bytes())?;
@@ -66,6 +69,32 @@ impl<T: Read> TransactionLogReader<T> {
     }
     pub fn get_log_events(self) -> TransactionLogIter<T> {
         TransactionLogIter::new(self.log_stream)
+    }
+    pub fn get_failed_events(self, storage: String) -> impl Iterator<Item = PathBuf> {
+        let mut events = HashSet::new();
+
+        let stream = self
+            .get_log_events()
+            .filter_map(|ev| ev.ok())
+            .filter(move |ev| {
+                ev.storage == storage && matches!(ev.event_type, EventType::Write(_))
+            });
+
+        for event in stream {
+            match event.event_status {
+                EventStatus::Started | EventStatus::Failed => {
+                    events.insert(event.event_type);
+                }
+                EventStatus::Finished => {
+                    events.remove(&event.event_type);
+                }
+            }
+        }
+
+        events.into_iter().map(|e| match e {
+            EventType::Write(path) => path,
+            _ => unreachable!(),
+        })
     }
 }
 
@@ -107,6 +136,7 @@ pub enum TransactionLogError {
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct LogEvent {
     pub timestamp: u64,
+    pub storage: String,
     pub event_type: EventType,
     pub event_status: EventStatus,
 }
@@ -115,8 +145,8 @@ impl std::fmt::Display for LogEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{},{},{}",
-            self.timestamp, self.event_type, self.event_status
+            "{},{},{},{}",
+            self.timestamp, self.storage, self.event_type, self.event_status
         )
     }
 }
@@ -129,57 +159,39 @@ impl FromStr for LogEvent {
         let mut next_or = || parts.next().ok_or(TransactionLogError::InvalidStringFormat);
 
         let timestamp = next_or()?.parse()?;
+        let storage = next_or()?.into();
         let event_type = next_or()?.parse()?;
         let event_status = next_or()?.parse()?;
 
         Ok(LogEvent {
             timestamp,
+            storage,
             event_type,
             event_status,
         })
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub(crate) enum EventType {
-    FileDelete(String, PathBuf),
-    FileCreate(String, PathBuf),
-    FileWrite(String, PathBuf),
-    FileMove(String, PathBuf, PathBuf),
+    Delete(PathBuf),
+    Write(PathBuf),
+    Move(PathBuf, PathBuf),
 }
 
 impl std::fmt::Display for EventType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EventType::FileDelete(storage, file_path) => {
-                write!(
-                    f,
-                    "FileDelete:{}:{}",
-                    storage,
-                    file_path.to_str().ok_or(std::fmt::Error)?
-                )
+            EventType::Delete(file_path) => {
+                write!(f, "Delete:{}", file_path.to_str().ok_or(std::fmt::Error)?)
             }
-            EventType::FileCreate(storage, file_path) => {
-                write!(
-                    f,
-                    "FileCreate:{}:{}",
-                    storage,
-                    file_path.to_str().ok_or(std::fmt::Error)?
-                )
+            EventType::Write(file_path) => {
+                write!(f, "Write:{}", file_path.to_str().ok_or(std::fmt::Error)?)
             }
-            EventType::FileWrite(storage, file_path) => {
+            EventType::Move(source_path, destinnation_path) => {
                 write!(
                     f,
-                    "FileWrite:{}:{}",
-                    storage,
-                    file_path.to_str().ok_or(std::fmt::Error)?
-                )
-            }
-            EventType::FileMove(storage, source_path, destinnation_path) => {
-                write!(
-                    f,
-                    "FileMove:{}:{}:{}",
-                    storage,
+                    "Move:{}:{}",
                     source_path.to_str().ok_or(std::fmt::Error)?,
                     destinnation_path.to_str().ok_or(std::fmt::Error)?
                 )
@@ -196,20 +208,15 @@ impl FromStr for EventType {
         let mut next_or = || parts.next().ok_or(TransactionLogError::InvalidStringFormat);
 
         match next_or()? {
-            "FileDelete" => Ok(EventType::FileDelete(next_or()?.into(), next_or()?.into())),
-            "FileCreate" => Ok(EventType::FileCreate(next_or()?.into(), next_or()?.into())),
-            "FileWrite" => Ok(EventType::FileWrite(next_or()?.into(), next_or()?.into())),
-            "FileMove" => Ok(EventType::FileMove(
-                next_or()?.into(),
-                next_or()?.into(),
-                next_or()?.into(),
-            )),
+            "Delete" => Ok(EventType::Delete(next_or()?.into())),
+            "Write" => Ok(EventType::Write(next_or()?.into())),
+            "Move" => Ok(EventType::Move(next_or()?.into(), next_or()?.into())),
             _ => Err(TransactionLogError::InvalidStringFormat),
         }
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EventStatus {
     Started,
     Finished,
@@ -241,100 +248,89 @@ mod tests {
 
     use super::*;
 
-    fn sample_log_stream() -> Cursor<Vec<u8>> {
-        let bytes = br#"
-12,FileDelete:books:some/file/deleted,Finished
-13,FileCreate:books:some/file/created,Finished
-14,FileWrite:books:some/file/update,Started
-15,FileWrite:books:some/file/update,Finished
-16,FileMove:books:some/file/source:some/file/destination,Finished
-"#
-        .to_vec();
-        Cursor::new(bytes)
-    }
-
     #[test]
     pub fn test_append_event() -> Result<(), TransactionLogError> {
         let mut stream = Cursor::new(Vec::new());
         {
             let mut log = TransactionLogWriter::new(&mut stream);
-
             log.append(
-                EventType::FileCreate("books".into(), "some/path".into()),
+                "books".into(),
+                EventType::Delete("some/path".into()),
                 EventStatus::Finished,
             )?;
             log.append(
-                EventType::FileDelete("books".into(), "some/path".into()),
+                "books".into(),
+                EventType::Write("some/path".into()),
                 EventStatus::Finished,
             )?;
             log.append(
-                EventType::FileWrite("books".into(), "some/path".into()),
-                EventStatus::Finished,
-            )?;
-            log.append(
-                EventType::FileMove("books".into(), "source/path".into(), "dest/path".into()),
+                "books".into(),
+                EventType::Move("source/path".into(), "dest/path".into()),
                 EventStatus::Finished,
             )?;
         }
 
         stream.set_position(0);
         let lines: Vec<String> = stream.lines().map(|x| x.unwrap()).collect();
-        assert_eq!(4, lines.len());
-        assert!(lines[0].ends_with("FileCreate:books:some/path,Finished"));
-        assert!(lines[1].ends_with("FileDelete:books:some/path,Finished"));
-        assert!(lines[2].ends_with("FileWrite:books:some/path,Finished"));
-        assert!(lines[3].ends_with("FileMove:books:source/path:dest/path,Finished"));
+        assert_eq!(3, lines.len());
+        assert!(lines[0].ends_with("books,Delete:some/path,Finished"));
+        assert!(lines[1].ends_with("books,Write:some/path,Finished"));
+        assert!(lines[2].ends_with("books,Move:source/path:dest/path,Finished"));
         Ok(())
     }
 
     #[test]
     pub fn test_can_parse_events() {
-        let log = TransactionLogReader::new(sample_log_stream());
-        let events: Vec<LogEvent> = log.get_log_events().filter_map(|ev| ev.ok()).collect();
+        let log = TransactionLogReader::new({
+            let bytes = br#"
+12,books,Delete:some/file/deleted,Finished
+14,books,Write:some/file/update,Started
+15,books,Write:some/file/update,Finished
+16,books,Move:some/file/source:some/file/destination,Finished
+"#
+            .to_vec();
+            Cursor::new(bytes)
+        });
+        let mut events = log.get_log_events().filter_map(|ev| ev.ok());
 
         assert_eq!(
             LogEvent {
                 timestamp: 12,
-                event_type: EventType::FileDelete("books".to_string(), "some/file/deleted".into()),
+                storage: "books".into(),
+                event_type: EventType::Delete("some/file/deleted".into()),
                 event_status: EventStatus::Finished
             },
-            events[0]
-        );
-        assert_eq!(
-            LogEvent {
-                timestamp: 13,
-                event_type: EventType::FileCreate("books".to_string(), "some/file/created".into()),
-                event_status: EventStatus::Finished
-            },
-            events[1]
+            events.next().unwrap()
         );
         assert_eq!(
             LogEvent {
                 timestamp: 14,
-                event_type: EventType::FileWrite("books".to_string(), "some/file/update".into()),
+                storage: "books".into(),
+                event_type: EventType::Write("some/file/update".into()),
                 event_status: EventStatus::Started
             },
-            events[2]
+            events.next().unwrap()
         );
         assert_eq!(
             LogEvent {
                 timestamp: 15,
-                event_type: EventType::FileWrite("books".to_string(), "some/file/update".into()),
+                storage: "books".into(),
+                event_type: EventType::Write("some/file/update".into()),
                 event_status: EventStatus::Finished
             },
-            events[3]
+            events.next().unwrap()
         );
         assert_eq!(
             LogEvent {
                 timestamp: 16,
-                event_type: EventType::FileMove(
-                    "books".to_string(),
+                storage: "books".into(),
+                event_type: EventType::Move(
                     "some/file/source".into(),
                     "some/file/destination".into()
                 ),
                 event_status: EventStatus::Finished
             },
-            events[4]
+            events.next().unwrap()
         );
     }
 
@@ -344,7 +340,29 @@ mod tests {
     }
 
     #[test]
-    pub fn test_last_sync_was_successfull() {
-        todo!()
+    pub fn test_get_failed_writes() {
+        let log = TransactionLogReader::new({
+            let bytes = br#"
+12,books,Delete:some/file/deleted,Finished
+14,books,Write:some/file/update,Started
+15,books,Write:some/file/update,Finished
+16,books,Move:some/file/source:some/file/destination,Finished
+17,books,Write:file_one,Started
+18,books,Write:file_two,Started
+18,books,Write:file_two,Finished
+18,books,Write:file_one,Finished
+19,books,Write:file_two,Started
+20,books,Write:file_one,Started
+21,books,Write:file_three,Started
+"#
+            .to_vec();
+            Cursor::new(bytes)
+        });
+
+        let mut events: Vec<PathBuf> = log.get_failed_events("books".into()).collect();
+        events.sort();
+        assert_eq!(PathBuf::from("file_one"), events[0]);
+        assert_eq!(PathBuf::from("file_three"), events[1]);
+        assert_eq!(PathBuf::from("file_two"), events[2]);
     }
 }

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ord,
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, HashSet},
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -14,7 +14,11 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::{config::Config, transaction_log::get_log_reader, IronCarrierError};
+use crate::{
+    config::Config,
+    transaction_log::{get_log_reader, EventType},
+    IronCarrierError,
+};
 
 /// Holds the information for a file inside a mapped folder  
 ///
@@ -138,7 +142,7 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 ///
 /// This function will look for deletes files in the [DeletionTracker] log and append all entries to the return list  
 /// files with name or extension `.ironcarrier` will be ignored
-pub fn walk_path(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>> {
+pub fn walk_path(config: &Config, storage: &str) -> crate::Result<HashSet<FileInfo>> {
     let root_path = config.paths.get(storage).expect("Unexpected storage");
     let mut paths = vec![root_path.to_owned()];
 
@@ -159,7 +163,7 @@ pub fn walk_path(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>>
             }
 
             let metadata = path.metadata()?;
-            files.push(FileInfo::new(
+            files.insert(FileInfo::new(
                 storage.to_owned(),
                 path.strip_prefix(root_path)?.to_owned(),
                 metadata,
@@ -167,12 +171,13 @@ pub fn walk_path(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>>
         }
     }
 
-    files.sort();
+    let failed_writes = get_failed_writes(config, storage)?;
+    files.retain(|file| !failed_writes.contains(file));
 
     Ok(files)
 }
 
-pub fn get_state_hash(files: &[FileInfo]) -> u64 {
+pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
     let mut s = DefaultHasher::new();
 
     for file in files {
@@ -186,26 +191,47 @@ pub fn get_state_hash(files: &[FileInfo]) -> u64 {
     s.finish()
 }
 
-fn get_deleted_files(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>> {
+fn get_deleted_files(config: &Config, storage: &str) -> crate::Result<HashSet<FileInfo>> {
     match get_log_reader(&config.log_path) {
         Ok(log_reader) => {
             let files = log_reader
                 .get_log_events()
                 .filter_map(|event| match event {
-                    Ok(event) => match event.event_type {
-                        crate::transaction_log::EventType::FileDelete(s, file_path)
-                            if s == storage =>
-                        {
-                            Some(FileInfo::new_deleted(s, file_path, Some(event.timestamp)))
-                        }
+                    Ok(event) if event.storage == storage => match event.event_type {
+                        EventType::Delete(file_path) => Some(FileInfo::new_deleted(
+                            event.storage,
+                            file_path,
+                            Some(event.timestamp),
+                        )),
                         _ => None,
                     },
-                    Err(_) => None,
+                    _ => None,
                 })
                 .collect();
             Ok(files)
         }
-        Err(_) => Ok(Vec::new()),
+        Err(_) => Ok(HashSet::new()),
+    }
+}
+
+fn get_failed_writes(config: &Config, storage: &str) -> crate::Result<HashSet<FileInfo>> {
+    match get_log_reader(&config.log_path) {
+        Ok(log_reader) => {
+            let files = log_reader
+                .get_failed_events(storage.to_string())
+                .map(|path| FileInfo {
+                    alias: storage.to_string(),
+                    path,
+                    modified_at: None,
+                    created_at: None,
+                    deleted_at: None,
+                    size: None,
+                    permissions: 0,
+                })
+                .collect();
+            Ok(files)
+        }
+        Err(_) => Ok(HashSet::new()),
     }
 }
 
@@ -311,7 +337,8 @@ a = "./tmp/fs/read_local_files"
         )
         .expect("Failed to parse config");
 
-        let files = walk_path(&config, "a").unwrap();
+        let mut files: Vec<FileInfo> = walk_path(&config, "a").unwrap().into_iter().collect();
+        files.sort();
 
         assert_eq!(files[0].path.to_str(), Some("file_1"));
         assert_eq!(files[1].path.to_str(), Some("file_2"));
