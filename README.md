@@ -29,17 +29,20 @@ Notice that **my_docs** have different paths, but **service_x_conf** have the pa
 
 # Configuration
 ```toml
-# listening port, defaults to 8090
-port = 8090 
+# listening port, defaults to 25230
+port = 25230  
 
 # listen to events in real time, defaults to true
 enable_file_watcher = true
 
 # time to debouce real time events, in seconds, defaults to 10
-debounce_events_seconds = 10
+debounce_events_seconds = 5
 
 # Service discovery is active by default, it is possible to disable it and specify a list of  peers
 enable_service_discovery = true
+
+# Path location
+log_path = "~/.iron_carrier/iron_carrier.log"
 
 # Optional list of peers to sync
 peers = [
@@ -50,11 +53,7 @@ peers = [
 [paths]
 a = "./samples/peer_a"
 
-
 ```
-
-# Planned features
-- rsync protocol for file transfer
 
 
 # Motivation
@@ -63,4 +62,4 @@ Rust have features that look very simple to understand, but are actually very co
 
 I have read an advice somewhere (Reddit or Stackoverflow) that I'm very sad that I can't point to the autor. But it said: when in doubt, clone it. 
 
-You don't need to write the best performant code right away, just code... refactor later. This advice is specially good if you find yourself losing a battle against lifetimes
+You don't need to write the best performant code right away, just code... refactor later. This advice is specially good if you find yourself losing the battle against borrow checker
