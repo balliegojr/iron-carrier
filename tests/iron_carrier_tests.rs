@@ -47,7 +47,8 @@ fn test_full_sync() {
     // enable_logs(3);
     let mut contents = HashMap::new();
     let mut port = 8090;
-    for peer_name in ["a", "b", "c"] {
+    let peers = ["a", "b", "c"];
+    for peer_name in peers {
         contents.insert(peer_name, prepare_files(peer_name));
         let _ = fs::remove_file(format!("./tmp/peer_{}.log", peer_name));
 
@@ -56,7 +57,7 @@ fn test_full_sync() {
 port={}
 log_path = "./tmp/peer_{}.log"
 [paths]
-a = "./tmp/peer_{}"
+full_sync = "./tmp/peer_{}"
 "#,
             port, peer_name, peer_name
         ))
@@ -71,11 +72,13 @@ a = "./tmp/peer_{}"
 
     thread::sleep(Duration::from_secs(5));
 
-    assert_eq!(6, std::fs::read_dir("tmp/peer_a").unwrap().count());
-    assert_eq!(6, std::fs::read_dir("tmp/peer_b").unwrap().count());
-    assert_eq!(6, std::fs::read_dir("tmp/peer_c").unwrap().count());
-
-    for peer_name in ["a", "b", "c"] {
+    for peer_name in peers {
+        assert_eq!(
+            6,
+            std::fs::read_dir(format!("tmp/peer_{}", peer_name))
+                .unwrap()
+                .count()
+        );
         for file in 1..=2 {
             assert_eq!(
                 &contents[peer_name][..],
@@ -91,9 +94,10 @@ a = "./tmp/peer_{}"
 
 #[test]
 fn test_partial_sync() {
-    enable_logs(3);
-    let mut port = 8090u16;
-    for peer_name in ["a", "b", "c"] {
+    // enable_logs(3);
+    let mut port = 8095u16;
+    let peers = ["d", "e", "f"];
+    for peer_name in peers {
         let _ = fs::remove_dir_all(format!("./tmp/peer_{}", peer_name));
         let _ = fs::remove_file(format!("./tmp/peer_{}.log", peer_name));
 
@@ -103,7 +107,7 @@ port={}
 log_path = "./tmp/peer_{}.log"
 delay_watcher_events=1
 [paths]
-a = "./tmp/peer_{}"
+part_sync = "./tmp/peer_{}"
 "#,
             port, peer_name, peer_name
         );
@@ -117,14 +121,17 @@ a = "./tmp/peer_{}"
 
     thread::sleep(Duration::from_secs(5));
 
-    let _ = std::fs::write("tmp/peer_a/new_file_1", b"some nice content for a new file");
     let _ = std::fs::write(
-        "tmp/peer_a/new_file_2",
+        format!("tmp/peer_{}/new_file_1", peers[0]),
+        b"some nice content for a new file",
+    );
+    let _ = std::fs::write(
+        format!("tmp/peer_{}/new_file_2", peers[0]),
         b"some random content for another new file",
     );
 
-    thread::sleep(Duration::from_secs(3));
-    for peer_name in ["a", "b", "c"] {
+    thread::sleep(Duration::from_secs(4));
+    for peer_name in peers {
         assert_eq!(
             b"some nice content for a new file",
             &std::fs::read(format!("./tmp/peer_{}/new_file_1", peer_name)).unwrap()[..]
@@ -135,12 +142,18 @@ a = "./tmp/peer_{}"
         );
     }
 
-    append_content("./tmp/peer_a/new_file_1", b" more content");
-    append_content("./tmp/peer_b/new_file_2", b" more content for f2");
+    append_content(
+        format!("./tmp/peer_{}/new_file_1", peers[0]),
+        b" more content",
+    );
+    append_content(
+        format!("./tmp/peer_{}/new_file_2", peers[1]),
+        b" more content for f2",
+    );
 
-    thread::sleep(Duration::from_secs(3));
+    thread::sleep(Duration::from_secs(4));
 
-    for peer_name in ["a", "b", "c"] {
+    for peer_name in peers {
         assert_eq!(
             b"some nice content for a new file more content",
             &std::fs::read(format!("./tmp/peer_{}/new_file_1", peer_name)).unwrap()[..]
@@ -152,9 +165,10 @@ a = "./tmp/peer_{}"
         );
     }
 
-    std::fs::remove_file("./tmp/peer_a/new_file_2").expect("failed to remove test file");
+    std::fs::remove_file(format!("./tmp/peer_{}/new_file_2", peers[0]))
+        .expect("failed to remove test file");
     thread::sleep(Duration::from_secs(3));
-    for peer_name in ["a", "b", "c"] {
+    for peer_name in peers {
         assert!(!PathBuf::from(format!("./tmp/peer_{}/new_file_2", peer_name)).exists());
     }
 }
@@ -162,11 +176,11 @@ a = "./tmp/peer_{}"
 #[test]
 fn test_sync_deleted_files() {
     // enable_logs(2);
-    let mut port = 8090u16;
-    for peer_name in ["a", "b"] {
-        fs::remove_dir_all(format!("./tmp/peer_{}", peer_name)).expect("Failed to cleanup tmp dir");
-        fs::remove_file(format!("./tmp/peer_{}.log", peer_name))
-            .expect("Faield to remove log file");
+    let mut port = 8100u16;
+    let peers = ["g", "h"];
+    for peer_name in peers {
+        let _ = fs::remove_dir_all(format!("./tmp/peer_{}", peer_name));
+        let _ = fs::remove_file(format!("./tmp/peer_{}.log", peer_name));
     }
 
     let log_line = format!(
@@ -176,14 +190,14 @@ fn test_sync_deleted_files() {
     let _ = std::fs::write("./tmp/peer_a.log", log_line.as_bytes());
     let _ = std::fs::write("./tmp/peer_b/deleted_file", b"this file will be deleted");
 
-    for peer_name in ["a", "b"] {
+    for peer_name in peers {
         let config = format!(
             r#"
 port={}
 log_path = "./tmp/peer_{}.log"
 delay_watcher_events=1
 [paths]
-a = "./tmp/peer_{}"
+sync_deleted = "./tmp/peer_{}"
 "#,
             port, peer_name, peer_name
         );
@@ -197,7 +211,7 @@ a = "./tmp/peer_{}"
 
     thread::sleep(Duration::from_secs(5));
 
-    for peer_name in ["a", "b"] {
+    for peer_name in peers {
         assert!(!PathBuf::from(format!("./tmp/peer_{}/deleted_file", peer_name)).exists());
     }
 }

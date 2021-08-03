@@ -40,7 +40,7 @@ impl std::fmt::Display for QueueEventType {
 pub(crate) enum CarrierEvent {
     StartSync,
     EndSync,
-    CloseConnections,
+    Cleanup,
     SetPeerId(u64),
 
     ExchangeStorageStates,
@@ -68,7 +68,7 @@ impl std::fmt::Display for CarrierEvent {
         match self {
             CarrierEvent::StartSync => write!(f, "Start Sync"),
             CarrierEvent::EndSync => write!(f, "End Sync"),
-            CarrierEvent::CloseConnections => write!(f, "Close all connections"),
+            CarrierEvent::Cleanup => write!(f, "Cleanup"),
             CarrierEvent::SetPeerId(peer_id) => write!(f, "Set peer id to {}", peer_id),
             CarrierEvent::SyncNextStorage => write!(f, "Sync next storage"),
             CarrierEvent::BuildStorageIndex(storage) => {

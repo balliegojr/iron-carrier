@@ -87,7 +87,7 @@ impl Synchronizer {
         for storage in self.config.paths.keys() {
             self.storage_state.insert(
                 storage.clone(),
-                StorageState::CurrentHash(self.get_storage_state(&storage)?),
+                StorageState::CurrentHash(self.get_storage_state(storage)?),
             );
         }
 
@@ -199,21 +199,21 @@ impl Synchronizer {
                     .start_sync_after_replies(expected_replies);
             }
             CarrierEvent::EndSync => {
-                let storages: Vec<String> = self
+                let storages_to_reload: Vec<String> = self
                     .storage_state
                     .iter()
                     .filter(|(_, state)| matches!(**state, StorageState::Sync))
                     .map(|(storage, _)| storage.clone())
                     .collect();
 
-                if storages.is_empty() {
+                if storages_to_reload.is_empty() {
                     self.handler
                         .signals()
-                        .send_with_timer(CarrierEvent::CloseConnections, Duration::from_secs(15));
+                        .send_with_timer(CarrierEvent::Cleanup, Duration::from_secs(15));
                     return Ok(());
                 }
 
-                for storage in storages {
+                for storage in storages_to_reload {
                     let state = StorageState::CurrentHash(self.get_storage_state(&storage)?);
                     self.storage_state.entry(storage).and_modify(|v| *v = state);
                 }
@@ -228,13 +228,14 @@ impl Synchronizer {
                     .signals()
                     .send(CarrierEvent::ExchangeStorageStates);
             }
-            CarrierEvent::CloseConnections => {
+            CarrierEvent::Cleanup => {
                 if !self.file_transfer_man.has_pending_transfers() {
                     self.connected_peers.disconnect_all();
+                    transaction_log::compress_log(&self.config.log_path)?;
                 } else {
                     self.handler
                         .signals()
-                        .send_with_timer(CarrierEvent::CloseConnections, Duration::from_secs(60));
+                        .send_with_timer(CarrierEvent::Cleanup, Duration::from_secs(60));
                 }
             }
             CarrierEvent::SyncNextStorage => match self.session_state.get_next_storage() {
@@ -313,7 +314,7 @@ impl Synchronizer {
                     },
                     None => {
                         if !self.file_transfer_man.has_pending_transfers() {
-                            self.handler.signals().send(CarrierEvent::CloseConnections);
+                            self.handler.signals().send(CarrierEvent::Cleanup);
                         }
                     }
                 }
@@ -570,7 +571,7 @@ impl Synchronizer {
     }
 
     fn delete_file(&mut self, file: &FileInfo) -> crate::Result<()> {
-        let event_status = match fs::delete_file(&file, &self.config) {
+        let event_status = match fs::delete_file(file, &self.config) {
             Ok(_) => EventStatus::Finished,
             Err(err) => {
                 log::error!("Failed to delete file {}", err);

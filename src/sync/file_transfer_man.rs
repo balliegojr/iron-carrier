@@ -294,7 +294,7 @@ impl FileTransferMan {
     ) -> crate::Result<()> {
         let file_sync = self.sync_in.get_mut(&file_hash).unwrap();
         let (position, _) = file_sync.block_index[block_index];
-        file_sync.file_handler.write_all_at(&buf, position as u64)?;
+        file_sync.file_handler.write_all_at(buf, position as u64)?;
 
         Ok(())
     }

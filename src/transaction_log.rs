@@ -10,6 +10,7 @@ use std::{
 use thiserror::Error;
 
 const TRANSACTION_KEEP_LIMIT_SECS: u64 = 30 * 24 * 60 * 60;
+const LOG_MIN_COMPRESSING_SIZE: u64 = 1024u64.pow(3);
 
 #[cfg(not(windows))]
 const LINE_ENDING: &str = "\n";
@@ -52,6 +53,11 @@ impl<T: Write> TransactionLogWriter<T> {
             event_status,
             storage,
         };
+
+        self.append_event(event)
+    }
+
+    fn append_event(&mut self, event: LogEvent) -> Result<(), TransactionLogError> {
         self.log_stream
             .write_all(format!("{}{}", event, LINE_ENDING).as_bytes())?;
 
@@ -121,6 +127,31 @@ impl<T: Read> Iterator for TransactionLogIter<T> {
             Err(err) => Some(Err(TransactionLogError::IoError(err))),
         }
     }
+}
+
+pub fn compress_log(log_path: &Path) -> crate::Result<()> {
+    if log_path.metadata()?.len() < LOG_MIN_COMPRESSING_SIZE {
+        return Ok(());
+    }
+
+    let mut log_events = get_log_reader(log_path)?
+        .get_log_events()
+        .filter_map(|ev| ev.ok());
+    let temp_log = log_path.join(".temp");
+
+    let time_limit =
+        SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() - TRANSACTION_KEEP_LIMIT_SECS;
+
+    if let Some(first_event) = log_events.next() {
+        if first_event.timestamp < time_limit {
+            let mut log_writer = get_log_writer(&temp_log)?;
+            for event in log_events.filter(|ev| ev.timestamp > time_limit) {
+                log_writer.append_event(event)?;
+            }
+            std::fs::rename(temp_log, log_path)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Error, Debug)]
@@ -332,11 +363,6 @@ mod tests {
             },
             events.next().unwrap()
         );
-    }
-
-    #[test]
-    pub fn test_compact_log() {
-        todo!()
     }
 
     #[test]
