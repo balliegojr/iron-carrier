@@ -1,6 +1,0 @@
-peers = [
-    # "127.0.0.1:8091"
-]
-
-[paths]
-a = "./samples/peer_a"
