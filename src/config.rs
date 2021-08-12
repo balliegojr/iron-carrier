@@ -69,7 +69,10 @@ impl Config {
     pub fn new(config_path: &Path) -> crate::Result<Self> {
         log::debug!("reading config file {:?}", config_path);
 
-        Config::new_from_str(read_to_string(config_path)?)
+        match read_to_string(config_path) {
+            Ok(config_content) => Config::new_from_str(config_content),
+            Err(_) => Err(Box::new(IronCarrierError::ConfigFileNotFound)),
+        }
     }
 
     /// Parses the given content into [Config]
