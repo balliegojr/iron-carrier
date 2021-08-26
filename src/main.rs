@@ -23,7 +23,6 @@ fn main() {
         .get_matches();
 
     let verbosity = matches.occurrences_of("v") as usize;
-    // let auto_exit = matches.is_present("auto-exit");
 
     stderrlog::new()
         .module(module_path!())
