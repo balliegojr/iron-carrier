@@ -56,7 +56,7 @@ fn main() {
 
 fn get_project_dir() -> PathBuf {
     let mut config_path = dirs::config_dir().expect("Failed to access home folder");
-    config_path.push(".iron_carrier");
+    config_path.push("iron-carrier");
 
     if !config_path.exists() {
         std::fs::create_dir(&config_path).expect("Failed to create Iron Carrier folder");

@@ -9,5 +9,5 @@ install: build config
 	systemctl start --user iron-carrier.service
 
 config:
-	mkdir -p ~/.config/iron_carrier
-	echo "[paths]" > ~/.config/iron_carrier/config.toml
+	mkdir -p ~/.config/iron-carrier
+	echo "[paths]" > ~/.config/iron-carrier/config.toml
