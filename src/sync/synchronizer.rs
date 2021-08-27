@@ -1,6 +1,7 @@
 use simple_mdns::ServiceDiscovery;
 use std::{
     collections::{HashMap, LinkedList},
+    convert::TryInto,
     fs::File,
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -127,9 +128,9 @@ impl Synchronizer {
                         };
                     }
                     STREAM_MESSAGE => {
-                        let usize_size = std::mem::size_of::<usize>();
-                        let file_hash = bincode::deserialize(&data[1..9]).unwrap();
-                        let block_index = bincode::deserialize(&data[9..9 + usize_size]).unwrap();
+                        let file_hash = u64::from_be_bytes(data[1..9].try_into().unwrap());
+                        let block_index =
+                            u64::from_be_bytes(data[9..17].try_into().unwrap()) as usize;
                         let buf = &data[17..];
                         if let Err(err) =
                             self.file_transfer_man

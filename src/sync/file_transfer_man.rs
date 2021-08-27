@@ -280,8 +280,8 @@ impl FileTransferMan {
         endpoint: Endpoint,
     ) {
         let mut buf = vec![STREAM_MESSAGE];
-        buf.extend(bincode::serialize(&file_hash).unwrap());
-        buf.extend(bincode::serialize(&block_index).unwrap());
+        buf.extend(file_hash.to_be_bytes());
+        buf.extend((block_index as u64).to_be_bytes());
         buf.extend(data);
         handler.network().send(endpoint, &buf);
     }
