@@ -409,6 +409,9 @@ impl Synchronizer {
                 self.connected_peers.connect_all(addresses);
                 self.get_log_writer()?;
             }
+            CarrierEvent::IdentificationTimeout => {
+                self.connected_peers.identification_timeout();
+            }
             _ => unreachable!(),
         }
         Ok(())

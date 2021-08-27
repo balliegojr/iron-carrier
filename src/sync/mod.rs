@@ -6,7 +6,10 @@ mod file_watcher;
 mod synchronization_session;
 pub mod synchronizer;
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+};
 
 use crate::fs::FileInfo;
 use message_io::{
@@ -42,6 +45,7 @@ pub(crate) enum CarrierEvent {
     EndSync,
     Cleanup,
     SetPeerId(u64),
+    IdentificationTimeout,
 
     ExchangeStorageStates,
     QueryOutOfSyncStorages(HashMap<String, u64>),
@@ -92,6 +96,7 @@ impl std::fmt::Display for CarrierEvent {
             CarrierEvent::ReplyOutOfSyncStorages(storages) => {
                 write!(f, "Storages To Sync {:?}", storages)
             }
+            CarrierEvent::IdentificationTimeout => write!(f, "Peers Identification Timeout"),
         }
     }
 }

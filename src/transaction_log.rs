@@ -130,7 +130,7 @@ impl<T: Read> Iterator for TransactionLogIter<T> {
 }
 
 pub fn compress_log(log_path: &Path) -> crate::Result<()> {
-    if log_path.metadata()?.len() < LOG_MIN_COMPRESSING_SIZE {
+    if !log_path.exists() || log_path.metadata()?.len() < LOG_MIN_COMPRESSING_SIZE {
         return Ok(());
     }
 

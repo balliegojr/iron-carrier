@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
+    time::Duration,
 };
 
 use message_io::{network::Endpoint, node::NodeHandler};
@@ -52,6 +53,9 @@ impl ConnectedPeers {
                     }
                 }
             }
+            self.handler
+                .signals()
+                .send_with_timer(CarrierEvent::IdentificationTimeout, Duration::from_secs(3));
         }
 
         addresses.len()
@@ -74,6 +78,13 @@ impl ConnectedPeers {
         if self.waiting_identification.remove(&endpoint.addr())
             && self.waiting_identification.is_empty()
         {
+            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+        }
+    }
+
+    pub fn identification_timeout(&mut self) {
+        if !self.waiting_identification.is_empty() {
+            self.waiting_identification.clear();
             self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
         }
     }
