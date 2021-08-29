@@ -29,6 +29,7 @@ use message_io::{network::NetEvent, node::NodeListener};
 
 use rand::Rng;
 
+#[derive(Debug)]
 enum StorageState {
     CurrentHash(u64),
     Sync,
@@ -166,6 +167,14 @@ impl Synchronizer {
             CarrierEvent::StartSync => {
                 let addresses = self.get_peer_addresses();
                 if addresses.is_empty() {
+                    log::info!("No peers to sync");
+                    return Ok(());
+                }
+
+                if self.storage_state.is_empty() {
+                    log::error!(
+                        "There are no storages to sync, be sure your configuration file is correct"
+                    );
                     return Ok(());
                 }
 
@@ -174,6 +183,7 @@ impl Synchronizer {
                     .values()
                     .all(|state| !matches!(state, &StorageState::CurrentHash(_)))
                 {
+                    log::info!("No storages are available for synchroniation");
                     return Ok(());
                 }
 

@@ -86,6 +86,13 @@ impl Config {
             return Err(IronCarrierError::ConfigFileIsInvalid("invalid port number".into()).into());
         }
 
+        if self.paths.is_empty() {
+            return Err(IronCarrierError::ConfigFileIsInvalid(
+                "At least one storage path must be provided".into(),
+            )
+            .into());
+        }
+
         for (alias, path) in &self.paths {
             if !path.exists() {
                 log::info!("creating directory for alias {}", alias);

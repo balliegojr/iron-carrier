@@ -5,7 +5,6 @@ After=network-online.target nss-lookup.target
 
 [Service]
 Type=idle
-
 ExecStart=/usr/bin/iron-carrier -v
 Restart=on-failure
 TimeoutStopSec=300
