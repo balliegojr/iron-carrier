@@ -24,7 +24,7 @@ fn default_enable_service_discovery() -> bool {
 }
 fn default_log_path() -> PathBuf {
     let mut log_path = dirs::config_dir().expect("Can't access home folder");
-    log_path.push("iron-carrier/iron_carrier.log");
+    log_path.push("iron-carrier/iron-carrier.log");
     log_path
 }
 
