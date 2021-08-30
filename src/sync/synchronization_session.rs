@@ -64,13 +64,17 @@ impl SynchronizationState {
 
     pub fn get_event_queue(&mut self) -> LinkedList<(CarrierEvent, QueueEventType)> {
         let consolidated_index = self.get_consolidated_index();
-        let actions = consolidated_index
+        let mut actions: LinkedList<(CarrierEvent, QueueEventType)> = consolidated_index
             .iter()
             .flat_map(|(_, v)| self.convert_index_to_events(v))
             .collect();
 
         self.current_storage_index.clear();
         self.current_storage_peers.clear();
+
+        if !self.storage_state.is_empty() {
+            actions.push_back((CarrierEvent::SyncNextStorage, QueueEventType::Signal));
+        }
 
         actions
     }
