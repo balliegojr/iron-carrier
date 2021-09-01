@@ -84,7 +84,7 @@ impl Synchronizer {
         let wait = rng.gen_range(3.0..5.0);
         self.handler
             .signals()
-            .send_with_timer(CarrierEvent::StartSync, Duration::from_secs_f64(wait));
+            .send_with_timer(CarrierEvent::StartSync(1), Duration::from_secs_f64(wait));
 
         for storage in self.config.paths.keys() {
             self.storage_state.insert(
@@ -164,10 +164,11 @@ impl Synchronizer {
     fn handle_signal(&mut self, signal: CarrierEvent) -> crate::Result<()> {
         log::debug!("{} - Received Signal {} ", self.node_id, signal);
         match signal {
-            CarrierEvent::StartSync => {
+            CarrierEvent::StartSync(attempt) => {
                 let addresses = self.get_peer_addresses();
                 if addresses.is_empty() {
                     log::info!("No peers to sync");
+                    self.schedule_next_sync_attempt(attempt);
                     return Ok(());
                 }
 
@@ -648,6 +649,18 @@ impl Synchronizer {
             .flat_map(|peers| peers.iter().copied());
 
         from_sd.chain(from_config).collect()
+    }
+    fn schedule_next_sync_attempt(&self, attempt: u32) {
+        let seconds = if attempt < 12 {
+            2u64.pow(attempt)
+        } else {
+            3600
+        };
+
+        self.handler.signals().send_with_timer(
+            CarrierEvent::StartSync(attempt + 1),
+            Duration::from_secs(seconds),
+        );
     }
 }
 

@@ -6,10 +6,7 @@ mod file_watcher;
 mod synchronization_session;
 pub mod synchronizer;
 
-use std::{
-    collections::{HashMap, HashSet},
-    net::SocketAddr,
-};
+use std::collections::{HashMap, HashSet};
 
 use crate::fs::FileInfo;
 use message_io::{
@@ -41,7 +38,7 @@ impl std::fmt::Display for QueueEventType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum CarrierEvent {
-    StartSync,
+    StartSync(u32),
     EndSync,
     Cleanup,
     SetPeerId(u64),
@@ -70,7 +67,7 @@ pub(crate) enum CarrierEvent {
 impl std::fmt::Display for CarrierEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CarrierEvent::StartSync => write!(f, "Start Sync"),
+            CarrierEvent::StartSync(_) => write!(f, "Start Sync"),
             CarrierEvent::EndSync => write!(f, "End Sync"),
             CarrierEvent::Cleanup => write!(f, "Cleanup"),
             CarrierEvent::SetPeerId(peer_id) => write!(f, "Set peer id to {}", peer_id),
