@@ -8,8 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::IronCarrierError;
-
+use crate::{hash_helper, IronCarrierError};
 fn default_port() -> u16 {
     25230
 }
@@ -27,10 +26,15 @@ fn default_log_path() -> PathBuf {
     log_path.push("iron-carrier/iron-carrier.log");
     log_path
 }
+fn empty_string() -> String {
+    String::new()
+}
 
 /// Represents the configuration for the current machine
 #[derive(Deserialize)]
 pub struct Config {
+    #[serde(default = "empty_string")]
+    pub node_id: String,
     /// Contains the folder that will be watched for synchronization  
     /// **Key** is the path alias  
     /// **Value** is the path itself  
@@ -77,7 +81,21 @@ impl Config {
 
     /// Parses the given content into [Config]
     pub fn new_from_str(content: String) -> crate::Result<Self> {
-        toml::from_str::<Config>(&content)?.validate()
+        toml::from_str::<Config>(&content)?
+            .fill_node_id()
+            .validate()
+    }
+
+    fn fill_node_id(mut self) -> Self {
+        if self.node_id.is_empty() {
+            self.node_id = hash_helper::get_node_id(self.port)
+                .to_string()
+                .chars()
+                .take(10)
+                .collect();
+        }
+
+        self
     }
 
     fn validate(self) -> crate::Result<Self> {

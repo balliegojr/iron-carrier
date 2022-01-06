@@ -7,19 +7,18 @@ use std::{
     time::Duration,
 };
 
-use message_io::node::NodeHandler;
 use notify::{watcher, DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 
-use super::{CarrierEvent, EventSupression, WatcherEvent};
+use super::{connection_manager::CommandDispatcher, CarrierEvent, EventSupression, WatcherEvent};
 use crate::{config::Config, fs::FileInfo};
 
-pub(crate) struct FileWatcher {
+pub struct FileWatcher {
     _notify_watcher: RecommendedWatcher,
     event_supression: Arc<Mutex<HashMap<FileInfo, EventSupression>>>,
 }
 
 impl FileWatcher {
-    pub fn new(handler: NodeHandler<CarrierEvent>, config: Arc<Config>) -> crate::Result<Self> {
+    pub fn new(dispatcher: CommandDispatcher, config: Arc<Config>) -> crate::Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut _notify_watcher = watcher(tx, Duration::from_secs(config.delay_watcher_events))?;
         for (_, path) in config.paths.iter() {
@@ -36,7 +35,7 @@ impl FileWatcher {
             _notify_watcher,
             event_supression: Arc::new(Mutex::new(HashMap::new())),
         };
-        file_watcher.start_event_processing(rx, handler, config);
+        file_watcher.start_event_processing(rx, dispatcher, config);
 
         Ok(file_watcher)
     }
@@ -51,7 +50,7 @@ impl FileWatcher {
     fn start_event_processing(
         &self,
         notify_events_receiver: std::sync::mpsc::Receiver<DebouncedEvent>,
-        handler: NodeHandler<CarrierEvent>,
+        dispatcher: CommandDispatcher,
         config: Arc<Config>,
     ) {
         let event_supression = self.event_supression.clone();
@@ -63,7 +62,7 @@ impl FileWatcher {
                     if let Some(event) =
                         map_to_carrier_event(event, &config.paths, &mut supression_guard)
                     {
-                        handler.signals().send(event)
+                        dispatcher.now(event);
                     }
                 }
                 Err(_) => break,

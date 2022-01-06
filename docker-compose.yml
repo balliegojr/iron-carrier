@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  ic_one:
+    container_name: ic_one
+    build:
+      context: .
+      dockerfile: Dockerfile.src
+    networks:
+      - ic-network
+  ic_two:
+    container_name: ic_two
+    build: .
+    networks:
+      - ic-network
+  ic_three:
+    container_name: ic_three
+    build: .
+    networks:
+      - ic-network
+
+networks:
+  ic-network:
+    internal: true

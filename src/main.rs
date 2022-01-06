@@ -40,10 +40,12 @@ fn main() {
             config_dir
         }
     };
+
     let config = match Config::new(&config) {
         Ok(config) => config,
         Err(e) => {
             log::error!("{}", e);
+            log::error!("Config Path:: {}", config.to_str().unwrap());
             exit(-1)
         }
     };

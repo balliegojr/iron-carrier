@@ -28,7 +28,7 @@ use crate::{
 /// The `path` will always be relative to the alias root folder
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileInfo {
-    pub alias: String,
+    pub storage: String,
     /// File path, it is always relative to the alias root  
     /// The relative path will always be the same, no matter the machine
     pub path: PathBuf,
@@ -41,9 +41,9 @@ pub struct FileInfo {
 }
 
 impl FileInfo {
-    pub fn new(alias: String, relative_path: PathBuf, metadata: std::fs::Metadata) -> Self {
+    pub fn new(storage: String, relative_path: PathBuf, metadata: std::fs::Metadata) -> Self {
         FileInfo {
-            alias,
+            storage,
             path: relative_path,
             created_at: metadata.created().ok().and_then(system_time_to_secs),
             modified_at: metadata.modified().ok().and_then(system_time_to_secs),
@@ -59,7 +59,7 @@ impl FileInfo {
 
     pub fn new_deleted(alias: String, relative_path: PathBuf, deleted_at: Option<u64>) -> Self {
         FileInfo {
-            alias,
+            storage: alias,
             path: relative_path,
             created_at: None,
             modified_at: None,
@@ -83,7 +83,7 @@ impl FileInfo {
     /// Returns the absolute path of the file for this file system  
     /// Using the provided root path for the alias in [Config]
     pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
-        match config.paths.get(&self.alias) {
+        match config.paths.get(&self.storage) {
             Some(path) => match path.canonicalize() {
                 Ok(mut root_path) => {
                     root_path.extend(self.path.components());
@@ -91,15 +91,18 @@ impl FileInfo {
                 }
                 Err(_) => {
                     log::error!(
-                        "cannot get absolute path for alias {}, check if the path is valid",
-                        self.alias
+                        "cannot get absolute path for storage {}, check if the path is valid",
+                        self.storage
                     );
-                    Err(IronCarrierError::AliasNotAvailable(self.alias.to_owned()).into())
+                    Err(IronCarrierError::StorageNotAvailable(self.storage.to_owned()).into())
                 }
             },
             None => {
-                log::error!("provided alias does not exist in this node: {}", self.alias);
-                Err(IronCarrierError::AliasNotAvailable(self.alias.to_owned()).into())
+                log::error!(
+                    "provided storage does not exist in this node: {}",
+                    self.storage
+                );
+                Err(IronCarrierError::StorageNotAvailable(self.storage.to_owned()).into())
             }
         }
     }
@@ -107,7 +110,7 @@ impl FileInfo {
 
 impl Hash for FileInfo {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.alias.hash(state);
+        self.storage.hash(state);
         self.path.hash(state);
     }
 }
@@ -116,7 +119,7 @@ impl Eq for FileInfo {}
 
 impl PartialEq for FileInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.alias.eq(&other.alias) && self.path.eq(&other.path)
+        self.storage.eq(&other.storage) && self.path.eq(&other.path)
     }
 }
 
@@ -181,7 +184,7 @@ pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
     let mut s = DefaultHasher::new();
 
     for file in files {
-        file.alias.hash(&mut s);
+        file.storage.hash(&mut s);
         file.path.hash(&mut s);
         file.modified_at.hash(&mut s);
         file.deleted_at.hash(&mut s);
@@ -220,7 +223,7 @@ fn get_failed_writes(config: &Config, storage: &str) -> crate::Result<HashSet<Fi
             let files = log_reader
                 .get_failed_events(storage.to_string())
                 .map(|path| FileInfo {
-                    alias: storage.to_string(),
+                    storage: storage.to_string(),
                     path,
                     modified_at: None,
                     created_at: None,
@@ -351,7 +354,7 @@ a = "./tmp/fs/read_local_files"
     #[test]
     fn calc_hash() {
         let mut file = FileInfo {
-            alias: "a".to_owned(),
+            storage: "a".to_owned(),
             path: Path::new("./some_file_path").to_owned(),
             created_at: None,
             modified_at: None,
@@ -376,7 +379,7 @@ a = "./tmp/fs/read_local_files"
     #[test]
     fn test_is_out_of_sync() {
         let mut file_info = FileInfo {
-            alias: "a".to_owned(),
+            storage: "a".to_owned(),
             created_at: Some(0),
             modified_at: Some(0),
             path: Path::new("./some_file_path").to_owned(),

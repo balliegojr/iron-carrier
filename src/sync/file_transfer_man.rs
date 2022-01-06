@@ -8,35 +8,44 @@ use std::{
     usize,
 };
 
-use message_io::{network::Endpoint, node::NodeHandler};
+use message_io::network::Endpoint;
 
 use crate::{
     config::Config,
     fs::{self, FileInfo},
     hash_helper,
-    sync::STREAM_MESSAGE,
     transaction_log::{EventStatus, EventType, TransactionLogWriter},
 };
 
-use super::{file_watcher::FileWatcher, send_message, CarrierEvent, FileSyncEvent};
+use super::{
+    connection_manager::CommandDispatcher, file_watcher::FileWatcher, CarrierEvent, FileSyncEvent,
+};
 
-pub(crate) struct FileTransferMan {
+pub struct FileTransferMan {
     config: Arc<Config>,
-    handler: NodeHandler<CarrierEvent>,
+    commands: CommandDispatcher,
     sync_out: HashMap<u64, FileSync>,
     sync_in: HashMap<u64, FileSync>,
     queue_out: LinkedList<(u64, Endpoint)>,
 }
 
 impl FileTransferMan {
-    pub fn new(handler: NodeHandler<CarrierEvent>, config: Arc<Config>) -> Self {
+    pub fn new(commands: CommandDispatcher, config: Arc<Config>) -> Self {
         Self {
-            handler,
+            commands,
             config,
             sync_out: HashMap::new(),
             sync_in: HashMap::new(),
             queue_out: LinkedList::new(),
         }
+    }
+
+    pub fn handle_stream(&mut self, data: &[u8], peer_id: &str) -> crate::Result<()> {
+        let file_hash = u64::from_be_bytes(data[0..8].try_into().unwrap());
+        let block_index = u64::from_be_bytes(data[8..16].try_into().unwrap()) as usize;
+        let buf = &data[16..];
+
+        self.handle_write_block(file_hash, block_index, buf)
     }
 
     pub fn has_pending_transfers(&self) -> bool {
@@ -46,7 +55,7 @@ impl FileTransferMan {
     pub fn send_file_to_peer(
         &mut self,
         file_info: FileInfo,
-        peer: Endpoint,
+        peer_id: String,
         is_new_file: bool,
         is_request: bool,
     ) -> crate::Result<()> {
@@ -89,7 +98,8 @@ impl FileTransferMan {
             }
         };
 
-        send_message(&self.handler, &CarrierEvent::FileSyncEvent(event), peer);
+        self.commands
+            .to(CarrierEvent::FileSyncEvent(event), &peer_id);
 
         Ok(())
     }
@@ -131,10 +141,10 @@ impl FileTransferMan {
         block_index
     }
 
-    pub fn file_sync_event(
+    fn file_sync_event(
         &mut self,
         event: FileSyncEvent,
-        endpoint: Endpoint,
+        peer_id: String,
         file_watcher: &mut Option<FileWatcher>,
         log_writer: &mut TransactionLogWriter<File>,
     ) -> crate::Result<()> {
@@ -144,12 +154,12 @@ impl FileTransferMan {
                     file_info,
                     file_hash,
                     block_index,
-                    endpoint,
+                    peer_id,
                     log_writer,
                     consume_queue,
                 ),
             FileSyncEvent::SyncBlocks(file_hash, out_of_sync) => {
-                self.handle_sync_blocks(file_hash, out_of_sync, endpoint)
+                self.handle_sync_blocks(file_hash, out_of_sync, peer_id)
             }
             FileSyncEvent::EndSync(file_hash) => {
                 self.handle_end_sync(file_hash, file_watcher, log_writer)
@@ -165,7 +175,7 @@ impl FileTransferMan {
         file_info: FileInfo,
         file_hash: u64,
         block_index: Vec<(usize, u64)>,
-        endpoint: Endpoint,
+        peer_id: String,
         log_writer: &mut TransactionLogWriter<File>,
         consume_queue: bool,
     ) -> crate::Result<()> {
@@ -179,7 +189,7 @@ impl FileTransferMan {
         }
 
         log_writer.append(
-            file_info.alias.clone(),
+            file_info.storage.clone(),
             EventType::Write(file_info.path.clone()),
             EventStatus::Started,
         )?;
@@ -223,7 +233,8 @@ impl FileTransferMan {
         self.sync_in.insert(file_hash, file_sync);
 
         let event = FileSyncEvent::SyncBlocks(file_hash, out_of_sync);
-        send_message(&self.handler, &CarrierEvent::FileSyncEvent(event), endpoint);
+        self.commands
+            .to(CarrierEvent::FileSyncEvent(event), &peer_id);
 
         Ok(())
     }
@@ -232,7 +243,7 @@ impl FileTransferMan {
         &mut self,
         file_hash: u64,
         out_of_sync: Vec<usize>,
-        endpoint: Endpoint,
+        peer_id: String,
     ) -> crate::Result<()> {
         // TODO: split execution into multiple sends
         let file_sync = self.sync_out.get_mut(&file_hash).unwrap();
@@ -246,23 +257,19 @@ impl FileTransferMan {
                 .file_handler
                 .read_exact_at(&mut buf[..bytes_to_read], position as u64)?;
 
-            // let event = FileSyncEvent::WriteChunk(file_hash, index, buf);
-            // send_message(&self.handler, &CarrierEvent::FileSyncEvent(event), endpoint);
-            Self::send_write_block(
-                &mut self.handler,
-                file_hash,
-                index,
-                &buf[..bytes_to_read],
-                endpoint,
-            );
+            let mut data = Vec::with_capacity(bytes_to_read + 16);
+            data.extend(file_hash.to_be_bytes());
+            data.extend((index as u64).to_be_bytes());
+            data.extend(&buf[..bytes_to_read]);
+
+            self.commands.stream_to(&data, &peer_id);
         }
-        send_message(
-            &self.handler,
-            &CarrierEvent::FileSyncEvent(FileSyncEvent::EndSync(file_hash)),
-            endpoint,
+        self.commands.to(
+            CarrierEvent::FileSyncEvent(FileSyncEvent::EndSync(file_hash)),
+            &peer_id,
         );
         if file_sync.consume_queue {
-            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+            self.commands.now(CarrierEvent::ConsumeSyncQueue);
         }
         file_sync.peers_count -= 1;
         if file_sync.peers_count == 0 {
@@ -270,20 +277,6 @@ impl FileTransferMan {
         }
 
         Ok(())
-    }
-
-    fn send_write_block(
-        handler: &mut NodeHandler<CarrierEvent>,
-        file_hash: u64,
-        block_index: usize,
-        data: &[u8],
-        endpoint: Endpoint,
-    ) {
-        let mut buf = vec![STREAM_MESSAGE];
-        buf.extend(file_hash.to_be_bytes());
-        buf.extend((block_index as u64).to_be_bytes());
-        buf.extend(data);
-        handler.network().send(endpoint, &buf);
     }
 
     pub fn handle_write_block(
@@ -312,7 +305,7 @@ impl FileTransferMan {
 
         let file_info = { file_sync.file_info };
         log_writer.append(
-            file_info.alias.clone(),
+            file_info.storage.clone(),
             EventType::Write(file_info.path.clone()),
             EventStatus::Finished,
         )?;
@@ -322,7 +315,7 @@ impl FileTransferMan {
         }
 
         if file_sync.consume_queue {
-            self.handler.signals().send(CarrierEvent::ConsumeSyncQueue);
+            self.commands.now(CarrierEvent::ConsumeSyncQueue);
         }
         Ok(())
     }

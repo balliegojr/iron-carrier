@@ -1,23 +1,20 @@
 //! Handle synchronization
 
-mod connected_peers;
+mod connection_manager;
 mod file_transfer_man;
 mod file_watcher;
 mod synchronization_session;
-pub mod synchronizer;
+mod synchronizer;
 
 use std::collections::{HashMap, HashSet};
 
 use crate::fs::FileInfo;
-use message_io::{
-    network::{Endpoint, Transport},
-    node::NodeHandler,
-};
 use serde::{Deserialize, Serialize};
 
+pub use connection_manager::{CommandDispatcher, CommandType, ConnectionManager};
+pub use file_transfer_man::FileTransferMan;
+pub use file_watcher::FileWatcher;
 pub use synchronizer::Synchronizer;
-
-const TRANSPORT_PROTOCOL: Transport = Transport::FramedTcp;
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum QueueEventType {
@@ -37,11 +34,10 @@ impl std::fmt::Display for QueueEventType {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum CarrierEvent {
+pub enum CarrierEvent {
     StartSync(u32),
     EndSync,
     Cleanup,
-    SetPeerId(u64),
     IdentificationTimeout,
 
     ExchangeStorageStates,
@@ -70,7 +66,6 @@ impl std::fmt::Display for CarrierEvent {
             CarrierEvent::StartSync(_) => write!(f, "Start Sync"),
             CarrierEvent::EndSync => write!(f, "End Sync"),
             CarrierEvent::Cleanup => write!(f, "Cleanup"),
-            CarrierEvent::SetPeerId(peer_id) => write!(f, "Set peer id to {}", peer_id),
             CarrierEvent::SyncNextStorage => write!(f, "Sync next storage"),
             CarrierEvent::BuildStorageIndex(storage) => {
                 write!(f, "Build Storage Index: {}", storage)
@@ -99,7 +94,7 @@ impl std::fmt::Display for CarrierEvent {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum WatcherEvent {
+pub enum WatcherEvent {
     Created(FileInfo),
     Updated(FileInfo),
     Moved(FileInfo, FileInfo),
@@ -107,7 +102,7 @@ pub(crate) enum WatcherEvent {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum EventSupression {
+pub enum EventSupression {
     Write,
     Delete,
     Rename,
@@ -120,7 +115,7 @@ pub(crate) enum Origin {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum FileSyncEvent {
+pub enum FileSyncEvent {
     PrepareSync(FileInfo, u64, Vec<(usize, u64)>, bool),
     SyncBlocks(u64, Vec<usize>),
     WriteChunk(u64, usize, Vec<u8>),
@@ -145,30 +140,4 @@ impl std::fmt::Display for FileSyncEvent {
             FileSyncEvent::EndSync(file_hash) => write!(f, "EndSync - {}", file_hash),
         }
     }
-}
-const COMMAND_MESSAGE: u8 = 1;
-const STREAM_MESSAGE: u8 = 2;
-
-/// send a [message](`CarrierEvent`) to [endpoint](`message_io::network::Endpoint`) with message prefix 1
-fn send_message(handler: &NodeHandler<CarrierEvent>, message: &CarrierEvent, endpoint: Endpoint) {
-    let mut data = vec![COMMAND_MESSAGE];
-    data.extend(bincode::serialize(message).unwrap());
-    handler.network().send(endpoint, &data);
-}
-
-/// broadcast a [message](`CarrierEvent`) to given [endpoints](`message_io::network::Endpoint`) with message prefix 1
-fn broadcast_message_to<'a, T: Iterator<Item = &'a Endpoint>>(
-    handler: &NodeHandler<CarrierEvent>,
-    message: CarrierEvent,
-    endpoints: T,
-) -> usize {
-    let mut messages_sent = 0usize;
-    let mut data = vec![COMMAND_MESSAGE];
-    data.extend(bincode::serialize(&message).unwrap());
-    for endpoint in endpoints {
-        handler.network().send(*endpoint, &data);
-        messages_sent += 1;
-    }
-
-    messages_sent
 }
