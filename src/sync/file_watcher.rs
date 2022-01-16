@@ -8,9 +8,25 @@ use std::{
 };
 
 use notify::{watcher, DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
 
-use super::{connection_manager::CommandDispatcher, CarrierEvent, EventSupression, WatcherEvent};
-use crate::{config::Config, fs::FileInfo};
+use super::SyncEvent;
+use crate::{config::Config, conn::CommandDispatcher, fs::FileInfo};
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum EventSupression {
+    Write,
+    Delete,
+    Rename,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum WatcherEvent {
+    Created(FileInfo),
+    Updated(FileInfo),
+    Moved(FileInfo, FileInfo),
+    Deleted(FileInfo),
+}
 
 pub struct FileWatcher {
     _notify_watcher: RecommendedWatcher,
@@ -103,7 +119,7 @@ fn map_to_carrier_event(
     event: DebouncedEvent,
     paths: &HashMap<String, PathBuf>,
     event_supression: &mut HashMap<FileInfo, EventSupression>,
-) -> Option<CarrierEvent> {
+) -> Option<SyncEvent> {
     match event {
         notify::DebouncedEvent::Create(file_path) => {
             if crate::fs::is_special_file(&file_path) || file_path.is_dir() {
@@ -120,7 +136,7 @@ fn map_to_carrier_event(
                     event_supression.remove(&file);
                     None
                 }
-                _ => Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Created(file))),
+                _ => Some(SyncEvent::FileWatcherEvent(WatcherEvent::Created(file))),
             }
         }
 
@@ -139,7 +155,7 @@ fn map_to_carrier_event(
                     event_supression.remove(&file);
                     None
                 }
-                _ => Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Updated(file))),
+                _ => Some(SyncEvent::FileWatcherEvent(WatcherEvent::Updated(file))),
             }
         }
         notify::DebouncedEvent::Remove(file_path) => {
@@ -156,7 +172,7 @@ fn map_to_carrier_event(
                     event_supression.remove(&file);
                     None
                 }
-                _ => Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Deleted(file))),
+                _ => Some(SyncEvent::FileWatcherEvent(WatcherEvent::Deleted(file))),
             }
         }
         notify::DebouncedEvent::Rename(src_path, dest_path) => {
@@ -177,7 +193,7 @@ fn map_to_carrier_event(
                     event_supression.remove(&src_file);
                     None
                 }
-                _ => Some(CarrierEvent::FileWatcherEvent(WatcherEvent::Moved(
+                _ => Some(SyncEvent::FileWatcherEvent(WatcherEvent::Moved(
                     src_file, dest_file,
                 ))),
             }

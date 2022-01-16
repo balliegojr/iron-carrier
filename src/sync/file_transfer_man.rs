@@ -9,17 +9,53 @@ use std::{
 };
 
 use message_io::network::Endpoint;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::Config,
+    conn::{CommandDispatcher, CommandType},
     fs::{self, FileInfo},
     hash_helper,
-    transaction_log::{EventStatus, EventType, TransactionLogWriter},
+    transaction_log::{self, EventStatus, EventType, TransactionLogWriter},
 };
 
 use super::{
-    connection_manager::CommandDispatcher, file_watcher::FileWatcher, CarrierEvent, FileSyncEvent,
+    file_watcher::{EventSupression, FileWatcher},
+    SyncEvent,
 };
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileHandlerEvent {
+    DeleteFile(FileInfo),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSyncEvent {
+    PrepareSync(FileInfo, u64, Vec<(usize, u64)>, bool),
+    SyncBlocks(u64, Vec<usize>),
+    WriteChunk(u64, usize, Vec<u8>),
+    EndSync(u64),
+}
+
+impl std::fmt::Display for FileSyncEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileSyncEvent::PrepareSync(file, file_hash, _, _) => {
+                write!(f, "Prepare Sync for file ({}) {:?}", file_hash, file.path)
+            }
+            FileSyncEvent::SyncBlocks(file_hash, blocks) => write!(
+                f,
+                "SyncBlocks - {} - blocks out of sync {}",
+                file_hash,
+                blocks.len()
+            ),
+            FileSyncEvent::WriteChunk(file_hash, block, _) => {
+                write!(f, "WriteBlock - {} - Block Index {}", file_hash, block)
+            }
+            FileSyncEvent::EndSync(file_hash) => write!(f, "EndSync - {}", file_hash),
+        }
+    }
+}
 
 pub struct FileTransferMan {
     config: Arc<Config>,
@@ -48,6 +84,29 @@ impl FileTransferMan {
         self.handle_write_block(file_hash, block_index, buf)
     }
 
+    pub fn handle_event(&mut self, event: FileHandlerEvent) -> crate::Result<()> {
+        // TODO: include watcher suppression
+        match event {
+            FileHandlerEvent::DeleteFile(ref file_info) => self.delete_file(file_info),
+        }
+    }
+
+    fn delete_file(&mut self, file: &FileInfo) -> crate::Result<()> {
+        let event_status = match fs::delete_file(file, &self.config) {
+            Ok(_) => EventStatus::Finished,
+            Err(err) => {
+                log::error!("Failed to delete file {}", err);
+                EventStatus::Failed
+            }
+        };
+        self.get_log_writer()?.append(
+            file.storage.to_string(),
+            EventType::Delete(file.path.clone()),
+            event_status,
+        )?;
+
+        Ok(())
+    }
     pub fn has_pending_transfers(&self) -> bool {
         !self.sync_out.is_empty() || !self.sync_in.is_empty() || !self.queue_out.is_empty()
     }
@@ -98,8 +157,7 @@ impl FileTransferMan {
             }
         };
 
-        self.commands
-            .to(CarrierEvent::FileSyncEvent(event), &peer_id);
+        self.commands.to(SyncEvent::FileSyncEvent(event), &peer_id);
 
         Ok(())
     }
@@ -233,8 +291,7 @@ impl FileTransferMan {
         self.sync_in.insert(file_hash, file_sync);
 
         let event = FileSyncEvent::SyncBlocks(file_hash, out_of_sync);
-        self.commands
-            .to(CarrierEvent::FileSyncEvent(event), &peer_id);
+        self.commands.to(SyncEvent::FileSyncEvent(event), &peer_id);
 
         Ok(())
     }
@@ -262,14 +319,14 @@ impl FileTransferMan {
             data.extend((index as u64).to_be_bytes());
             data.extend(&buf[..bytes_to_read]);
 
-            self.commands.stream_to(&data, &peer_id);
+            self.commands.to(CommandType::Stream(data), &peer_id);
         }
         self.commands.to(
-            CarrierEvent::FileSyncEvent(FileSyncEvent::EndSync(file_hash)),
+            SyncEvent::FileSyncEvent(FileSyncEvent::EndSync(file_hash)),
             &peer_id,
         );
         if file_sync.consume_queue {
-            self.commands.now(CarrierEvent::ConsumeSyncQueue);
+            self.commands.now(SyncEvent::ConsumeSyncQueue);
         }
         file_sync.peers_count -= 1;
         if file_sync.peers_count == 0 {
@@ -311,13 +368,24 @@ impl FileTransferMan {
         )?;
 
         if let Some(ref mut file_watcher) = file_watcher {
-            file_watcher.supress_next_event(file_info, super::EventSupression::Write);
+            file_watcher.supress_next_event(file_info, EventSupression::Write);
         }
 
         if file_sync.consume_queue {
-            self.commands.now(CarrierEvent::ConsumeSyncQueue);
+            self.commands.now(SyncEvent::ConsumeSyncQueue);
         }
         Ok(())
+    }
+    fn get_log_writer(&mut self) -> crate::Result<&mut TransactionLogWriter<File>> {
+        todo!()
+        // match self.log_writer {
+        //     Some(ref mut log_writer) => Ok(log_writer),
+        //     None => {
+        //         let log_writer = transaction_log::get_log_writer(&self.config.log_path)?;
+        //         self.log_writer = Some(log_writer);
+        //         Ok(self.log_writer.as_mut().unwrap())
+        //     }
+        // }
     }
 }
 

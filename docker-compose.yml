@@ -6,19 +6,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.src
+    # network_mode: "host"
+    command: ["iron-carrier", "-vvvv", "/app/configs/config.one.toml"]
     networks:
       - ic-network
   ic_two:
     container_name: ic_two
     build: .
-    networks:
-      - ic-network
-  ic_three:
-    container_name: ic_three
-    build: .
+    # network_mode: "host"
+    command: ["iron-carrier", "-vvvv", "/app/configs/config.two.toml"]
     networks:
       - ic-network
 
 networks:
   ic-network:
-    internal: true
+    # internal: true
+    # driver: "host"

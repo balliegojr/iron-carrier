@@ -2,12 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
     time::SystemTime,
 };
 use thiserror::Error;
+
+use crate::IronCarrierError;
 
 const TRANSACTION_KEEP_LIMIT_SECS: u64 = 30 * 24 * 60 * 60;
 const LOG_MIN_COMPRESSING_SIZE: u64 = 1024u64.pow(3);
@@ -27,7 +29,13 @@ pub(crate) fn get_log_writer(log_path: &Path) -> std::io::Result<TransactionLogW
     Ok(TransactionLogWriter::new(file))
 }
 
-pub(crate) fn get_log_reader(log_path: &Path) -> std::io::Result<TransactionLogReader<File>> {
+pub(crate) fn get_log_reader(log_path: &Path) -> crate::Result<TransactionLogReader<File>> {
+    log::info!("Reading log file: {:?}", log_path);
+
+    if !log_path.is_file() {
+        return Err(IronCarrierError::ParseLogError.into());
+    }
+
     let file = File::open(log_path)?;
     Ok(TransactionLogReader::new(file))
 }

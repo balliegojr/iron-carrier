@@ -25,12 +25,16 @@ RUN cargo build --release
 
 FROM alpine as runtime
 
+EXPOSE 25230
+
 WORKDIR /app
 COPY --from=build /app/target/release/iron-carrier /usr/bin
+COPY tests/configs/ configs/
 
-RUN printf "[paths]\nsync = \"/app/sync\"\n\nlog_path = \"/app/log\"" > config.toml
+# RUN printf "[paths]\nsync = \"/app/sync\"\n\nlog_path = \"/app/log\"" > config.toml
 
 RUN mkdir sync/
 RUN mkdir log/
+
 
 CMD ["iron-carrier", "-vvvv", "/app/config.toml"]

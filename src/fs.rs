@@ -147,6 +147,7 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 /// files with name or extension `.ironcarrier` will be ignored
 pub fn walk_path(config: &Config, storage: &str) -> crate::Result<HashSet<FileInfo>> {
     let root_path = config.paths.get(storage).expect("Unexpected storage");
+    log::trace!("root_path {:?}", root_path);
     let mut paths = vec![root_path.to_owned()];
 
     let mut files = get_deleted_files(config, storage)?;
@@ -154,6 +155,7 @@ pub fn walk_path(config: &Config, storage: &str) -> crate::Result<HashSet<FileIn
     while let Some(path) = paths.pop() {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
+            log::trace!("entry {:?}", entry);
             let path = entry.path();
 
             if is_special_file(&path) {

@@ -4,7 +4,6 @@ use serde::Deserialize;
 use std::{
     collections::HashMap,
     fs::read_to_string,
-    net::SocketAddr,
     path::{Path, PathBuf},
 };
 
@@ -31,7 +30,7 @@ fn empty_string() -> String {
 }
 
 /// Represents the configuration for the current machine
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default = "empty_string")]
     pub node_id: String,
@@ -41,7 +40,7 @@ pub struct Config {
     pub paths: HashMap<String, PathBuf>,
     /// contains the address for the other peers  
     /// in the format IPV4:PORT (**192.168.1.1:25230**)
-    pub peers: Option<Vec<SocketAddr>>,
+    pub peers: Option<Vec<String>>,
 
     /// Port to listen to connections, defaults to 25230
     #[serde(default = "default_port")]
@@ -152,7 +151,7 @@ mod tests {
         let peers = config.peers.unwrap();
 
         assert_eq!(1, peers.len());
-        assert_eq!(SocketAddr::from_str("127.0.0.1:8888").unwrap(), peers[0]);
+        assert_eq!("127.0.0.1:8888", peers[0]);
 
         let paths = config.paths;
         assert_eq!(1, paths.len());

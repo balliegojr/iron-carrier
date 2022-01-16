@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet, LinkedList};
 
 use crate::fs::FileInfo;
 
-use super::{CarrierEvent, Origin, QueueEventType};
+use super::{Origin, QueueEventType, SyncEvent};
 
 #[derive(Debug)]
 pub(crate) struct SynchronizationState {
-    storage_state: HashMap<String, HashSet<u64>>,
+    storage_state: HashMap<String, HashSet<String>>,
     current_storage_index: HashMap<Origin, HashSet<FileInfo>>,
-    current_storage_peers: HashSet<u64>,
+    current_storage_peers: HashSet<String>,
     expected_state_replies: usize,
 }
 
@@ -22,14 +22,14 @@ impl SynchronizationState {
         }
     }
 
-    pub fn add_storages_to_sync(&mut self, storages: Vec<String>, peer_id: u64) -> bool {
+    pub fn add_storages_to_sync(&mut self, storages: Vec<String>, peer_id: &str) -> bool {
         for storage in storages {
             let state = self
                 .storage_state
                 .entry(storage)
                 .or_insert_with(HashSet::new);
 
-            state.insert(peer_id);
+            state.insert(peer_id.to_string());
         }
 
         self.expected_state_replies -= 1;
@@ -40,7 +40,7 @@ impl SynchronizationState {
         self.expected_state_replies = number_of_replies;
     }
 
-    pub fn get_next_storage(&mut self) -> Option<(String, HashSet<u64>)> {
+    pub fn get_next_storage(&mut self) -> Option<(String, HashSet<String>)> {
         if self.storage_state.is_empty() {
             return None;
         }
@@ -62,10 +62,10 @@ impl SynchronizationState {
         self.current_storage_peers.len() == self.current_storage_index.len() - 1
     }
 
-    pub fn get_event_queue(&mut self) -> LinkedList<(CarrierEvent, QueueEventType)> {
+    pub fn get_event_queue(&mut self) -> LinkedList<(SyncEvent, QueueEventType)> {
         let consolidated_index = self.get_consolidated_index();
-        let mut actions: LinkedList<(CarrierEvent, QueueEventType)> = consolidated_index
-            .iter()
+        let mut actions: LinkedList<(SyncEvent, QueueEventType)> = consolidated_index
+            .into_iter()
             .flat_map(|(_, v)| self.convert_index_to_events(v))
             .collect();
 
@@ -73,7 +73,7 @@ impl SynchronizationState {
         self.current_storage_peers.clear();
 
         if !self.storage_state.is_empty() {
-            actions.push_back((CarrierEvent::SyncNextStorage, QueueEventType::Signal));
+            actions.push_back((SyncEvent::SyncNextStorage, QueueEventType::Signal));
         }
 
         actions
@@ -85,7 +85,7 @@ impl SynchronizationState {
         for (origin, index) in &self.current_storage_index {
             for file in index {
                 consolidated_index
-                    .entry(&file)
+                    .entry(file)
                     .or_default()
                     .insert(origin, file);
             }
@@ -101,8 +101,8 @@ impl SynchronizationState {
     /// convert each line of the consolidated index to a vec of actions
     fn convert_index_to_events(
         &self,
-        files: &HashMap<&Origin, &FileInfo>,
-    ) -> Vec<(CarrierEvent, QueueEventType)> {
+        files: HashMap<&Origin, &FileInfo>,
+    ) -> Vec<(SyncEvent, QueueEventType)> {
         let mut actions = Vec::new();
         let (source, source_file) = files
             .iter()
@@ -118,24 +118,24 @@ impl SynchronizationState {
                 actions.extend(self.current_storage_peers.iter().filter_map(|peer_id| {
                     self.get_action_for_peer_file(
                         source_file,
-                        files.get(&Origin::Peer(*peer_id)),
-                        *peer_id,
+                        files.get(&Origin::Peer(peer_id.clone())),
+                        peer_id.clone(),
                     )
                 }));
             }
             Origin::Peer(origin_peer) => {
                 actions.push(if source_file.is_deleted() {
                     (
-                        CarrierEvent::DeleteFile((*source_file).clone()),
+                        SyncEvent::DeleteFile((*source_file).clone()),
                         QueueEventType::Signal,
                     )
                 } else {
                     (
-                        CarrierEvent::RequestFile(
+                        SyncEvent::RequestFile(
                             (*source_file).clone(),
                             !files.contains_key(&Origin::Initiator),
                         ),
-                        QueueEventType::Peer(*origin_peer),
+                        QueueEventType::Peer(origin_peer.clone()),
                     )
                 });
                 actions.extend(
@@ -145,8 +145,8 @@ impl SynchronizationState {
                         .filter_map(|peer_id| {
                             self.get_action_for_peer_file(
                                 source_file,
-                                files.get(&Origin::Peer(*peer_id)),
-                                *peer_id,
+                                files.get(&Origin::Peer(peer_id.clone())),
+                                peer_id.clone(),
                             )
                         }),
                 );
@@ -160,13 +160,13 @@ impl SynchronizationState {
         &self,
         source_file: &FileInfo,
         peer_file: Option<&&FileInfo>,
-        peer_id: u64,
-    ) -> Option<(CarrierEvent, QueueEventType)> {
+        peer_id: String,
+    ) -> Option<(SyncEvent, QueueEventType)> {
         match peer_file {
-            Some(peer_file) => {
-                if source_file.is_out_of_sync(&peer_file) {
+            Some(&peer_file) => {
+                if source_file.is_out_of_sync(peer_file) {
                     Some((
-                        CarrierEvent::SendFile(source_file.clone(), peer_id, false),
+                        SyncEvent::SendFile(source_file.clone(), peer_id, false),
                         QueueEventType::Signal,
                     ))
                 } else {
@@ -178,7 +178,7 @@ impl SynchronizationState {
                     None
                 } else {
                     Some((
-                        CarrierEvent::SendFile(source_file.clone(), peer_id, true),
+                        SyncEvent::SendFile(source_file.clone(), peer_id, true),
                         QueueEventType::Signal,
                     ))
                 }

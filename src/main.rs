@@ -45,7 +45,7 @@ fn main() {
         Ok(config) => config,
         Err(e) => {
             log::error!("{}", e);
-            log::error!("Config Path:: {}", config.to_str().unwrap());
+            log::error!("Error reading config at {}", config.to_str().unwrap());
             exit(-1)
         }
     };

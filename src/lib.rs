@@ -5,18 +5,19 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use config::Config;
+use conn::{CommandDispatcher, CommandType, ConnectionManager};
 use serde::{Deserialize, Serialize};
-use sync::{
-    CommandDispatcher, CommandType, ConnectionManager, FileTransferMan, FileWatcher, Synchronizer,
-};
+use sync::{FileTransferMan, FileWatcher, Synchronizer};
+
 use thiserror::Error;
 
 pub mod config;
+mod conn;
 mod fs;
 mod transaction_log;
 // mod network;
 mod hash_helper;
-pub mod sync;
+mod sync;
 
 /// Result<T, IronCarrierError> alias
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + 'static + Send + Sync>>;
@@ -75,23 +76,27 @@ impl From<bincode::Error> for IronCarrierError {
         IronCarrierError::ParseCommandError
     }
 }
-
 pub fn run(config: config::Config) -> crate::Result<()> {
-    let config = Arc::new(config);
-    let mut connection_man = ConnectionManager::new(config.clone());
-    let _file_watcher = get_file_watcher(config.clone(), connection_man.command_dispatcher());
+    log::trace!("My id is {}", config.node_id);
 
+    let config = Arc::new(config);
+    let connection_man = ConnectionManager::new(config.clone());
+    let _file_watcher = get_file_watcher(config.clone(), connection_man.command_dispatcher());
     let mut file_transfer_man =
         FileTransferMan::new(connection_man.command_dispatcher(), config.clone());
 
     let mut synchronizer = Synchronizer::new(config, connection_man.command_dispatcher())?;
 
-    connection_man.on_command(move |command| match command {
-        CommandType::Command(event) => synchronizer.handle_signal(event),
-        CommandType::CommandFrom(event, peer_id) => {
-            synchronizer.handle_network_event(event, peer_id)
+    connection_man.on_command(move |command, peer_id| -> crate::Result<()> {
+        match command {
+            CommandType::Command(event) => match peer_id {
+                Some(peer_id) => synchronizer.handle_network_event(event, peer_id),
+                None => synchronizer.handle_signal(event),
+            },
+
+            CommandType::Stream(data) => file_transfer_man.handle_stream(&data, peer_id.unwrap()),
+            CommandType::FileHandler(event) => file_transfer_man.handle_event(event),
         }
-        CommandType::StreamFrom(data, peer_id) => file_transfer_man.handle_stream(data, peer_id),
     })
 }
 
