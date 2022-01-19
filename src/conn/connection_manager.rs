@@ -1,22 +1,21 @@
-use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
-    ops::Add,
-    sync::{Arc, RwLock},
-    time::{Duration, Instant},
-};
-
 use message_io::{
     network::{Endpoint, NetEvent, Transport},
     node::{self, NodeHandler, NodeListener},
 };
+use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use simple_mdns::ServiceDiscovery;
+use std::{
+    collections::{HashMap, LinkedList},
+    fmt::Display,
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
+    sync::{Arc, Mutex, RwLock},
+    time::Duration,
+};
 
 use crate::{
     config::Config,
-    sync::{FileHandlerEvent, SyncEvent},
-    transaction_log::EventType,
+    sync::{FileHandlerEvent, SyncEvent, WatcherEvent},
     IronCarrierError,
 };
 
@@ -36,12 +35,6 @@ impl From<ConnectionFlow> for HandlerEvent {
     }
 }
 
-// impl From<CommandType> for HandlerEvent {
-//     fn from(v: CommandType) -> Self {
-//         HandlerEvent::Command(v)
-//     }
-// }
-
 impl<T: Into<CommandType>> From<T> for HandlerEvent {
     fn from(v: T) -> Self {
         HandlerEvent::Command(v.into())
@@ -59,6 +52,7 @@ pub enum CommandType {
     Command(SyncEvent),
     FileHandler(FileHandlerEvent),
     Stream(Vec<u8>),
+    Watcher(WatcherEvent),
 }
 
 impl From<SyncEvent> for CommandType {
@@ -73,12 +67,32 @@ impl From<FileHandlerEvent> for CommandType {
     }
 }
 
+impl From<WatcherEvent> for CommandType {
+    fn from(v: WatcherEvent) -> Self {
+        CommandType::Watcher(v)
+    }
+}
+
+impl Display for CommandType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            CommandType::Command(event) => write!(f, "command {}", event),
+            CommandType::FileHandler(event) => write!(f, "file event {}", event),
+            CommandType::Stream(_) => write!(f, "Stream"),
+            CommandType::Watcher(event) => write!(f, "watcher {}", event),
+        }
+    }
+}
+
 pub struct ConnectionManager {
     config: Arc<Config>,
 
     connections: Arc<RwLock<HashMap<String, PeerConnection>>>,
     id_lookup: Arc<RwLock<HashMap<Endpoint, String>>>,
     waiting_identification: HashMap<Endpoint, PeerConnection>,
+
+    event_queue: Arc<Mutex<LinkedList<CommandType>>>,
+    liveness_check_is_running: bool,
 
     handler: NodeHandler<HandlerEvent>,
     listener: Option<NodeListener<HandlerEvent>>,
@@ -96,8 +110,10 @@ impl ConnectionManager {
             config,
             service_discovery,
             waiting_identification: HashMap::new(),
-            connections: Arc::new(RwLock::new(HashMap::new())),
-            id_lookup: Arc::new(RwLock::new(HashMap::new())),
+            connections: Arc::new(HashMap::new().into()),
+            id_lookup: Arc::new(HashMap::new().into()),
+            event_queue: Arc::new(LinkedList::new().into()),
+            liveness_check_is_running: false,
         }
     }
     fn get_addresses_to_connect(&self) -> Vec<(SocketAddr, Option<String>)> {
@@ -130,12 +146,12 @@ impl ConnectionManager {
 
     pub fn command_dispatcher(&self) -> CommandDispatcher {
         let handler = self.handler.clone();
-        CommandDispatcher::new(handler, self.connections.clone())
+        CommandDispatcher::new(handler, self.connections.clone(), self.event_queue.clone())
     }
 
     pub fn on_command(
         mut self,
-        mut command_callback: impl FnMut(CommandType, Option<&str>) -> crate::Result<()>,
+        mut command_callback: impl FnMut(CommandType, Option<String>) -> crate::Result<bool>,
     ) -> crate::Result<()> {
         log::trace!("Starting on_command");
 
@@ -149,55 +165,113 @@ impl ConnectionManager {
             .take()
             .expect("on_command can only be called once")
             .for_each(|event| {
-                log::debug!("Received event {:?}", event);
-                match event {
-                    node::NodeEvent::Network(net_event) => match net_event {
-                        NetEvent::Connected(endpoint, success) => {
-                            self.handle_connected(endpoint, success)
-                        }
-                        NetEvent::Accepted(endpoint, _) => self.handle_accepted(endpoint),
-                        // When we receive a network message, we first verify it's prefix
-                        // This is necessary to avoid calling bincode serde for every file block,
-                        // which was hurting performance really bad
-                        NetEvent::Message(endpoint, data) => {
-                            if let Err(err) =
-                                self.handle_network_message(endpoint, data, &mut command_callback)
-                            {
-                                log::error!("Error processing network message: {}", err);
+                let result = match event {
+                    node::NodeEvent::Network(net_event) => self.handle_net_event(net_event),
+                    node::NodeEvent::Signal(signal_event) => self.handle_signal(signal_event),
+                };
+
+                match result {
+                    Ok(maybe_command) => {
+                        if let Some((command, peer_id)) = maybe_command {
+                            let mut cmd = Some(command);
+                            let mut peer_id = peer_id;
+
+                            while cmd.is_some() {
+                                cmd = self.execute_command(
+                                    cmd.unwrap(),
+                                    peer_id,
+                                    &mut command_callback,
+                                );
+                                peer_id = None
                             }
                         }
-                        NetEvent::Disconnected(endpoint) => {
-                            log::info!("Connection lost: {}", endpoint.addr());
-                            self.remove_endpoint(&endpoint);
-                        }
-                    },
-                    node::NodeEvent::Signal(signal_event) => match signal_event {
-                        HandlerEvent::Command(signal_event) => {
-                            if let Err(err) = command_callback(signal_event, None) {
-                                log::error!("Error processing signal: {}", err);
-                            }
-                        }
-                        HandlerEvent::Connection(control_event) => {
-                            if let Err(err) = self.handle_connection_flow(control_event) {
-                                log::error!("Error processing signal: {}", err);
-                            }
-                        }
-                    },
+                    }
+                    Err(err) => {
+                        log::error!("Failed to process event: {}", err);
+                    }
                 }
             });
 
         Ok(())
     }
 
+    fn execute_command(
+        &mut self,
+        command: CommandType,
+        peer_id: Option<String>,
+        command_callback: &mut impl FnMut(CommandType, Option<String>) -> crate::Result<bool>,
+    ) -> Option<CommandType> {
+        match &peer_id {
+            Some(peer_id) => {
+                log::trace!("Executing command from {}: {}", peer_id, &command);
+            }
+            None => {
+                log::trace!("Executing command: {} ", &command);
+            }
+        }
+
+        match command_callback(command, peer_id) {
+            Ok(consume_queue) => {
+                if consume_queue {
+                    return self.event_queue.lock().expect("Poisoned lock").pop_front();
+                } else {
+                    None
+                }
+            }
+            Err(err) => {
+                log::error!("Failed to process command: {}", err);
+                None
+            }
+        }
+    }
+
+    fn handle_net_event(
+        &mut self,
+        net_event: NetEvent,
+    ) -> crate::Result<Option<(CommandType, Option<String>)>> {
+        match net_event {
+            NetEvent::Connected(endpoint, success) => self.handle_connected(endpoint, success),
+            NetEvent::Accepted(endpoint, _) => self.handle_accepted(endpoint),
+            // When we receive a network message, we first verify it's prefix
+            // This is necessary to avoid calling bincode serde for every file block,
+            // which was hurting performance really bad
+            NetEvent::Message(endpoint, data) => {
+                return self.handle_network_message(endpoint, data)
+            }
+            NetEvent::Disconnected(endpoint) => {
+                log::info!("Connection lost: {}", endpoint.addr());
+                self.remove_endpoint(&endpoint);
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn handle_signal(
+        &mut self,
+        event: HandlerEvent,
+    ) -> crate::Result<Option<(CommandType, Option<String>)>> {
+        match event {
+            HandlerEvent::Command(signal_event) => Ok(Some((signal_event, None))),
+            HandlerEvent::Connection(control_event) => {
+                if self.handle_connection_flow(control_event)? {
+                    Ok(self
+                        .event_queue
+                        .lock()
+                        .expect("Poisoned lock")
+                        .pop_front()
+                        .map(|command| (command, None)))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
     fn send_initial_events(&self) {
         self.handler.signals().send_with_timer(
             ConnectionFlow::StartConnections.into(),
             Duration::from_secs(3),
-        );
-
-        self.handler.signals().send_with_timer(
-            ConnectionFlow::CheckConnectionLiveness.into(),
-            Duration::from_secs(4),
         );
     }
 
@@ -242,6 +316,8 @@ impl ConnectionManager {
             RawMessageType::SetId,
             self.config.node_id.as_bytes(),
         );
+
+        self.start_liveness_check();
         self.waiting_identification.insert(endpoint, connection);
     }
 
@@ -249,22 +325,27 @@ impl ConnectionManager {
         &mut self,
         endpoint: Endpoint,
         data: &[u8],
-
-        command_callback: &mut impl FnMut(CommandType, Option<&str>) -> crate::Result<()>,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<Option<(CommandType, Option<String>)>> {
         self.update_last_access(&endpoint);
 
         let message_type = RawMessageType::try_from(data[0])?;
 
         match message_type {
             RawMessageType::SetId => {
-                self.handle_set_id(&data[1..], endpoint);
+                let should_start_sync = self.handle_set_id(&data[1..], endpoint);
+                if should_start_sync {
+                    let mut rng = rand::thread_rng();
+                    self.handler.signals().send_with_timer(
+                        SyncEvent::StartSync(0).into(),
+                        Duration::from_secs_f64(rng.gen_range(1.0..3.0)),
+                    );
+                }
             }
             RawMessageType::Command => {
                 let message = bincode::deserialize(&data[1..])?;
                 match self.id_lookup.read().expect("Poisoned lock").get(&endpoint) {
                     Some(peer_id) => {
-                        command_callback(message, Some(&peer_id))?;
+                        return Ok(Some((message, Some(peer_id.clone()))));
                     }
                     None => {
                         log::error!("Received message from unknown endpoint");
@@ -274,10 +355,10 @@ impl ConnectionManager {
             RawMessageType::Stream => {
                 match self.id_lookup.read().expect("Poisoned lock").get(&endpoint) {
                     Some(peer_id) => {
-                        command_callback(
+                        return Ok(Some((
                             CommandType::Stream(data[1..].to_owned()),
-                            Some(&peer_id),
-                        )?;
+                            Some(peer_id.clone()),
+                        )))
                     }
                     None => {
                         log::error!("Received message from unknown endpoint");
@@ -286,43 +367,55 @@ impl ConnectionManager {
             }
         }
 
-        Ok(())
+        Ok(None)
     }
 
-    fn handle_set_id(&mut self, data: &[u8], endpoint: Endpoint) {
-        let node_id = String::from_utf8_lossy(&data[..]).to_string();
+    fn handle_set_id(&mut self, data: &[u8], endpoint: Endpoint) -> bool {
+        let node_id = String::from_utf8_lossy(data).to_string();
 
-        let mut id_lookup = self.id_lookup.write().expect("Poisoned lock");
-        let mut connections = self.connections.write().expect("Poisoned lock");
+        {
+            let mut id_lookup = self.id_lookup.write().expect("Poisoned lock");
+            let mut connections = self.connections.write().expect("Poisoned lock");
 
-        if connections.contains_key(&node_id) {
-            return;
-        }
-
-        if let std::collections::hash_map::Entry::Vacant(entry) = id_lookup.entry(endpoint) {
-            entry.insert(node_id.to_string());
-            match self.waiting_identification.remove(&endpoint) {
-                Some(mut connection) => {
-                    connection.touch();
-                    connections.insert(node_id, connection)
+            if connections.contains_key(&node_id) && self.config.node_id.lt(&node_id) {
+                log::debug!(
+                    "Received duplicated node_id {}, removing endpoint {}",
+                    node_id,
+                    endpoint
+                );
+                self.waiting_identification.remove(&endpoint);
+            } else {
+                if let std::collections::hash_map::Entry::Vacant(entry) = id_lookup.entry(endpoint)
+                {
+                    entry.insert(node_id.to_string());
+                    match self.waiting_identification.remove(&endpoint) {
+                        Some(mut connection) => {
+                            connection.touch();
+                            connections.insert(node_id, connection)
+                        }
+                        None => connections.insert(node_id, endpoint.into()),
+                    };
                 }
-                None => connections.insert(node_id, endpoint.into()),
-            };
+            }
         }
 
-        self.start_sync();
+        self.should_start_sync()
     }
 
-    fn start_sync(&self) {
-        if self.waiting_identification.is_empty() {
-            self.handler.signals().send(SyncEvent::StartSync(0).into());
-        }
+    fn should_start_sync(&self) -> bool {
+        let connections = self.connections.read().expect("Poisoned lock");
+        self.waiting_identification.is_empty()
+            && !connections.is_empty()
+            && self.config.node_id.lt(connections.keys().min().unwrap())
     }
 
-    fn handle_connection_flow(&mut self, event: ConnectionFlow) -> crate::Result<()> {
+    fn handle_connection_flow(&mut self, event: ConnectionFlow) -> crate::Result<bool> {
         match event {
-            ConnectionFlow::StartConnections => self.handle_start_connections(),
-            ConnectionFlow::CheckConnectionLiveness => self.handle_liveness_check(),
+            ConnectionFlow::StartConnections => {
+                self.handle_start_connections()?;
+                Ok(false)
+            }
+            ConnectionFlow::CheckConnectionLiveness => Ok(self.handle_liveness_check()),
         }
     }
 
@@ -332,10 +425,11 @@ impl ConnectionManager {
             // TODO: add exponential timeouts
             self.handler.signals().send_with_timer(
                 ConnectionFlow::StartConnections.into(),
-                Duration::from_secs(3),
+                Duration::from_secs(5),
             );
         }
 
+        self.start_liveness_check();
         for (socket_addr, node_id) in addresses_to_connect {
             log::debug!("connecting to {} with node id {:?}", socket_addr, &node_id);
 
@@ -379,16 +473,32 @@ impl ConnectionManager {
         Ok(())
     }
 
-    fn handle_liveness_check(&mut self) -> crate::Result<()> {
+    fn start_liveness_check(&mut self) {
+        if self.liveness_check_is_running {
+            return;
+        }
+
+        self.liveness_check_is_running = true;
+        self.handler.signals().send_with_timer(
+            ConnectionFlow::CheckConnectionLiveness.into(),
+            Duration::from_secs(1),
+        );
+    }
+
+    fn handle_liveness_check(&mut self) -> bool {
         let has_waiting = !self.waiting_identification.is_empty();
+        let unidentified = self
+            .waiting_identification
+            .values()
+            .filter(|x| x.is_stale(false));
         let endpoints: Vec<Endpoint> = self
             .connections
             .write()
             .expect("Poisoned lock")
             .values()
-            .chain(self.waiting_identification.values())
-            .filter(|c| c.is_stale())
-            .map(|c| c.endpoint())
+            .filter(|x| x.is_stale(true))
+            .chain(unidentified)
+            .map(|x| x.endpoint())
             .collect();
 
         let is_removing = !endpoints.is_empty();
@@ -397,16 +507,18 @@ impl ConnectionManager {
             self.remove_endpoint(&endpoint)
         }
 
-        if has_waiting && is_removing {
-            self.start_sync();
+        if self.connections.read().expect("Poisoned lock").is_empty()
+            && self.waiting_identification.is_empty()
+        {
+            self.liveness_check_is_running = false;
+        } else {
+            self.handler.signals().send_with_timer(
+                ConnectionFlow::CheckConnectionLiveness.into(),
+                Duration::from_secs(1),
+            );
         }
 
-        self.handler.signals().send_with_timer(
-            ConnectionFlow::CheckConnectionLiveness.into(),
-            Duration::from_secs(1),
-        );
-
-        Ok(())
+        has_waiting && is_removing && self.should_start_sync()
     }
 
     fn update_last_access(&mut self, endpoint: &Endpoint) {
@@ -428,8 +540,10 @@ impl ConnectionManager {
 
         match id_lookup.remove(endpoint) {
             Some(node_id) => {
-                log::debug!("Removed {} from connections", node_id);
-                connections.remove(&node_id);
+                if !id_lookup.values().any(|x| x == &node_id) {
+                    log::debug!("Removed {} from connections", node_id);
+                    connections.remove(&node_id);
+                }
             }
             None => {
                 log::debug!(
@@ -442,18 +556,22 @@ impl ConnectionManager {
     }
 }
 
+#[derive(Clone)]
 pub struct CommandDispatcher {
     handler: NodeHandler<HandlerEvent>,
     connections: Arc<RwLock<HashMap<String, PeerConnection>>>,
+    event_queue: Arc<Mutex<LinkedList<CommandType>>>,
 }
 impl CommandDispatcher {
     fn new(
         handler: NodeHandler<HandlerEvent>,
         connections: Arc<RwLock<HashMap<String, PeerConnection>>>,
+        event_queue: Arc<Mutex<LinkedList<CommandType>>>,
     ) -> Self {
         Self {
             handler,
             connections,
+            event_queue,
         }
     }
     pub fn now<T: Into<CommandType>>(&self, event: T) {
@@ -467,7 +585,12 @@ impl CommandDispatcher {
             .send_with_timer(event.into(), duration)
     }
     pub fn enqueue<T: Into<CommandType>>(&self, event: T) {
-        todo!()
+        let command = event.into();
+        log::trace!("Enqueuing event: {:?}", &command);
+        self.event_queue
+            .lock()
+            .expect("Poisoned lock")
+            .push_back(command);
     }
 
     pub fn to<T: Into<CommandType>>(&self, event: T, peer_id: &str) {
@@ -487,11 +610,30 @@ impl CommandDispatcher {
         let mut connections = self.connections.write().expect("Poisoned lock");
         let controller = self.handler.network();
 
+        // TODO: init connections on broadcast
         let data = match event {
             CommandType::Stream(data) => {
                 let mut stream = vec![RawMessageType::Stream as u8];
                 stream.extend(data.iter());
                 stream
+            }
+
+            // TODO fix this flow
+            CommandType::FileHandler(event) => {
+                if let FileHandlerEvent::SendFile(file, _, is_new) = event {
+                    for peer_id in connections.keys() {
+                        self.now(FileHandlerEvent::SendFile(
+                            file.clone(),
+                            peer_id.clone(),
+                            is_new,
+                        ));
+                    }
+                    return connections.len();
+                } else {
+                    let mut data = vec![RawMessageType::Command as u8];
+                    data.extend(bincode::serialize(&CommandType::FileHandler(event)).unwrap());
+                    data
+                }
             }
             event => {
                 let mut data = vec![RawMessageType::Command as u8];
@@ -506,12 +648,6 @@ impl CommandDispatcher {
 
         connections.len()
     }
-    // pub fn stream_to(&self, data: &[u8], peer_id: &str) {
-    //     let mut connections = self.connections.write().expect("Poisoned lock");
-    //     if let Some(connection) = connections.get_mut(peer_id) {
-    //         connection.send_raw(self.handler.network(), RawMessageType::Stream, data);
-    //     }
-    // }
 }
 
 fn get_service_discovery(config: &Config) -> Option<ServiceDiscovery> {
@@ -549,20 +685,3 @@ fn get_my_ips() -> Option<Vec<IpAddr>> {
 
     Some(addrs)
 }
-
-// /// broadcast a [message](`CarrierEvent`) to given [endpoints](`message_io::network::Endpoint`) with message prefix 1
-// fn broadcast_command_to<'a, T: Iterator<Item = &'a Endpoint>>(
-//     controller: NetworkController,
-//     message: SyncEvent,
-//     endpoints: T,
-// ) -> usize {
-//     let mut messages_sent = 0usize;
-//     let mut data = vec![RawMessageType::Command as u8];
-//     data.extend(bincode::serialize(&message).unwrap());
-//     for endpoint in endpoints {
-//         controller.send(*endpoint, &data);
-//         messages_sent += 1;
-//     }
-
-//     messages_sent
-// }

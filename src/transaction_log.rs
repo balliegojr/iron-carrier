@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, ErrorKind, Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
+    sync::{Arc, Mutex},
     time::SystemTime,
 };
 use thiserror::Error;
@@ -19,16 +20,6 @@ const LINE_ENDING: &str = "\n";
 #[cfg(windows)]
 const LINE_ENDING: &str = "\r\n";
 
-pub(crate) fn get_log_writer(log_path: &Path) -> std::io::Result<TransactionLogWriter<File>> {
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .write(true)
-        .open(log_path)?;
-
-    Ok(TransactionLogWriter::new(file))
-}
-
 pub(crate) fn get_log_reader(log_path: &Path) -> crate::Result<TransactionLogReader<File>> {
     log::info!("Reading log file: {:?}", log_path);
 
@@ -40,13 +31,26 @@ pub(crate) fn get_log_reader(log_path: &Path) -> crate::Result<TransactionLogRea
     Ok(TransactionLogReader::new(file))
 }
 
-pub(crate) struct TransactionLogWriter<T: Write> {
-    log_stream: T,
+pub struct TransactionLogWriter<T: Write> {
+    log_path: PathBuf,
+    log_stream: Arc<Mutex<T>>,
+}
+
+impl<T: Write> Clone for TransactionLogWriter<T> {
+    fn clone(&self) -> Self {
+        Self {
+            log_path: self.log_path.clone(),
+            log_stream: self.log_stream.clone(),
+        }
+    }
 }
 
 impl<T: Write> TransactionLogWriter<T> {
-    pub fn new(log_stream: T) -> Self {
-        Self { log_stream }
+    fn new(log_stream: T) -> Self {
+        Self {
+            log_path: PathBuf::new(),
+            log_stream: Arc::new(log_stream.into()),
+        }
     }
 
     pub fn append(
@@ -67,7 +71,57 @@ impl<T: Write> TransactionLogWriter<T> {
 
     fn append_event(&mut self, event: LogEvent) -> Result<(), TransactionLogError> {
         self.log_stream
+            .lock()
+            .expect("Poisoned lock")
             .write_all(format!("{}{}", event, LINE_ENDING).as_bytes())?;
+
+        Ok(())
+    }
+}
+
+impl TransactionLogWriter<File> {
+    pub fn new_from_path(log_path: &Path) -> crate::Result<Self> {
+        let log_stream = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .write(true)
+            .open(log_path)?;
+
+        Ok(Self {
+            log_path: log_path.to_path_buf(),
+            log_stream: Arc::new(log_stream.into()),
+        })
+    }
+    pub fn compress_log(&mut self) -> crate::Result<()> {
+        if self.log_path.metadata()?.len() < LOG_MIN_COMPRESSING_SIZE {
+            return Ok(());
+        }
+
+        let mut log_stream = self.log_stream.lock().expect("Poisoned lock");
+
+        let mut log_events = get_log_reader(&self.log_path)?
+            .get_log_events()
+            .filter_map(|ev| ev.ok());
+        let temp_log = self.log_path.join(".temp");
+
+        let time_limit =
+            SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() - TRANSACTION_KEEP_LIMIT_SECS;
+
+        if let Some(first_event) = log_events.next() {
+            if first_event.timestamp < time_limit {
+                let mut log_writer = TransactionLogWriter::<File>::new_from_path(&temp_log)?;
+                for event in log_events.filter(|ev| ev.timestamp > time_limit) {
+                    log_writer.append_event(event)?;
+                }
+                std::fs::rename(temp_log, &self.log_path)?;
+            }
+        }
+
+        *log_stream = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .write(true)
+            .open(&self.log_path)?;
 
         Ok(())
     }
@@ -137,31 +191,6 @@ impl<T: Read> Iterator for TransactionLogIter<T> {
     }
 }
 
-pub fn compress_log(log_path: &Path) -> crate::Result<()> {
-    if !log_path.exists() || log_path.metadata()?.len() < LOG_MIN_COMPRESSING_SIZE {
-        return Ok(());
-    }
-
-    let mut log_events = get_log_reader(log_path)?
-        .get_log_events()
-        .filter_map(|ev| ev.ok());
-    let temp_log = log_path.join(".temp");
-
-    let time_limit =
-        SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() - TRANSACTION_KEEP_LIMIT_SECS;
-
-    if let Some(first_event) = log_events.next() {
-        if first_event.timestamp < time_limit {
-            let mut log_writer = get_log_writer(&temp_log)?;
-            for event in log_events.filter(|ev| ev.timestamp > time_limit) {
-                log_writer.append_event(event)?;
-            }
-            std::fs::rename(temp_log, log_path)?;
-        }
-    }
-    Ok(())
-}
-
 #[derive(Error, Debug)]
 pub enum TransactionLogError {
     #[error("There is a invalid string in the log line")]
@@ -212,7 +241,7 @@ impl FromStr for LogEvent {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub(crate) enum EventType {
+pub enum EventType {
     Delete(PathBuf),
     Write(PathBuf),
     Move(PathBuf, PathBuf),

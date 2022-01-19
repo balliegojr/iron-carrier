@@ -97,7 +97,7 @@ impl Config {
         self
     }
 
-    fn validate(self) -> crate::Result<Self> {
+    fn validate(mut self) -> crate::Result<Self> {
         if 0 == self.port {
             log::error!("Invalid port number");
             return Err(IronCarrierError::ConfigFileIsInvalid("invalid port number".into()).into());
@@ -125,13 +125,16 @@ impl Config {
             }
         }
 
+        if self.log_path.exists() && self.log_path.is_dir() {
+            self.log_path.push("iron-carrier.log");
+        }
+
         Ok(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
 
     use super::*;
 

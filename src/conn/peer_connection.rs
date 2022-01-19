@@ -2,8 +2,6 @@ use std::time::{Duration, Instant};
 
 use message_io::network::{Endpoint, NetworkController};
 
-use crate::sync::SyncEvent;
-
 use super::{CommandType, RawMessageType};
 
 #[derive(Debug)]
@@ -39,8 +37,9 @@ impl PeerConnection {
         self.last_access = Instant::now();
     }
 
-    pub fn is_stale(&self) -> bool {
-        let limit = Instant::now() - Duration::from_secs(30);
+    pub fn is_stale(&self, is_identified: bool) -> bool {
+        let secs = if is_identified { 30 } else { 1 };
+        let limit = Instant::now() - Duration::from_secs(secs);
         self.last_access < limit
     }
 

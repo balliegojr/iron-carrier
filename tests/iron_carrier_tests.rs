@@ -36,7 +36,7 @@ fn append_content<P: AsRef<Path>>(path: P, content: &[u8]) {
 fn enable_logs(verbosity: usize) {
     stderrlog::new()
         .verbosity(verbosity)
-        .module("iron_carrier")
+        .modules(["iron_carrier", "iron_carrier_tests"])
         .timestamp(stderrlog::Timestamp::Second)
         .init()
         .unwrap();
@@ -44,7 +44,7 @@ fn enable_logs(verbosity: usize) {
 
 #[test]
 fn test_full_sync() {
-    // enable_logs(3);
+    // enable_logs(5);
     let mut contents = HashMap::new();
     let mut port = 8090;
     let peers = ["a", "b", "c"];
@@ -70,7 +70,7 @@ full_sync = "./tmp/peer_{}"
         });
     }
 
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(6));
 
     for peer_name in peers {
         assert_eq!(
@@ -94,7 +94,7 @@ full_sync = "./tmp/peer_{}"
 
 #[test]
 fn test_partial_sync() {
-    // enable_logs(3);
+    // enable_logs(5);
     let mut port = 8095u16;
     let peers = ["d", "e", "f"];
     for peer_name in peers {
@@ -119,8 +119,9 @@ part_sync = "./tmp/peer_{}"
         });
     }
 
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(10));
 
+    log::debug!("Writing files for write events");
     let _ = std::fs::write(
         format!("tmp/peer_{}/new_file_1", peers[0]),
         b"some nice content for a new file",
@@ -131,6 +132,7 @@ part_sync = "./tmp/peer_{}"
     );
 
     thread::sleep(Duration::from_secs(4));
+    log::debug!("Checking files for write events");
     for peer_name in peers {
         assert_eq!(
             b"some nice content for a new file",
@@ -142,6 +144,7 @@ part_sync = "./tmp/peer_{}"
         );
     }
 
+    log::debug!("Writing update events");
     append_content(
         format!("./tmp/peer_{}/new_file_1", peers[0]),
         b" more content",
@@ -153,6 +156,7 @@ part_sync = "./tmp/peer_{}"
 
     thread::sleep(Duration::from_secs(4));
 
+    log::debug!("Checking update events");
     for peer_name in peers {
         assert_eq!(
             b"some nice content for a new file more content",
@@ -165,9 +169,12 @@ part_sync = "./tmp/peer_{}"
         );
     }
 
+    log::debug!("Delete events");
     std::fs::remove_file(format!("./tmp/peer_{}/new_file_2", peers[0]))
         .expect("failed to remove test file");
     thread::sleep(Duration::from_secs(3));
+
+    log::debug!("Checking delete events");
     for peer_name in peers {
         assert!(!PathBuf::from(format!("./tmp/peer_{}/new_file_2", peer_name)).exists());
     }

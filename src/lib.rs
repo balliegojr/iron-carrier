@@ -2,7 +2,7 @@
 //!
 //! Synchronize your files in differents machines on the same network
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{fs::File, net::SocketAddr, sync::Arc};
 
 use config::Config;
 use conn::{CommandDispatcher, CommandType, ConnectionManager};
@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sync::{FileTransferMan, FileWatcher, Synchronizer};
 
 use thiserror::Error;
+use transaction_log::TransactionLogWriter;
 
 pub mod config;
 mod conn;
@@ -80,29 +81,48 @@ pub fn run(config: config::Config) -> crate::Result<()> {
     log::trace!("My id is {}", config.node_id);
 
     let config = Arc::new(config);
+    let log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
     let connection_man = ConnectionManager::new(config.clone());
-    let _file_watcher = get_file_watcher(config.clone(), connection_man.command_dispatcher());
-    let mut file_transfer_man =
-        FileTransferMan::new(connection_man.command_dispatcher(), config.clone());
+    let file_watcher = get_file_watcher(
+        config.clone(),
+        connection_man.command_dispatcher(),
+        log_writer.clone(),
+    );
+
+    let mut file_transfer_man = FileTransferMan::new(
+        connection_man.command_dispatcher(),
+        config.clone(),
+        log_writer,
+    );
 
     let mut synchronizer = Synchronizer::new(config, connection_man.command_dispatcher())?;
 
-    connection_man.on_command(move |command, peer_id| -> crate::Result<()> {
+    connection_man.on_command(move |command, peer_id| -> crate::Result<bool> {
         match command {
             CommandType::Command(event) => match peer_id {
-                Some(peer_id) => synchronizer.handle_network_event(event, peer_id),
+                Some(peer_id) => synchronizer.handle_network_event(event, &peer_id),
                 None => synchronizer.handle_signal(event),
             },
 
-            CommandType::Stream(data) => file_transfer_man.handle_stream(&data, peer_id.unwrap()),
-            CommandType::FileHandler(event) => file_transfer_man.handle_event(event),
+            CommandType::Stream(data) => file_transfer_man.handle_stream(&data, &peer_id.unwrap()),
+            CommandType::FileHandler(event) => {
+                file_transfer_man.handle_event(event, peer_id.as_deref())
+            }
+            CommandType::Watcher(event) => match &file_watcher {
+                Some(watcher) => watcher.handle_event(event),
+                None => Ok(false),
+            },
         }
     })
 }
 
-fn get_file_watcher(config: Arc<Config>, dispatcher: CommandDispatcher) -> Option<FileWatcher> {
+fn get_file_watcher(
+    config: Arc<Config>,
+    dispatcher: CommandDispatcher,
+    log_writer: TransactionLogWriter<File>,
+) -> Option<FileWatcher> {
     if config.enable_file_watcher {
-        FileWatcher::new(dispatcher, config).ok()
+        FileWatcher::new(dispatcher, config, log_writer).ok()
     } else {
         None
     }
