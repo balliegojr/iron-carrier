@@ -5,7 +5,7 @@
 use std::{fs::File, net::SocketAddr, sync::Arc};
 
 use config::Config;
-use conn::{CommandDispatcher, CommandType, ConnectionManager};
+use conn::{CommandDispatcher, Commands, ConnectionManager};
 use serde::{Deserialize, Serialize};
 use sync::{FileTransferMan, FileWatcher, Synchronizer};
 
@@ -81,7 +81,7 @@ pub fn run(config: config::Config) -> crate::Result<()> {
     log::trace!("My id is {}", config.node_id);
 
     let config = Arc::new(config);
-    let log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
+    let mut log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
     let connection_man = ConnectionManager::new(config.clone());
     let file_watcher = get_file_watcher(
         config.clone(),
@@ -92,26 +92,30 @@ pub fn run(config: config::Config) -> crate::Result<()> {
     let mut file_transfer_man = FileTransferMan::new(
         connection_man.command_dispatcher(),
         config.clone(),
-        log_writer,
+        log_writer.clone(),
     );
 
     let mut synchronizer = Synchronizer::new(config, connection_man.command_dispatcher())?;
 
     connection_man.on_command(move |command, peer_id| -> crate::Result<bool> {
         match command {
-            CommandType::Command(event) => match peer_id {
+            Commands::Command(event) => match peer_id {
                 Some(peer_id) => synchronizer.handle_network_event(event, &peer_id),
                 None => synchronizer.handle_signal(event),
             },
 
-            CommandType::Stream(data) => file_transfer_man.handle_stream(&data, &peer_id.unwrap()),
-            CommandType::FileHandler(event) => {
+            Commands::Stream(data) => file_transfer_man.handle_stream(&data, &peer_id.unwrap()),
+            Commands::FileHandler(event) => {
                 file_transfer_man.handle_event(event, peer_id.as_deref())
             }
-            CommandType::Watcher(event) => match &file_watcher {
+            Commands::Watcher(event) => match &file_watcher {
                 Some(watcher) => watcher.handle_event(event),
                 None => Ok(false),
             },
+            Commands::Cleanup => {
+                log_writer.compress_log()?;
+                Ok(false)
+            }
         }
     })
 }

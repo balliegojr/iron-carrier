@@ -145,7 +145,7 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 ///
 /// This function will look for deletes files in the [DeletionTracker] log and append all entries to the return list  
 /// files with name or extension `.ironcarrier` will be ignored
-pub fn walk_path(config: &Config, storage: &str) -> crate::Result<HashSet<FileInfo>> {
+pub fn walk_path(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>> {
     let root_path = config.paths.get(storage).expect("Unexpected storage");
     let mut paths = vec![root_path.to_owned()];
 
@@ -176,6 +176,8 @@ pub fn walk_path(config: &Config, storage: &str) -> crate::Result<HashSet<FileIn
 
     let failed_writes = get_failed_writes(config, storage)?;
     files.retain(|file| !failed_writes.contains(file));
+    let mut files: Vec<FileInfo> = files.into_iter().collect();
+    files.sort();
 
     Ok(files)
 }
@@ -183,11 +185,11 @@ pub fn walk_path(config: &Config, storage: &str) -> crate::Result<HashSet<FileIn
 pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
     let mut s = DefaultHasher::new();
 
-    for file in files {
+    for file in files.filter(|f| !f.is_deleted()) {
         file.storage.hash(&mut s);
         file.path.hash(&mut s);
         file.modified_at.hash(&mut s);
-        file.deleted_at.hash(&mut s);
+        // file.deleted_at.is_some().hash(&mut s);
         file.size.hash(&mut s);
     }
 
@@ -242,7 +244,7 @@ pub fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
         log::debug!("delete_file: given path doesn't exist ({:?})", path);
-        return Ok(());
+        return Err(Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)));
     } else if path.is_dir() {
         log::debug!("delete_file: {:?} is dir, removing whole dir", path);
         std::fs::remove_dir_all(&path)?;

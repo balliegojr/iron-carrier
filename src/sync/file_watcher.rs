@@ -12,7 +12,7 @@ use std::{
 use notify::{watcher, DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 
-use super::FileHandlerEvent;
+use super::{FileHandlerEvent, SyncEvent};
 use crate::{
     config::Config,
     conn::CommandDispatcher,
@@ -85,6 +85,11 @@ impl FileWatcher {
     }
 
     fn supress_next_event(&self, file_info: FileInfo, event_type: SupressionType) {
+        log::trace!(
+            "Adding supression for {:?} {:?}",
+            file_info.path,
+            event_type
+        );
         self.event_supression
             .lock()
             .unwrap()
@@ -100,20 +105,23 @@ impl FileWatcher {
     ) {
         let event_supression = self.event_supression.clone();
 
-        thread::spawn(move || loop {
-            match notify_events_receiver.recv() {
-                Ok(event) => {
-                    let mut supression_guard = event_supression.lock().unwrap();
-                    if let Some(event) = map_to_sync_event(
-                        event,
-                        &config.paths,
-                        &mut supression_guard,
-                        &mut log_writer,
-                    ) {
-                        dispatcher.broadcast(event);
+        thread::spawn(move || {
+            while let Ok(event) = notify_events_receiver.recv() {
+                let mut supression_guard = event_supression.lock().unwrap();
+                if let Some((storage, event)) =
+                    map_to_sync_event(event, &config.paths, &mut supression_guard, &mut log_writer)
+                {
+                    dispatcher.now(SyncEvent::InvalidateStorageState(storage.clone()));
+                    dispatcher.broadcast(SyncEvent::InvalidateStorageState(storage));
+                    match event {
+                        event @ FileHandlerEvent::BroadcastFile(_, _) => {
+                            dispatcher.now(event);
+                        }
+                        event => {
+                            dispatcher.broadcast(event);
+                        }
                     }
                 }
-                Err(_) => break,
             }
         });
     }
@@ -152,7 +160,7 @@ fn map_to_sync_event(
     paths: &HashMap<String, PathBuf>,
     event_supression: &mut HashMap<FileInfo, SupressionType>,
     log_writer: &mut TransactionLogWriter<File>,
-) -> Option<FileHandlerEvent> {
+) -> Option<(String, FileHandlerEvent)> {
     match event {
         notify::DebouncedEvent::Create(file_path) => {
             match get_file_info(paths, event_supression, file_path, SupressionType::Write) {
@@ -163,7 +171,10 @@ fn map_to_sync_event(
                         EventStatus::Finished,
                     );
 
-                    Some(FileHandlerEvent::SendFile(file, String::new(), true))
+                    Some((
+                        file.storage.clone(),
+                        FileHandlerEvent::BroadcastFile(file, true),
+                    ))
                 }
                 None => None,
             }
@@ -178,7 +189,10 @@ fn map_to_sync_event(
                         EventStatus::Finished,
                     );
 
-                    Some(FileHandlerEvent::SendFile(file, String::new(), false))
+                    Some((
+                        file.storage.clone(),
+                        FileHandlerEvent::BroadcastFile(file, false),
+                    ))
                 }
                 None => None,
             }
@@ -193,7 +207,7 @@ fn map_to_sync_event(
                         EventStatus::Finished,
                     );
 
-                    Some(FileHandlerEvent::DeleteFile(file))
+                    Some((file.storage.clone(), FileHandlerEvent::DeleteFile(file)))
                 }
                 None => None,
             }
@@ -210,7 +224,10 @@ fn map_to_sync_event(
                         EventType::Move(src_file.path.clone(), dest_file.path.clone()),
                         EventStatus::Finished,
                     );
-                    Some(FileHandlerEvent::MoveFile(src_file, dest_file))
+                    Some((
+                        src_file.storage.clone(),
+                        FileHandlerEvent::MoveFile(src_file, dest_file),
+                    ))
                 }
                 _ => None,
             }
@@ -241,12 +258,20 @@ fn get_file_info(
         }
     };
 
-    match event_supression.get(&file) {
-        Some(supression) if *supression == supression_type => {
-            log::trace!("supressed {:?} event for {:?}", supression_type, file_path);
-            event_supression.remove(&file);
-            None
+    match event_supression.entry(file.clone()) {
+        std::collections::hash_map::Entry::Occupied(entry) => {
+            let k = entry.key();
+            if k.modified_at == file.modified_at
+                && k.size == file.size
+                && k.deleted_at.is_some() == file.deleted_at.is_some()
+            {
+                log::trace!("supressed {:?} event for {:?}", supression_type, file_path);
+                entry.remove_entry();
+                None
+            } else {
+                Some(file)
+            }
         }
-        _ => Some(file),
+        std::collections::hash_map::Entry::Vacant(_) => Some(file),
     }
 }

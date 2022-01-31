@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use crate::{conn::CommandDispatcher, fs::FileInfo};
 
@@ -6,7 +9,7 @@ use super::{FileHandlerEvent, Origin, SyncEvent};
 
 pub(crate) struct SynchronizationState {
     storage_state: HashMap<String, HashSet<String>>,
-    current_storage_index: HashMap<Origin, HashSet<FileInfo>>,
+    current_storage_index: HashMap<Origin, Vec<FileInfo>>,
     current_storage_peers: HashSet<String>,
     expected_state_replies: usize,
     commands: CommandDispatcher,
@@ -58,7 +61,7 @@ impl SynchronizationState {
         Some((storage, peers))
     }
 
-    pub fn set_storage_index(&mut self, origin: Origin, index: HashSet<FileInfo>) -> bool {
+    pub fn set_storage_index(&mut self, origin: Origin, index: Vec<FileInfo>) -> bool {
         self.current_storage_index.insert(origin, index);
         self.current_storage_peers.len() == self.current_storage_index.len() - 1
     }
@@ -69,35 +72,30 @@ impl SynchronizationState {
             .into_iter()
             .for_each(|(_, v)| self.convert_index_to_events(v));
 
-        self.current_storage_index.clear();
         self.current_storage_peers.clear();
 
         if !self.storage_state.is_empty() {
             self.commands.enqueue(SyncEvent::SyncNextStorage);
+        } else {
+            self.commands.enqueue(SyncEvent::EndSync);
         }
     }
 
-    fn get_consolidated_index(&self) -> HashMap<&FileInfo, HashMap<&Origin, &FileInfo>> {
-        let mut consolidated_index: HashMap<&FileInfo, HashMap<&Origin, &FileInfo>> =
-            HashMap::new();
-        for (origin, index) in &self.current_storage_index {
+    fn get_consolidated_index(&mut self) -> HashMap<PathBuf, HashMap<Origin, FileInfo>> {
+        let mut consolidated_index: HashMap<PathBuf, HashMap<Origin, FileInfo>> = HashMap::new();
+        for (origin, index) in std::mem::take(&mut self.current_storage_index) {
             for file in index {
                 consolidated_index
-                    .entry(file)
+                    .entry(file.path.clone())
                     .or_default()
-                    .insert(origin, file);
+                    .insert(origin.clone(), file);
             }
         }
-
-        consolidated_index.retain(|file, files| {
-            files.len() < self.current_storage_index.len()
-                || files.values().any(|w| file.is_out_of_sync(w))
-        });
 
         consolidated_index
     }
     /// convert each line of the consolidated index to a vec of actions
-    fn convert_index_to_events(&self, files: HashMap<&Origin, &FileInfo>) {
+    fn convert_index_to_events(&self, files: HashMap<Origin, FileInfo>) {
         let (source, source_file) = files
             .iter()
             .max_by(|(_, a), (_, b)| {
@@ -107,7 +105,7 @@ impl SynchronizationState {
             })
             .unwrap();
 
-        match *source {
+        match source {
             Origin::Initiator => {
                 for action in self.current_storage_peers.iter().filter_map(|peer_id| {
                     self.get_action_for_peer_file(
@@ -152,11 +150,11 @@ impl SynchronizationState {
     fn get_action_for_peer_file(
         &self,
         source_file: &FileInfo,
-        peer_file: Option<&&FileInfo>,
+        peer_file: Option<&FileInfo>,
         peer_id: String,
     ) -> Option<FileHandlerEvent> {
         match peer_file {
-            Some(&peer_file) => {
+            Some(peer_file) => {
                 if source_file.is_out_of_sync(peer_file) {
                     Some(FileHandlerEvent::SendFile(
                         source_file.clone(),

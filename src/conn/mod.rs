@@ -1,9 +1,18 @@
-mod connection_manager;
-mod peer_connection;
+mod commands;
+pub use commands::{CommandType, Commands};
 
-pub use connection_manager::{CommandDispatcher, CommandType, ConnectionManager};
+mod connection_manager;
+pub use connection_manager::ConnectionManager;
+
+mod dispatcher;
+pub use dispatcher::CommandDispatcher;
+
+mod peer_connection;
+pub use peer_connection::PeerConnection;
 
 use crate::IronCarrierError;
+
+use self::connection_manager::ConnectionFlow;
 
 pub enum RawMessageType {
     SetId = 0,
@@ -22,4 +31,11 @@ impl TryFrom<u8> for RawMessageType {
             _ => Err(IronCarrierError::InvalidMessage),
         }
     }
+}
+
+#[derive(Debug)]
+pub enum HandlerEvent {
+    Command(Commands),
+    Connection(ConnectionFlow),
+    ConsumeQueue,
 }

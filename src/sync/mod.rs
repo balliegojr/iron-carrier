@@ -1,24 +1,25 @@
 //! Handle synchronization
 
-mod file_transfer_man;
-mod file_watcher;
-mod synchronization_session;
-mod synchronizer;
-
-use std::collections::{HashMap, HashSet};
-
-pub use file_transfer_man::{FileHandlerEvent, FileTransferMan};
-pub use file_watcher::{FileWatcher, SupressionType, WatcherEvent};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+mod file_transfer_man;
+pub use file_transfer_man::{FileHandlerEvent, FileTransferMan};
+
+mod file_watcher;
+pub use file_watcher::{FileWatcher, SupressionType, WatcherEvent};
+
+mod synchronization_session;
+
+mod synchronizer;
 pub use synchronizer::Synchronizer;
 
 use crate::fs::FileInfo;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SyncEvent {
-    StartSync(u32),
+    StartSync,
     EndSync,
-    Cleanup,
 
     ExchangeStorageStates,
     QueryOutOfSyncStorages(HashMap<String, u64>),
@@ -27,15 +28,16 @@ pub enum SyncEvent {
     SyncNextStorage,
 
     BuildStorageIndex(String),
-    SetStorageIndex(HashSet<FileInfo>),
+    SetStorageIndex(Vec<FileInfo>),
+
+    InvalidateStorageState(String),
 }
 
 impl std::fmt::Display for SyncEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SyncEvent::StartSync(_) => write!(f, "Start Sync"),
+            SyncEvent::StartSync => write!(f, "Start Sync"),
             SyncEvent::EndSync => write!(f, "End Sync"),
-            SyncEvent::Cleanup => write!(f, "Cleanup"),
             SyncEvent::SyncNextStorage => write!(f, "Sync next storage"),
             SyncEvent::BuildStorageIndex(storage) => {
                 write!(f, "Build Storage Index: {}", storage)
@@ -46,11 +48,12 @@ impl std::fmt::Display for SyncEvent {
             SyncEvent::ReplyOutOfSyncStorages(storages) => {
                 write!(f, "Storages To Sync {:?}", storages)
             }
+            SyncEvent::InvalidateStorageState(storage) => write!(f, "Invalidate {} state", storage),
         }
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub(crate) enum Origin {
     Initiator,
     Peer(String),

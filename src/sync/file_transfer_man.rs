@@ -1,6 +1,6 @@
 use std::{
     cmp,
-    collections::{HashMap, LinkedList},
+    collections::HashMap,
     fs::{File, OpenOptions},
     io::{Read, Write},
     os::unix::prelude::{FileExt, MetadataExt},
@@ -8,12 +8,11 @@ use std::{
     usize,
 };
 
-use message_io::network::Endpoint;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     config::Config,
-    conn::{CommandDispatcher, CommandType},
+    conn::{CommandDispatcher, Commands},
     fs::{self, FileInfo},
     hash_helper,
     transaction_log::{EventStatus, EventType, TransactionLogWriter},
@@ -68,7 +67,6 @@ pub struct FileTransferMan {
     commands: CommandDispatcher,
     sync_out: HashMap<u64, FileSync>,
     sync_in: HashMap<u64, FileSync>,
-    queue_out: LinkedList<(u64, Endpoint)>,
     log_writer: TransactionLogWriter<File>,
 }
 
@@ -83,7 +81,6 @@ impl FileTransferMan {
             config,
             sync_out: HashMap::new(),
             sync_in: HashMap::new(),
-            queue_out: LinkedList::new(),
             log_writer,
         }
     }
@@ -111,12 +108,13 @@ impl FileTransferMan {
                 Ok(peer_id.is_none())
             }
             FileHandlerEvent::SendFile(file_info, peer_id, is_new_file) => {
-                self.send_file_to_peer(file_info, &peer_id, is_new_file, false)
+                self.send_prepare_sync(file_info, &peer_id, is_new_file, false)
             }
-
-            FileHandlerEvent::BroadcastFile(_, _) => todo!(),
+            FileHandlerEvent::BroadcastFile(file_info, is_new_file) => {
+                self.broadcast_prepare_sync(file_info, is_new_file)
+            }
             FileHandlerEvent::RequestFile(file_info, to_peer_id, is_new_file) => {
-                // TODO: improve this flow
+                // FIXME: improve this flow
                 if peer_id.is_none() {
                     self.commands.to(
                         FileHandlerEvent::RequestFile(
@@ -128,7 +126,7 @@ impl FileTransferMan {
                     );
                     Ok(false)
                 } else {
-                    self.send_file_to_peer(file_info, &to_peer_id, is_new_file, true)
+                    self.send_prepare_sync(file_info, &to_peer_id, is_new_file, true)
                 }
             }
             FileHandlerEvent::PrepareSync(file_info, file_hash, block_index, consume_queue) => self
@@ -150,51 +148,45 @@ impl FileTransferMan {
     }
 
     fn delete_file(&mut self, file: FileInfo) -> crate::Result<()> {
-        let event_status = match fs::delete_file(&file, &self.config) {
-            Ok(_) => EventStatus::Finished,
+        match fs::delete_file(&file, &self.config) {
+            Ok(_) => {
+                self.log_writer.append(
+                    file.storage.to_string(),
+                    EventType::Delete(file.path.clone()),
+                    EventStatus::Finished,
+                )?;
+                self.commands
+                    .now(WatcherEvent::Supress(file, SupressionType::Delete));
+            }
             Err(err) => {
                 log::error!("Failed to delete file {}", err);
-                EventStatus::Failed
             }
         };
-        self.log_writer.append(
-            file.storage.to_string(),
-            EventType::Delete(file.path.clone()),
-            event_status,
-        )?;
-
-        self.commands
-            .now(WatcherEvent::Supress(file, SupressionType::Delete));
 
         Ok(())
     }
 
     fn move_file(&mut self, src: FileInfo, dest: FileInfo) -> crate::Result<()> {
-        let event_status = match fs::move_file(&src, &dest, &self.config) {
+        match fs::move_file(&src, &dest, &self.config) {
             Err(err) => {
                 log::error!("Failed to move file: {}", err);
-                EventStatus::Failed
             }
-            Ok(_) => EventStatus::Finished,
+            Ok(_) => {
+                self.log_writer.append(
+                    src.storage.clone(),
+                    EventType::Move(src.path.clone(), dest.path),
+                    EventStatus::Finished,
+                )?;
+
+                self.commands
+                    .now(WatcherEvent::Supress(src, SupressionType::Delete));
+            }
         };
-
-        self.log_writer.append(
-            src.storage.clone(),
-            EventType::Move(src.path.clone(), dest.path.clone()),
-            event_status,
-        )?;
-
-        self.commands
-            .now(WatcherEvent::Supress(src, SupressionType::Delete));
 
         Ok(())
     }
 
-    pub fn has_pending_transfers(&self) -> bool {
-        !self.sync_out.is_empty() || !self.sync_in.is_empty() || !self.queue_out.is_empty()
-    }
-
-    pub fn send_file_to_peer(
+    pub fn send_prepare_sync(
         &mut self,
         file_info: FileInfo,
         peer_id: &str,
@@ -206,7 +198,9 @@ impl FileTransferMan {
         let file_hash = hash_helper::calculate_hash(&file_info);
         let event = match self.sync_out.get_mut(&file_hash) {
             Some(file_sync) => {
-                file_sync.peers_count += 1;
+                if let Some(peers_count) = file_sync.peers_count.as_mut() {
+                    *peers_count += 1;
+                }
 
                 FileHandlerEvent::PrepareSync(
                     file_info,
@@ -232,7 +226,7 @@ impl FileTransferMan {
                     file_handler,
                     block_index: block_index.clone(),
                     block_size,
-                    peers_count: 1,
+                    peers_count: Some(1),
                     consume_queue: !is_request,
                 };
                 self.sync_out.insert(file_hash, file_sync);
@@ -241,6 +235,36 @@ impl FileTransferMan {
         };
 
         self.commands.to(event, peer_id);
+
+        Ok(false)
+    }
+    pub fn broadcast_prepare_sync(
+        &mut self,
+        file_info: FileInfo,
+        is_new_file: bool,
+    ) -> crate::Result<bool> {
+        log::info!("Broadcast prepare sync file {:?}", file_info.path);
+
+        let file_hash = hash_helper::calculate_hash(&file_info);
+        let file_path = file_info.get_absolute_path(&self.config)?;
+        let mut file_handler = std::fs::File::open(file_path)?;
+        let file_size = file_info.size.unwrap();
+        let block_size = get_block_size(file_size);
+        let block_index =
+            self.get_file_block_index(&mut file_handler, block_size, file_size, !is_new_file);
+
+        let file_sync = FileSync {
+            file_info: file_info.clone(),
+            file_handler,
+            block_index: block_index.clone(),
+            block_size,
+            peers_count: None,
+            consume_queue: true,
+        };
+        self.sync_out.insert(file_hash, file_sync);
+        let event = FileHandlerEvent::PrepareSync(file_info, file_hash, block_index, false);
+
+        self.commands.broadcast(event);
 
         Ok(false)
     }
@@ -337,7 +361,7 @@ impl FileTransferMan {
             file_handler,
             block_index,
             block_size,
-            peers_count: 1,
+            peers_count: None,
             consume_queue,
         };
 
@@ -374,14 +398,22 @@ impl FileTransferMan {
             data.extend((index as u64).to_be_bytes());
             data.extend(&buf[..bytes_to_read]);
 
-            self.commands.to(CommandType::Stream(data), peer_id);
+            self.commands.to(Commands::Stream(data), peer_id);
         }
         let consume_queue = file_sync.consume_queue;
 
         self.commands
             .to(FileHandlerEvent::EndSync(file_hash), peer_id);
-        file_sync.peers_count -= 1;
-        if file_sync.peers_count == 0 {
+
+        let should_remove = match file_sync.peers_count.as_mut() {
+            Some(peers_count) => {
+                *peers_count -= 1;
+                *peers_count == 0
+            }
+            None => false,
+        };
+
+        if should_remove {
             self.sync_out.remove(&file_hash);
         }
 
@@ -439,6 +471,6 @@ struct FileSync {
     file_handler: File,
     block_size: u64,
     block_index: Vec<(usize, u64)>,
-    peers_count: u32,
+    peers_count: Option<u32>,
     consume_queue: bool,
 }

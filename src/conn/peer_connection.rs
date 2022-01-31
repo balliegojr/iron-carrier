@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use message_io::network::{Endpoint, NetworkController};
 
-use super::{CommandType, RawMessageType};
+use super::{Commands, RawMessageType};
 
 #[derive(Debug)]
 pub struct PeerConnection {
@@ -28,7 +28,7 @@ impl PeerConnection {
         self.send_data(controller, &new_data);
     }
     /// send a [message](`SyncEvent`) to [endpoint](`message_io::network::Endpoint`) with message prefix 1
-    pub fn send_command(&mut self, controller: &NetworkController, message: &CommandType) {
+    pub fn send_command(&mut self, controller: &NetworkController, message: &Commands) {
         let data = bincode::serialize(message).unwrap();
         self.send_raw(controller, RawMessageType::Command, &data);
     }

@@ -1,13 +1,18 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use super::{synchronization_session::SynchronizationState, SyncEvent};
 use crate::{config::Config, conn::CommandDispatcher, fs, sync::Origin};
 
 #[derive(Debug)]
 enum StorageState {
+    /// Represents the current hash of this storage
     CurrentHash(u64),
+    /// Waiting for synchronization
     Sync,
+    /// Waiting for synchronization with other peer
     SyncByPeer(String),
+    /// No current Hash
+    Unknown,
 }
 
 pub struct Synchronizer {
@@ -20,15 +25,12 @@ pub struct Synchronizer {
 impl Synchronizer {
     pub fn new(config: Arc<Config>, commands: CommandDispatcher) -> crate::Result<Self> {
         log::debug!("Initializing synchronizer");
+
         let storage_state = config
             .paths
             .keys()
-            .map(|storage| match get_storage_state(&config, storage) {
-                Ok(state) => Ok((storage.clone(), StorageState::CurrentHash(state))),
-                Err(err) => Err(err),
-            })
-            .collect::<crate::Result<HashMap<String, StorageState>>>()?;
-        log::debug!("have state");
+            .map(|storage| (storage.clone(), StorageState::Unknown))
+            .collect();
 
         let s = Synchronizer {
             config,
@@ -42,7 +44,7 @@ impl Synchronizer {
 
     pub fn handle_signal(&mut self, signal: SyncEvent) -> crate::Result<bool> {
         match signal {
-            SyncEvent::StartSync(attempt) => {
+            SyncEvent::StartSync => {
                 if self.storage_state.is_empty() {
                     log::error!(
                         "There are no storages to sync, be sure your configuration file is correct"
@@ -50,12 +52,14 @@ impl Synchronizer {
                     return Ok(false);
                 }
 
+                self.load_state()?;
+
                 if self
                     .storage_state
                     .values()
                     .all(|state| !matches!(state, &StorageState::CurrentHash(_)))
                 {
-                    log::info!("No storages are available for synchroniation");
+                    log::info!("No storages are available for synchronization");
                     return Ok(false);
                 }
 
@@ -82,7 +86,9 @@ impl Synchronizer {
                 let storages_to_reload: Vec<String> = self
                     .storage_state
                     .iter()
-                    .filter(|(_, state)| matches!(**state, StorageState::Sync))
+                    .filter(|(_, state)| {
+                        matches!(**state, StorageState::Sync | StorageState::Unknown)
+                    })
                     .map(|(storage, _)| storage.clone())
                     .collect();
 
@@ -101,15 +107,6 @@ impl Synchronizer {
                 self.commands.broadcast(SyncEvent::EndSync);
                 self.commands.now(SyncEvent::ExchangeStorageStates);
             }
-            // TODO: handle cleanup
-            // SyncEvent::Cleanup => {
-            //     if !self.file_transfer_man.has_pending_transfers() {
-            //         transaction_log::compress_log(&self.config.log_path)?;
-            //     } else {
-            //         self.commands
-            //             .after(SyncEvent::Cleanup, Duration::from_secs(60));
-            //     }
-            // }
             SyncEvent::SyncNextStorage => match self.session_state.get_next_storage() {
                 Some((storage, peers)) => {
                     self.commands
@@ -140,6 +137,13 @@ impl Synchronizer {
                     return Ok(true);
                 }
             }
+            SyncEvent::InvalidateStorageState(storage) => {
+                if let Some(state) = self.storage_state.get_mut(&storage) {
+                    if matches!(&state, StorageState::CurrentHash(_)) {
+                        *state = StorageState::Unknown
+                    }
+                }
+            }
             _ => unreachable!(),
         }
         Ok(false)
@@ -165,6 +169,8 @@ impl Synchronizer {
                 }
             }
             SyncEvent::QueryOutOfSyncStorages(mut storages) => {
+                self.load_state()?;
+
                 // keep only the storages that exists in this peer and have a different hash
                 storages.retain(|storage, peer_storage_hash| {
                     match self.storage_state.get(storage) {
@@ -205,8 +211,18 @@ impl Synchronizer {
                 log::info!("Building index for {}", storage);
                 if !self.config.paths.contains_key(&storage) {
                     log::error!("There is no such storage: {}", &storage);
-                    // TODO: panic?
                     return Ok(false);
+                }
+
+                if let Some(state) = self.storage_state.get(&storage) {
+                    match &state {
+                        StorageState::SyncByPeer(state_peer) => {
+                            if state_peer != peer_id {
+                                return Ok(false);
+                            }
+                        }
+                        _ => return Ok(false),
+                    }
                 }
 
                 let index = fs::walk_path(&self.config, &storage).unwrap();
@@ -225,9 +241,29 @@ impl Synchronizer {
                     return Ok(true);
                 }
             }
+            SyncEvent::InvalidateStorageState(storage) => {
+                if let Some(state) = self.storage_state.get_mut(&storage) {
+                    if matches!(&state, StorageState::CurrentHash(_)) {
+                        *state = StorageState::Unknown
+                    }
+                }
+            }
             _ => unreachable!(),
         }
         Ok(false)
+    }
+
+    fn load_state(&mut self) -> crate::Result<()> {
+        for (key, state) in self.storage_state.iter_mut() {
+            match state {
+                StorageState::Unknown => {
+                    *state = StorageState::CurrentHash(get_storage_state(&self.config, key)?);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
     }
 }
 
