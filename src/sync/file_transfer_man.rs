@@ -5,7 +5,6 @@ use std::{
     io::{Read, Write},
     os::unix::prelude::{FileExt, MetadataExt},
     sync::Arc,
-    usize,
 };
 
 use serde::{Deserialize, Serialize};
@@ -27,8 +26,8 @@ pub enum FileHandlerEvent {
     SendFile(FileInfo, String, bool),
     BroadcastFile(FileInfo, bool),
     RequestFile(FileInfo, String, bool),
-    PrepareSync(FileInfo, u64, Vec<(usize, u64)>, bool),
-    SyncBlocks(u64, Vec<usize>),
+    PrepareSync(FileInfo, u64, Vec<(u64, u64)>, bool),
+    SyncBlocks(u64, Vec<u64>),
     WriteChunk(u64, usize, Vec<u8>),
     EndSync(u64),
 }
@@ -275,7 +274,7 @@ impl FileTransferMan {
         block_size: u64,
         file_size: u64,
         calculate_hash: bool,
-    ) -> Vec<(usize, u64)> {
+    ) -> Vec<(u64, u64)> {
         //TODO: implement proper hashing/checksum
 
         if file_size == 0 {
@@ -286,10 +285,10 @@ impl FileTransferMan {
         let mut block_index = Vec::with_capacity(total_blocks as usize);
 
         let mut buf = vec![0u8; block_size as usize];
-        let mut position = 0usize;
+        let mut position = 0u64;
 
-        while position < file_size as usize {
-            let current_read = std::cmp::min(file_size as usize - position, block_size as usize);
+        while position < file_size {
+            let current_read = std::cmp::min(file_size - position, block_size) as usize;
             match file.read_exact(&mut buf[..current_read]) {
                 Ok(_) => {
                     if calculate_hash {
@@ -297,7 +296,7 @@ impl FileTransferMan {
                     } else {
                         block_index.push((position, 0))
                     }
-                    position += current_read;
+                    position += current_read as u64;
                 }
                 Err(_) => todo!(),
             }
@@ -310,7 +309,7 @@ impl FileTransferMan {
         &mut self,
         file_info: FileInfo,
         file_hash: u64,
-        block_index: Vec<(usize, u64)>,
+        block_index: Vec<(u64, u64)>,
         peer_id: &str,
         consume_queue: bool,
     ) -> crate::Result<bool> {
@@ -341,7 +340,7 @@ impl FileTransferMan {
         let local_block_index =
             self.get_file_block_index(&mut file_handler, block_size, local_file_size, true);
 
-        let out_of_sync = block_index
+        let out_of_sync: Vec<u64> = block_index
             .iter()
             .enumerate()
             .filter_map(|(index, (pos, hash))| match local_block_index.get(index) {
@@ -349,23 +348,25 @@ impl FileTransferMan {
                     if local_pos == pos && hash == local_hash {
                         None
                     } else {
-                        Some(index)
+                        Some(index as u64)
                     }
                 }
-                None => Some(index),
+                None => Some(index as u64),
             })
             .collect();
 
-        let file_sync = FileSync {
-            file_info,
-            file_handler,
-            block_index,
-            block_size,
-            peers_count: None,
-            consume_queue,
-        };
+        if !out_of_sync.is_empty() {
+            let file_sync = FileSync {
+                file_info,
+                file_handler,
+                block_index,
+                block_size,
+                peers_count: None,
+                consume_queue,
+            };
 
-        self.sync_in.insert(file_hash, file_sync);
+            self.sync_in.insert(file_hash, file_sync);
+        }
 
         self.commands.to(
             FileHandlerEvent::SyncBlocks(file_hash, out_of_sync),
@@ -378,15 +379,15 @@ impl FileTransferMan {
     fn handle_sync_blocks(
         &mut self,
         file_hash: u64,
-        out_of_sync: Vec<usize>,
+        out_of_sync: Vec<u64>,
         peer_id: &str,
     ) -> crate::Result<bool> {
         // TODO: split execution into multiple sends
         let file_sync = self.sync_out.get_mut(&file_hash).unwrap();
-        let file_size = file_sync.file_info.size.unwrap() as usize;
+        let file_size = file_sync.file_info.size.unwrap();
         for index in out_of_sync {
-            let (position, _) = file_sync.block_index[index];
-            let bytes_to_read = cmp::min(file_sync.block_size as usize, file_size - position);
+            let (position, _) = file_sync.block_index[index as usize];
+            let bytes_to_read = cmp::min(file_sync.block_size, file_size - position) as usize;
             let mut buf = vec![0u8; bytes_to_read];
 
             file_sync
@@ -434,22 +435,26 @@ impl FileTransferMan {
     }
 
     fn handle_end_sync(&mut self, file_hash: u64) -> crate::Result<bool> {
-        let mut file_sync = self.sync_in.remove(&file_hash).unwrap();
-        file_sync.file_handler.flush()?;
+        match self.sync_in.remove(&file_hash) {
+            Some(mut file_sync) => {
+                file_sync.file_handler.flush()?;
 
-        fs::fix_times_and_permissions(&file_sync.file_info, &self.config)?;
+                fs::fix_times_and_permissions(&file_sync.file_info, &self.config)?;
 
-        let file_info = { file_sync.file_info };
-        self.log_writer.append(
-            file_info.storage.clone(),
-            EventType::Write(file_info.path.clone()),
-            EventStatus::Finished,
-        )?;
+                let file_info = { file_sync.file_info };
+                self.log_writer.append(
+                    file_info.storage.clone(),
+                    EventType::Write(file_info.path.clone()),
+                    EventStatus::Finished,
+                )?;
 
-        self.commands
-            .now(WatcherEvent::Supress(file_info, SupressionType::Write));
+                self.commands
+                    .now(WatcherEvent::Supress(file_info, SupressionType::Write));
 
-        Ok(file_sync.consume_queue)
+                Ok(file_sync.consume_queue)
+            }
+            None => Ok(false),
+        }
     }
 }
 
@@ -470,7 +475,7 @@ struct FileSync {
     file_info: FileInfo,
     file_handler: File,
     block_size: u64,
-    block_index: Vec<(usize, u64)>,
+    block_index: Vec<(u64, u64)>,
     peers_count: Option<u32>,
     consume_queue: bool,
 }

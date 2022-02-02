@@ -216,7 +216,7 @@ part_sync = "./tmp/peer_{}"
 
 #[test]
 fn test_sync_deleted_files() {
-    // enable_logs(2);
+    // enable_logs(5);
     let mut port = 8100u16;
     let peers = ["g", "h"];
     for peer_name in peers {
