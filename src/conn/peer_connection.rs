@@ -2,6 +2,8 @@ use std::time::{Duration, Instant};
 
 use message_io::network::{Endpoint, NetworkController};
 
+use crate::contants::{PEER_IDENTIFICATION_TIMEOUT, PEER_STALE_CONNECTION};
+
 use super::{Commands, RawMessageType};
 
 #[derive(Debug)]
@@ -11,12 +13,11 @@ pub struct PeerConnection {
 }
 
 impl PeerConnection {
-    pub fn send_data(&mut self, controller: &NetworkController, data: &[u8]) {
+    pub fn send_data(&self, controller: &NetworkController, data: &[u8]) {
         controller.send(self.endpoint, data);
-        self.touch()
     }
     pub fn send_raw(
-        &mut self,
+        &self,
         controller: &NetworkController,
         message_type: RawMessageType,
         data: &[u8],
@@ -28,7 +29,7 @@ impl PeerConnection {
         self.send_data(controller, &new_data);
     }
     /// send a [message](`SyncEvent`) to [endpoint](`message_io::network::Endpoint`) with message prefix 1
-    pub fn send_command(&mut self, controller: &NetworkController, message: &Commands) {
+    pub fn send_command(&self, controller: &NetworkController, message: &Commands) {
         let data = bincode::serialize(message).unwrap();
         self.send_raw(controller, RawMessageType::Command, &data);
     }
@@ -38,7 +39,11 @@ impl PeerConnection {
     }
 
     pub fn is_stale(&self, is_identified: bool) -> bool {
-        let secs = if is_identified { 30 } else { 1 };
+        let secs = if is_identified {
+            PEER_STALE_CONNECTION
+        } else {
+            PEER_IDENTIFICATION_TIMEOUT
+        };
         let limit = Instant::now() - Duration::from_secs(secs);
         self.last_access < limit
     }

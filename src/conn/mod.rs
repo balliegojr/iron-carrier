@@ -1,5 +1,5 @@
 mod commands;
-pub use commands::{CommandType, Commands};
+pub use commands::Commands;
 
 mod connection_manager;
 pub use connection_manager::ConnectionManager;
@@ -18,6 +18,7 @@ pub enum RawMessageType {
     SetId = 0,
     Command,
     Stream,
+    Ping,
 }
 
 impl TryFrom<u8> for RawMessageType {

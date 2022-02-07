@@ -10,11 +10,9 @@ use std::{
     time::Duration,
 };
 
-use crate::{config::Config, sync::SyncEvent, IronCarrierError};
+use crate::{config::Config, contants::PING_CONNECTIONS, sync::SyncEvent, IronCarrierError};
 
-use super::{
-    CommandDispatcher, CommandType, Commands, HandlerEvent, PeerConnection, RawMessageType,
-};
+use super::{CommandDispatcher, Commands, HandlerEvent, PeerConnection, RawMessageType};
 
 const TRANSPORT_PROTOCOL: Transport = Transport::FramedTcp;
 
@@ -22,6 +20,7 @@ const TRANSPORT_PROTOCOL: Transport = Transport::FramedTcp;
 pub enum ConnectionFlow {
     StartConnections(u8),
     CheckConnectionLiveness,
+    PingConnections,
 }
 
 impl From<ConnectionFlow> for HandlerEvent {
@@ -37,10 +36,11 @@ pub struct ConnectionManager {
     id_lookup: Arc<RwLock<HashMap<Endpoint, String>>>,
     waiting_identification: HashMap<Endpoint, PeerConnection>,
 
-    event_queue: Arc<Mutex<LinkedList<(Commands, CommandType)>>>,
+    event_queue: Arc<Mutex<LinkedList<Commands>>>,
     liveness_check_is_running: bool,
 
     handler: NodeHandler<HandlerEvent>,
+    dispatcher: CommandDispatcher,
     listener: Option<NodeListener<HandlerEvent>>,
     service_discovery: Option<ServiceDiscovery>,
 }
@@ -49,6 +49,10 @@ impl ConnectionManager {
     pub fn new(config: Arc<Config>) -> Self {
         let (handler, listener) = node::split::<HandlerEvent>();
         let service_discovery = get_service_discovery(&config);
+        let connections = Arc::new(RwLock::new(HashMap::new()));
+        let event_queue = Arc::new(Mutex::new(LinkedList::new()));
+        let dispatcher =
+            CommandDispatcher::new(handler.clone(), connections.clone(), event_queue.clone());
 
         Self {
             handler,
@@ -56,10 +60,11 @@ impl ConnectionManager {
             config,
             service_discovery,
             waiting_identification: HashMap::new(),
-            connections: Arc::new(HashMap::new().into()),
+            connections,
             id_lookup: Arc::new(HashMap::new().into()),
-            event_queue: Arc::new(LinkedList::new().into()),
+            event_queue,
             liveness_check_is_running: false,
+            dispatcher,
         }
     }
     fn get_addresses_to_connect(&self) -> Vec<(SocketAddr, Option<String>)> {
@@ -91,8 +96,7 @@ impl ConnectionManager {
     }
 
     pub fn command_dispatcher(&self) -> CommandDispatcher {
-        let handler = self.handler.clone();
-        CommandDispatcher::new(handler, self.connections.clone(), self.event_queue.clone())
+        self.dispatcher.clone()
     }
 
     pub fn on_command(
@@ -198,21 +202,12 @@ impl ConnectionManager {
                 }
                 Ok(None)
             }
-            HandlerEvent::ConsumeQueue => {
-                match self.event_queue.lock().expect("Poisoned lock").pop_front() {
-                    Some((command, command_type)) => match command_type {
-                        CommandType::Signal => Ok(Some((command, None))),
-                        CommandType::Broadcast => {
-                            // FIXME: this is bad, since is necessary to clone the dispatcher.
-                            // I can either create a permanent copy of the dispatcher inside the manager
-                            // or move the broadcast logic somewhere else
-                            self.command_dispatcher().broadcast(command);
-                            Ok(None)
-                        }
-                    },
-                    None => Ok(None),
-                }
-            }
+            HandlerEvent::ConsumeQueue => Ok(self
+                .event_queue
+                .lock()
+                .expect("Poisoned lock")
+                .pop_front()
+                .map(|command| (command, None))),
         }
     }
 
@@ -220,6 +215,10 @@ impl ConnectionManager {
         self.handler.signals().send_with_timer(
             ConnectionFlow::StartConnections(0).into(),
             Duration::from_secs(3),
+        );
+        self.handler.signals().send_with_timer(
+            ConnectionFlow::PingConnections.into(),
+            Duration::from_secs(PING_CONNECTIONS),
         );
     }
 
@@ -258,7 +257,7 @@ impl ConnectionManager {
     fn handle_accepted(&mut self, endpoint: Endpoint) {
         // Whenever we connect to a peer or accept a new connection, we send the node_id of this peer
         log::info!("Accepted connection from {}", endpoint.addr());
-        let mut connection: PeerConnection = endpoint.into();
+        let connection: PeerConnection = endpoint.into();
         connection.send_raw(
             self.handler.network(),
             RawMessageType::SetId,
@@ -314,6 +313,9 @@ impl ConnectionManager {
                     }
                 }
             }
+            RawMessageType::Ping => {
+                // There is no need to do anything, the connection was already touched by this point
+            }
         }
 
         Ok(None)
@@ -365,6 +367,10 @@ impl ConnectionManager {
                 Ok(false)
             }
             ConnectionFlow::CheckConnectionLiveness => Ok(self.handle_liveness_check()),
+            ConnectionFlow::PingConnections => {
+                self.handle_ping_connections();
+                Ok(false)
+            }
         }
     }
 
@@ -460,7 +466,7 @@ impl ConnectionManager {
 
         let endpoints: Vec<Endpoint> = self
             .connections
-            .write()
+            .read()
             .expect("Poisoned lock")
             .values()
             .filter(|v| v.is_stale(true))
@@ -485,6 +491,17 @@ impl ConnectionManager {
         }
 
         has_waiting && removed_connections && self.should_start_sync()
+    }
+
+    fn handle_ping_connections(&self) {
+        for connection in self.connections.read().expect("Poisoned lock").values() {
+            connection.send_raw(self.handler.network(), RawMessageType::Ping, &[]);
+        }
+
+        self.handler.signals().send_with_timer(
+            ConnectionFlow::PingConnections.into(),
+            Duration::from_secs(PING_CONNECTIONS),
+        );
     }
 
     fn update_last_access(&mut self, endpoint: &Endpoint) {

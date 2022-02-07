@@ -1,18 +1,14 @@
 use rand::seq::SliceRandom;
-use rand::Rng;
 use std::fs;
-use std::io::Write;
 use std::iter::Iterator;
-use std::path::Path;
-use std::time::{Instant, SystemTime};
-use std::{path::PathBuf, thread, time::Duration};
+use std::{thread, time::Duration};
 
 mod common;
 use iron_carrier::config::Config;
 
 #[test]
 fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
-    common::enable_logs(5);
+    // common::enable_logs(5);
     let [peer_1, peer_2, peer_3] = ["d", "e", "f"];
 
     let init_peer = |peer_name: &str, port: u16| {
@@ -65,7 +61,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
     init_peer(peer_2, 8096);
     init_peer(peer_3, 8097);
 
-    thread::sleep(Duration::from_secs(10));
+    thread::sleep(Duration::from_secs(5));
 
     let store_one = common::unchecked_generate_files(
         format!("/tmp/partial_sync/peer_{peer_1}/store_one"),
@@ -76,7 +72,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
         peer_1,
     );
 
-    thread::sleep(Duration::from_secs(10));
+    thread::sleep(Duration::from_secs(20));
     compare_all();
 
     for (i, file) in store_one.iter().enumerate() {
@@ -94,7 +90,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
         }
     }
 
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(10));
     compare_all();
 
     let mut rng = rand::thread_rng();
@@ -114,7 +110,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
         }
     }
 
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(10));
     compare_all();
 
     Ok(())

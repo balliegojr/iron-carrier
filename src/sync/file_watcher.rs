@@ -104,15 +104,32 @@ impl FileWatcher {
         mut log_writer: TransactionLogWriter<File>,
     ) {
         let event_supression = self.event_supression.clone();
+        let debounce_delay = match config.delay_watcher_events {
+            0 => Duration::from_secs(10),
+            n => Duration::from_secs(n),
+        };
+
+        let debouncer = {
+            let dispatcher = dispatcher.clone();
+            crate::debouncer::debounce_action(debounce_delay, move || {
+                dispatcher.now(crate::sync::SyncEvent::StartSync);
+            })
+        };
 
         thread::spawn(move || {
             while let Ok(event) = notify_events_receiver.recv() {
+                if !dispatcher.has_connections() {
+                    continue;
+                }
+
                 let mut supression_guard = event_supression.lock().unwrap();
                 if let Some((storage, event)) =
                     map_to_sync_event(event, &config.paths, &mut supression_guard, &mut log_writer)
                 {
+                    debouncer.invoke();
                     dispatcher.now(SyncEvent::InvalidateStorageState(storage.clone()));
                     dispatcher.broadcast(SyncEvent::InvalidateStorageState(storage));
+
                     match event {
                         event @ FileHandlerEvent::BroadcastFile(_, _) => {
                             dispatcher.now(event);

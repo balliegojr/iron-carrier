@@ -17,6 +17,8 @@ mod conn;
 mod fs;
 mod transaction_log;
 // mod network;
+mod contants;
+mod debouncer;
 mod hash_helper;
 mod sync;
 

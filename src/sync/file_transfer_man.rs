@@ -252,7 +252,7 @@ impl FileTransferMan {
         let block_index =
             self.get_file_block_index(&mut file_handler, block_size, file_size, !is_new_file);
 
-        let file_sync = FileSync {
+        let mut file_sync = FileSync {
             file_info: file_info.clone(),
             file_handler,
             block_index: block_index.clone(),
@@ -260,10 +260,12 @@ impl FileTransferMan {
             peers_count: None,
             consume_queue: true,
         };
-        self.sync_out.insert(file_hash, file_sync);
+
         let event = FileHandlerEvent::PrepareSync(file_info, file_hash, block_index, false);
 
-        self.commands.broadcast(event);
+        let peers = self.commands.broadcast(event);
+        file_sync.peers_count = Some(peers as u32);
+        self.sync_out.insert(file_hash, file_sync);
 
         Ok(false)
     }

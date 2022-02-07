@@ -49,9 +49,3 @@ impl<T: Into<Commands>> From<T> for HandlerEvent {
         HandlerEvent::Command(v.into())
     }
 }
-
-#[derive(Debug)]
-pub enum CommandType {
-    Signal,
-    Broadcast,
-}

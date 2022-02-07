@@ -2,24 +2,23 @@ use message_io::node::NodeHandler;
 use std::{
     collections::{HashMap, LinkedList},
     sync::{Arc, Mutex, RwLock},
+    time::Duration,
     // time::Duration,
 };
 
-use crate::conn::connection_manager::ConnectionFlow;
-
-use super::{CommandType, Commands, HandlerEvent, PeerConnection, RawMessageType};
+use super::{Commands, HandlerEvent, PeerConnection, RawMessageType};
 
 #[derive(Clone)]
 pub struct CommandDispatcher {
     handler: NodeHandler<HandlerEvent>,
     connections: Arc<RwLock<HashMap<String, PeerConnection>>>,
-    event_queue: Arc<Mutex<LinkedList<(Commands, CommandType)>>>,
+    event_queue: Arc<Mutex<LinkedList<Commands>>>,
 }
 impl CommandDispatcher {
     pub fn new(
         handler: NodeHandler<HandlerEvent>,
         connections: Arc<RwLock<HashMap<String, PeerConnection>>>,
-        event_queue: Arc<Mutex<LinkedList<(Commands, CommandType)>>>,
+        event_queue: Arc<Mutex<LinkedList<Commands>>>,
     ) -> Self {
         Self {
             handler,
@@ -38,7 +37,7 @@ impl CommandDispatcher {
         self.event_queue
             .lock()
             .expect("Poisoned lock")
-            .push_back((command, CommandType::Signal));
+            .push_back(command);
     }
 
     pub fn to<T: Into<Commands>>(&self, event: T, peer_id: &str) {
@@ -55,41 +54,28 @@ impl CommandDispatcher {
     }
     pub fn broadcast<T: Into<Commands>>(&self, event: T) -> usize {
         let event: Commands = event.into();
-        let mut connections = self.connections.write().expect("Poisoned lock");
-        if self.should_start_connections(&connections) {
-            log::trace!("Postponed broadcast of {}", event);
-            self.handler
-                .signals()
-                .send(ConnectionFlow::StartConnections(0).into());
-
-            self.event_queue
-                .lock()
-                .expect("Poisoned lock")
-                .push_back((event, CommandType::Broadcast));
-        } else {
-            let controller = self.handler.network();
-            let data = match event {
-                Commands::Stream(data) => {
-                    let mut stream = vec![RawMessageType::Stream as u8];
-                    stream.extend(data.iter());
-                    stream
-                }
-                event => {
-                    let mut data = vec![RawMessageType::Command as u8];
-                    data.extend(bincode::serialize(&event).unwrap());
-                    data
-                }
-            };
-
-            for connection in connections.values_mut() {
-                connection.send_data(controller, &data);
+        let controller = self.handler.network();
+        let data = match event {
+            Commands::Stream(data) => {
+                let mut stream = vec![RawMessageType::Stream as u8];
+                stream.extend(data.iter());
+                stream
             }
+            event => {
+                let mut data = vec![RawMessageType::Command as u8];
+                data.extend(bincode::serialize(&event).unwrap());
+                data
+            }
+        };
+
+        let mut connections = self.connections.write().expect("Poisoned lock");
+        for connection in connections.values_mut() {
+            connection.send_data(controller, &data);
         }
         connections.len()
     }
 
-    fn should_start_connections(&self, connections: &HashMap<String, PeerConnection>) -> bool {
-        // TODO: check the number of max known peers?
-        connections.is_empty()
+    pub fn has_connections(&self) -> bool {
+        !self.connections.read().expect("Poisoned lock").is_empty()
     }
 }
