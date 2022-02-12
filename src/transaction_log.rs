@@ -46,6 +46,7 @@ impl<T: Write> Clone for TransactionLogWriter<T> {
 }
 
 impl<T: Write> TransactionLogWriter<T> {
+    #[allow(dead_code)]
     fn new(log_stream: T) -> Self {
         Self {
             log_path: PathBuf::new(),

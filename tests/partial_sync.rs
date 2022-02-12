@@ -14,6 +14,7 @@ fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
     let init_peer = |peer_name: &str, port: u16| {
         let config = format!(
             r#"
+node_id="{peer_name}"
 port={port}
 log_path = "/tmp/partial_sync/peer_{peer_name}/peer_log.log"
 delay_watcher_events=1
@@ -61,7 +62,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
     init_peer(peer_2, 8096);
     init_peer(peer_3, 8097);
 
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(10));
 
     let store_one = common::unchecked_generate_files(
         format!("/tmp/partial_sync/peer_{peer_1}/store_one"),
@@ -78,13 +79,13 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
     for (i, file) in store_one.iter().enumerate() {
         match i % 3 {
             0 => {
-                std::fs::remove_file(file);
+                let _ = std::fs::remove_file(file);
             }
             1 => {
-                std::fs::rename(file, file.join("renamed.ren"));
+                let _ = std::fs::rename(file, file.join("renamed.ren"));
             }
             2 => {
-                common::append_content(file, b"random content");
+                let _ = common::append_content(file, b"random content");
             }
             _ => {}
         }
@@ -98,13 +99,13 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
         let file = store_two.choose(&mut rng).unwrap();
         match i % 3 {
             0 => {
-                std::fs::remove_file(file);
+                let _ = std::fs::remove_file(file);
             }
             1 => {
-                std::fs::rename(file, file.join("renamed.ren"));
+                let _ = std::fs::rename(file, file.join("renamed.ren"));
             }
             2 => {
-                common::append_content(file, b"random content");
+                let _ = common::append_content(file, b"random content");
             }
             _ => {}
         }

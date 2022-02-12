@@ -7,8 +7,7 @@ use std::{
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    time::Duration,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 #[cfg(unix)]
@@ -16,6 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::{
     config::Config,
+    storage_state::StorageState,
     transaction_log::{get_log_reader, EventType},
     IronCarrierError,
 };
@@ -34,7 +34,7 @@ pub struct FileInfo {
     pub path: PathBuf,
 
     pub modified_at: Option<u64>,
-    pub created_at: Option<u64>,
+    // pub created_at: Option<u64>,
     pub deleted_at: Option<u64>,
     pub size: Option<u64>,
     pub permissions: u32,
@@ -45,7 +45,7 @@ impl FileInfo {
         FileInfo {
             storage,
             path: relative_path,
-            created_at: metadata.created().ok().and_then(system_time_to_secs),
+            // created_at: metadata.created().ok().and_then(system_time_to_secs),
             modified_at: metadata.modified().ok().and_then(system_time_to_secs),
             size: Some(metadata.len()),
             deleted_at: None,
@@ -61,7 +61,7 @@ impl FileInfo {
         FileInfo {
             storage: alias,
             path: relative_path,
-            created_at: None,
+            // created_at: None,
             modified_at: None,
             size: None,
             deleted_at: deleted_at
@@ -76,7 +76,7 @@ impl FileInfo {
         }
 
         self.modified_at != other.modified_at
-            || self.deleted_at != other.deleted_at
+            || self.deleted_at.is_some() != other.deleted_at.is_some()
             || self.size != other.size
     }
 
@@ -145,7 +145,11 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 ///
 /// This function will look for deletes files in the [DeletionTracker] log and append all entries to the return list  
 /// files with name or extension `.ironcarrier` will be ignored
-pub fn walk_path(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>> {
+pub fn walk_path(
+    config: &Config,
+    storage: &str,
+    storage_state: &StorageState,
+) -> crate::Result<Vec<FileInfo>> {
     let root_path = config.paths.get(storage).expect("Unexpected storage");
     let mut paths = vec![root_path.to_owned()];
 
@@ -157,6 +161,10 @@ pub fn walk_path(config: &Config, storage: &str) -> crate::Result<Vec<FileInfo>>
             let path = entry.path();
 
             if is_special_file(&path) {
+                continue;
+            }
+
+            if storage_state.is_ignored(storage, &path) {
                 continue;
             }
 
@@ -228,7 +236,7 @@ fn get_failed_writes(config: &Config, storage: &str) -> crate::Result<HashSet<Fi
                     storage: storage.to_string(),
                     path,
                     modified_at: None,
-                    created_at: None,
+                    // created_at: None,
                     deleted_at: None,
                     size: None,
                     permissions: 0,
@@ -240,7 +248,11 @@ fn get_failed_writes(config: &Config, storage: &str) -> crate::Result<HashSet<Fi
     }
 }
 
-pub fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
+pub fn delete_file(
+    file_info: &FileInfo,
+    config: &Config,
+    storage_state: &StorageState,
+) -> crate::Result<()> {
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
         log::debug!("delete_file: given path doesn't exist ({:?})", path);
@@ -255,6 +267,8 @@ pub fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
 
     log::debug!("{:?} removed", path);
 
+    storage_state.invalidate_state(&file_info.storage);
+
     Ok(())
 }
 
@@ -262,6 +276,7 @@ pub fn move_file<'b>(
     src_file: &'b FileInfo,
     dest_file: &'b FileInfo,
     config: &Config,
+    storage_state: &StorageState,
 ) -> crate::Result<()> {
     let src_path = src_file.get_absolute_path(config)?;
     let dest_path = dest_file.get_absolute_path(config)?;
@@ -269,6 +284,7 @@ pub fn move_file<'b>(
     log::debug!("moving file {:?} to {:?}", src_path, dest_path);
 
     std::fs::rename(src_path, dest_path)?;
+    storage_state.invalidate_state(&src_file.storage);
 
     Ok(())
 }
@@ -276,8 +292,8 @@ pub fn move_file<'b>(
 pub fn fix_times_and_permissions(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     let file_path = file_info.get_absolute_path(config)?;
 
-    log::debug!("setting file modification time");
     let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.modified_at.unwrap());
+    log::trace!("setting {file_path:?} modification time to {mod_time:?}");
     filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mod_time))?;
 
     if file_info.permissions > 0 {
@@ -314,13 +330,13 @@ fn set_file_permissions(path: &Path, perm: u32) -> std::io::Result<()> {
 pub fn is_special_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.ends_with("ironcarrier"))
+        .map(|ext| ext.ends_with("ironcarrier") || ext.ends_with(".ignore"))
         .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
+    use std::{fs::File, sync::Arc};
 
     use crate::hash_helper::calculate_hash;
 
@@ -332,17 +348,22 @@ mod tests {
         File::create("./tmp/fs/read_local_files/file_1")?;
         File::create("./tmp/fs/read_local_files/file_2")?;
 
-        let config = Config::new_from_str(
-            r#"
+        let config = Arc::new(
+            Config::new_from_str(
+                r#"
 log_path = "./tmp/fs/logfile.log"
 [paths]
 a = "./tmp/fs/read_local_files"
 "#
-            .to_string(),
-        )
-        .expect("Failed to parse config");
+                .to_string(),
+            )
+            .expect("Failed to parse config"),
+        );
 
-        let mut files: Vec<FileInfo> = walk_path(&config, "a").unwrap().into_iter().collect();
+        let mut files: Vec<FileInfo> = walk_path(&config, "a", &StorageState::new(config.clone()))
+            .unwrap()
+            .into_iter()
+            .collect();
         files.sort();
 
         assert_eq!(files[0].path.to_str(), Some("file_1"));
@@ -358,7 +379,7 @@ a = "./tmp/fs/read_local_files"
         let mut file = FileInfo {
             storage: "a".to_owned(),
             path: Path::new("./some_file_path").to_owned(),
-            created_at: None,
+            // created_at: None,
             modified_at: None,
             size: None,
             deleted_at: None,
@@ -382,7 +403,7 @@ a = "./tmp/fs/read_local_files"
     fn test_is_out_of_sync() {
         let mut file_info = FileInfo {
             storage: "a".to_owned(),
-            created_at: Some(0),
+            // created_at: Some(0),
             modified_at: Some(0),
             path: Path::new("./some_file_path").to_owned(),
             size: Some(100),

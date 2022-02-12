@@ -1,36 +1,24 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use super::{synchronization_session::SynchronizationState, SyncEvent};
-use crate::{config::Config, conn::CommandDispatcher, fs, sync::Origin};
-
-#[derive(Debug)]
-enum StorageState {
-    /// Represents the current hash of this storage
-    CurrentHash(u64),
-    /// Waiting for synchronization
-    Sync,
-    /// Waiting for synchronization with other peer
-    SyncByPeer(String),
-    /// No current Hash
-    Unknown,
-}
+use crate::{
+    config::Config, conn::CommandDispatcher, fs, storage_state::StorageState, sync::Origin,
+};
 
 pub struct Synchronizer {
     config: Arc<Config>,
     session_state: SynchronizationState,
-    storage_state: HashMap<String, StorageState>,
+    storage_state: Arc<StorageState>,
     commands: CommandDispatcher,
 }
 
 impl Synchronizer {
-    pub fn new(config: Arc<Config>, commands: CommandDispatcher) -> crate::Result<Self> {
+    pub fn new(
+        config: Arc<Config>,
+        commands: CommandDispatcher,
+        storage_state: Arc<StorageState>,
+    ) -> crate::Result<Self> {
         log::debug!("Initializing synchronizer");
-
-        let storage_state = config
-            .paths
-            .keys()
-            .map(|storage| (storage.clone(), StorageState::Unknown))
-            .collect();
 
         let s = Synchronizer {
             config,
@@ -45,20 +33,14 @@ impl Synchronizer {
     pub fn handle_signal(&mut self, signal: SyncEvent) -> crate::Result<bool> {
         match signal {
             SyncEvent::StartSync => {
-                if self.storage_state.is_empty() {
+                if self.config.paths.is_empty() {
                     log::error!(
                         "There are no storages to sync, be sure your configuration file is correct"
                     );
                     return Ok(false);
                 }
 
-                self.load_state()?;
-
-                if self
-                    .storage_state
-                    .values()
-                    .all(|state| !matches!(state, &StorageState::CurrentHash(_)))
-                {
+                if !self.storage_state.has_any_available_to_sync() {
                     log::info!("No storages are available for synchronization");
                     return Ok(false);
                 }
@@ -66,49 +48,29 @@ impl Synchronizer {
                 self.commands.now(SyncEvent::ExchangeStorageStates);
             }
             SyncEvent::ExchangeStorageStates => {
-                let state = self
-                    .storage_state
-                    .iter()
-                    .filter_map(|(storage, state)| match state {
-                        StorageState::CurrentHash(state) => Some((storage.clone(), *state)),
-                        _ => None,
-                    })
-                    .collect();
+                let storages = self.storage_state.get_available_to_sync();
+                log::trace!("Available storages to sync: {storages:?}");
 
                 let expected_replies = self
                     .commands
-                    .broadcast(SyncEvent::QueryOutOfSyncStorages(state));
+                    .broadcast(SyncEvent::QueryOutOfSyncStorages(storages));
 
                 self.session_state
                     .start_sync_after_replies(expected_replies);
             }
             SyncEvent::EndSync => {
-                let storages_to_reload: Vec<String> = self
-                    .storage_state
-                    .iter()
-                    .filter(|(_, state)| {
-                        matches!(**state, StorageState::Sync | StorageState::Unknown)
-                    })
-                    .map(|(storage, _)| storage.clone())
-                    .collect();
-
-                if storages_to_reload.is_empty() {
+                let released = self.storage_state.release_blocked();
+                if released == 0 {
                     // self.commands
                     //     .after(SyncEvent::Cleanup, Duration::from_secs(15));
                     return Ok(false);
-                }
-
-                for storage in storages_to_reload {
-                    let state =
-                        StorageState::CurrentHash(get_storage_state(&self.config, &storage)?);
-                    self.storage_state.entry(storage).and_modify(|v| *v = state);
                 }
 
                 self.commands.broadcast(SyncEvent::EndSync);
                 self.commands.now(SyncEvent::ExchangeStorageStates);
             }
             SyncEvent::SyncNextStorage => match self.session_state.get_next_storage() {
-                Some((storage, peers)) => {
+                Some(storage) => {
                     self.commands
                         .now(SyncEvent::BuildStorageIndex(storage.clone()));
 
@@ -120,28 +82,16 @@ impl Synchronizer {
                 }
             },
             SyncEvent::BuildStorageIndex(storage) => {
-                log::info!("Building index for {}", storage);
-                let index = fs::walk_path(&self.config, &storage).unwrap();
-                log::debug!("Read {} files ", index.len());
-
+                let index = fs::walk_path(&self.config, &storage, &self.storage_state).unwrap();
                 self.commands.now(SyncEvent::SetStorageIndex(index));
             }
             SyncEvent::SetStorageIndex(index) => {
                 let origin = Origin::Initiator;
 
-                log::debug!("Setting index with origin {:?}", origin);
-
                 let have_all_indexes = self.session_state.set_storage_index(origin, index);
                 if have_all_indexes {
                     self.session_state.build_event_queue();
                     return Ok(true);
-                }
-            }
-            SyncEvent::InvalidateStorageState(storage) => {
-                if let Some(state) = self.storage_state.get_mut(&storage) {
-                    if matches!(&state, StorageState::CurrentHash(_)) {
-                        *state = StorageState::Unknown
-                    }
                 }
             }
             _ => unreachable!(),
@@ -152,55 +102,18 @@ impl Synchronizer {
     pub fn handle_network_event(&mut self, event: SyncEvent, peer_id: &str) -> crate::Result<bool> {
         match event {
             SyncEvent::EndSync => {
-                let storages: Vec<String> = self
-                    .storage_state
-                    .iter()
-                    .filter(|(_, state)| match state {
-                        StorageState::SyncByPeer(p) => p == peer_id,
-                        _ => false,
-                    })
-                    .map(|(storage, _)| storage.clone())
-                    .collect();
-
-                for storage in storages {
-                    let state =
-                        StorageState::CurrentHash(get_storage_state(&self.config, &storage)?);
-                    self.storage_state.entry(storage).and_modify(|v| *v = state);
-                }
+                self.storage_state.release_blocked_by(peer_id);
             }
-            SyncEvent::QueryOutOfSyncStorages(mut storages) => {
-                self.load_state()?;
-
-                // keep only the storages that exists in this peer and have a different hash
-                storages.retain(|storage, peer_storage_hash| {
-                    match self.storage_state.get(storage) {
-                        Some(&StorageState::CurrentHash(hash)) => hash != *peer_storage_hash,
-                        _ => false,
-                    }
-                });
-
-                let storages: Vec<String> = storages.into_iter().map(|(key, _)| key).collect();
-
-                // Changes the storages state to SyncByPeer, to avoid double sync and premature connection close
-                storages.iter().for_each(|storage| {
-                    self.storage_state
-                        .entry(storage.clone())
-                        .and_modify(|v| *v = StorageState::SyncByPeer(peer_id.to_string()));
-                });
+            SyncEvent::QueryOutOfSyncStorages(storages) => {
+                let storages = self.storage_state.set_synching_with(storages, peer_id);
+                log::trace!("Storages available to sync with peer {peer_id} are {storages:?}");
 
                 self.commands
                     .to(SyncEvent::ReplyOutOfSyncStorages(storages), peer_id);
             }
-            SyncEvent::ReplyOutOfSyncStorages(mut storages) => {
-                storages.retain(|storage| match self.storage_state.get(storage) {
-                    Some(state) => !matches!(state, &StorageState::SyncByPeer(_)),
-                    None => false,
-                });
-
-                storages.iter().for_each(|storage| {
-                    let state = self.storage_state.get_mut(storage).unwrap();
-                    *state = StorageState::Sync;
-                });
+            SyncEvent::ReplyOutOfSyncStorages(storages) => {
+                let storages = self.storage_state.block_available_for_sync(storages);
+                log::trace!("storages that will be synchronized {storages:?}");
 
                 let have_all_replies = self.session_state.add_storages_to_sync(storages, peer_id);
                 if have_all_replies {
@@ -208,32 +121,22 @@ impl Synchronizer {
                 }
             }
             SyncEvent::BuildStorageIndex(storage) => {
-                log::info!("Building index for {}", storage);
                 if !self.config.paths.contains_key(&storage) {
                     log::error!("There is no such storage: {}", &storage);
                     return Ok(false);
                 }
 
-                if let Some(state) = self.storage_state.get(&storage) {
-                    match &state {
-                        StorageState::SyncByPeer(state_peer) => {
-                            if state_peer != peer_id {
-                                return Ok(false);
-                            }
-                        }
-                        _ => return Ok(false),
-                    }
+                if !self.storage_state.is_synching_with(&storage, peer_id) {
+                    log::info!("storage {storage} is synchronizing with another peer");
+                    return Ok(false);
                 }
 
-                let index = fs::walk_path(&self.config, &storage).unwrap();
-                log::debug!("Read {} files ", index.len());
+                let index = fs::walk_path(&self.config, &storage, &self.storage_state).unwrap();
 
                 self.commands.to(SyncEvent::SetStorageIndex(index), peer_id);
             }
             SyncEvent::SetStorageIndex(index) => {
                 let origin = Origin::Peer(peer_id.to_string());
-
-                log::debug!("Setting index with origin {:?}", origin);
 
                 let have_all_indexes = self.session_state.set_storage_index(origin, index);
                 if have_all_indexes {
@@ -241,35 +144,8 @@ impl Synchronizer {
                     return Ok(true);
                 }
             }
-            SyncEvent::InvalidateStorageState(storage) => {
-                if let Some(state) = self.storage_state.get_mut(&storage) {
-                    if matches!(&state, StorageState::CurrentHash(_)) {
-                        *state = StorageState::Unknown
-                    }
-                }
-            }
             _ => unreachable!(),
         }
         Ok(false)
     }
-
-    fn load_state(&mut self) -> crate::Result<()> {
-        for (key, state) in self.storage_state.iter_mut() {
-            match state {
-                StorageState::Unknown => {
-                    *state = StorageState::CurrentHash(get_storage_state(&self.config, key)?);
-                }
-                _ => {}
-            }
-        }
-
-        Ok(())
-    }
-}
-
-fn get_storage_state(config: &Config, storage: &str) -> crate::Result<u64> {
-    log::trace!("get_storage_state {:?}", storage);
-    let storage_index = fs::walk_path(config, storage)?;
-    log::trace!("storage_index: {:?}", &storage_index);
-    Ok(fs::get_state_hash(storage_index.iter()))
 }

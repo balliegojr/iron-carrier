@@ -12,11 +12,12 @@ use std::{
 use notify::{watcher, DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 
-use super::{FileHandlerEvent, SyncEvent};
+use super::FileHandlerEvent;
 use crate::{
     config::Config,
     conn::CommandDispatcher,
     fs::FileInfo,
+    storage_state::StorageState,
     transaction_log::{EventStatus, EventType, TransactionLogWriter},
 };
 
@@ -52,6 +53,7 @@ impl FileWatcher {
         dispatcher: CommandDispatcher,
         config: Arc<Config>,
         log_writer: TransactionLogWriter<File>,
+        storage_state: Arc<StorageState>,
     ) -> crate::Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut _notify_watcher = watcher(tx, Duration::from_secs(config.delay_watcher_events))?;
@@ -69,7 +71,7 @@ impl FileWatcher {
             _notify_watcher,
             event_supression: Arc::new(Mutex::new(HashMap::new())),
         };
-        file_watcher.start_event_processing(rx, dispatcher, config, log_writer);
+        file_watcher.start_event_processing(rx, dispatcher, config, log_writer, storage_state);
 
         Ok(file_watcher)
     }
@@ -102,6 +104,7 @@ impl FileWatcher {
         dispatcher: CommandDispatcher,
         config: Arc<Config>,
         mut log_writer: TransactionLogWriter<File>,
+        storage_state: Arc<StorageState>,
     ) {
         let event_supression = self.event_supression.clone();
         let debounce_delay = match config.delay_watcher_events {
@@ -123,12 +126,14 @@ impl FileWatcher {
                 }
 
                 let mut supression_guard = event_supression.lock().unwrap();
-                if let Some((storage, event)) =
-                    map_to_sync_event(event, &config.paths, &mut supression_guard, &mut log_writer)
-                {
+                if let Some((storage, event)) = map_to_sync_event(
+                    event,
+                    &config.paths,
+                    &mut supression_guard,
+                    &mut log_writer,
+                    &storage_state,
+                ) {
                     debouncer.invoke();
-                    dispatcher.now(SyncEvent::InvalidateStorageState(storage.clone()));
-                    dispatcher.broadcast(SyncEvent::InvalidateStorageState(storage));
 
                     match event {
                         event @ FileHandlerEvent::BroadcastFile(_, _) => {
@@ -144,7 +149,7 @@ impl FileWatcher {
     }
 }
 
-fn get_alias_for_path(
+fn get_storage_for_path(
     file_path: &Path,
     paths: &HashMap<String, PathBuf>,
 ) -> Option<(String, PathBuf)> {
@@ -177,10 +182,17 @@ fn map_to_sync_event(
     paths: &HashMap<String, PathBuf>,
     event_supression: &mut HashMap<FileInfo, SupressionType>,
     log_writer: &mut TransactionLogWriter<File>,
+    storage_state: &StorageState,
 ) -> Option<(String, FileHandlerEvent)> {
     match event {
         notify::DebouncedEvent::Create(file_path) => {
-            match get_file_info(paths, event_supression, file_path, SupressionType::Write) {
+            match get_file_info(
+                paths,
+                event_supression,
+                file_path,
+                SupressionType::Write,
+                storage_state,
+            ) {
                 Some(file) => {
                     log_writer.append(
                         file.storage.clone(),
@@ -198,7 +210,13 @@ fn map_to_sync_event(
         }
 
         notify::DebouncedEvent::Write(file_path) => {
-            match get_file_info(paths, event_supression, file_path, SupressionType::Write) {
+            match get_file_info(
+                paths,
+                event_supression,
+                file_path,
+                SupressionType::Write,
+                storage_state,
+            ) {
                 Some(file) => {
                     log_writer.append(
                         file.storage.clone(),
@@ -216,7 +234,13 @@ fn map_to_sync_event(
         }
         notify::DebouncedEvent::Remove(file_path) => {
             log::trace!("Received remove event for {:?}", file_path);
-            match get_file_info(paths, event_supression, file_path, SupressionType::Delete) {
+            match get_file_info(
+                paths,
+                event_supression,
+                file_path,
+                SupressionType::Delete,
+                storage_state,
+            ) {
                 Some(file) => {
                     log_writer.append(
                         file.storage.clone(),
@@ -230,9 +254,20 @@ fn map_to_sync_event(
             }
         }
         notify::DebouncedEvent::Rename(src_path, dest_path) => {
-            let src_file = get_file_info(paths, event_supression, src_path, SupressionType::Delete);
-            let dest_file =
-                get_file_info(paths, event_supression, dest_path, SupressionType::Rename);
+            let src_file = get_file_info(
+                paths,
+                event_supression,
+                src_path,
+                SupressionType::Delete,
+                storage_state,
+            );
+            let dest_file = get_file_info(
+                paths,
+                event_supression,
+                dest_path,
+                SupressionType::Rename,
+                storage_state,
+            );
 
             match (src_file, dest_file) {
                 (Some(src_file), Some(dest_file)) => {
@@ -258,20 +293,25 @@ fn get_file_info(
     event_supression: &mut HashMap<FileInfo, SupressionType>,
     file_path: PathBuf,
     supression_type: SupressionType,
+    storage_state: &StorageState,
 ) -> Option<FileInfo> {
     if crate::fs::is_special_file(&file_path) || file_path.is_dir() {
         log::trace!("Event for {:?} ignored", file_path);
         return None;
     }
 
-    let (alias, root) = get_alias_for_path(&file_path, paths)?;
+    let (storage, root) = get_storage_for_path(&file_path, paths)?;
     let relative_path = file_path.strip_prefix(&root).ok()?;
 
+    if storage_state.is_ignored(&storage, &relative_path) {
+        return None;
+    }
+
     let file = match supression_type {
-        SupressionType::Delete => FileInfo::new_deleted(alias, relative_path.to_owned(), None),
+        SupressionType::Delete => FileInfo::new_deleted(storage, relative_path.to_owned(), None),
         _ => {
             let metadata = file_path.metadata().ok()?;
-            FileInfo::new(alias, relative_path.to_owned(), metadata)
+            FileInfo::new(storage, relative_path.to_owned(), metadata)
         }
     };
 

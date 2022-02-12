@@ -29,8 +29,6 @@ pub enum SyncEvent {
 
     BuildStorageIndex(String),
     SetStorageIndex(Vec<FileInfo>),
-
-    InvalidateStorageState(String),
 }
 
 impl std::fmt::Display for SyncEvent {
@@ -48,7 +46,6 @@ impl std::fmt::Display for SyncEvent {
             SyncEvent::ReplyOutOfSyncStorages(storages) => {
                 write!(f, "Storages To Sync {:?}", storages)
             }
-            SyncEvent::InvalidateStorageState(storage) => write!(f, "Invalidate {} state", storage),
         }
     }
 }

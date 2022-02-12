@@ -2,8 +2,6 @@ use message_io::node::NodeHandler;
 use std::{
     collections::{HashMap, LinkedList},
     sync::{Arc, Mutex, RwLock},
-    time::Duration,
-    // time::Duration,
 };
 
 use super::{Commands, HandlerEvent, PeerConnection, RawMessageType};

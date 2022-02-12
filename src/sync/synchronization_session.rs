@@ -44,7 +44,7 @@ impl SynchronizationState {
         self.expected_state_replies = number_of_replies;
     }
 
-    pub fn get_next_storage(&mut self) -> Option<(String, HashSet<String>)> {
+    pub fn get_next_storage(&mut self) -> Option<String> {
         if self.storage_state.is_empty() {
             return None;
         }
@@ -57,8 +57,8 @@ impl SynchronizationState {
         };
 
         let peers = self.storage_state.remove(&storage).unwrap();
-        self.current_storage_peers = peers.clone();
-        Some((storage, peers))
+        self.current_storage_peers = peers;
+        Some(storage)
     }
 
     pub fn set_storage_index(&mut self, origin: Origin, index: Vec<FileInfo>) -> bool {
@@ -119,14 +119,26 @@ impl SynchronizationState {
             }
             Origin::Peer(origin_peer) => {
                 if source_file.is_deleted() {
+                    log::trace!(
+                        "{:?} is deleted at origin, deleting on this node",
+                        source_file.path
+                    );
                     self.commands
-                        .enqueue(FileHandlerEvent::DeleteFile((*source_file).clone()))
+                        .now(FileHandlerEvent::DeleteFile((*source_file).clone()))
                 } else {
-                    self.commands.enqueue(FileHandlerEvent::RequestFile(
-                        (*source_file).clone(),
-                        origin_peer.clone(),
-                        !files.contains_key(&Origin::Initiator),
-                    ))
+                    let is_out_of_sync = files
+                        .get(&Origin::Initiator)
+                        .map(|local_file| source_file.is_out_of_sync(local_file))
+                        .unwrap_or(true);
+
+                    if is_out_of_sync {
+                        log::trace!("{:?} is newer at origin, requesting", source_file.path);
+                        self.commands.enqueue(FileHandlerEvent::RequestFile(
+                            (*source_file).clone(),
+                            origin_peer.clone(),
+                            !files.contains_key(&Origin::Initiator),
+                        ))
+                    }
                 }
 
                 for action in self
@@ -156,6 +168,7 @@ impl SynchronizationState {
         match peer_file {
             Some(peer_file) => {
                 if source_file.is_out_of_sync(peer_file) {
+                    log::trace!("file {:?} is out of sync with peer", source_file.path);
                     Some(FileHandlerEvent::SendFile(
                         source_file.clone(),
                         peer_id,
@@ -169,6 +182,7 @@ impl SynchronizationState {
                 if source_file.is_deleted() {
                     None
                 } else {
+                    log::trace!("file {:?} does not exist on peer", source_file.path);
                     Some(FileHandlerEvent::SendFile(
                         source_file.clone(),
                         peer_id,

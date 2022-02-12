@@ -4,7 +4,7 @@ mod common;
 
 #[test]
 fn test_full_sync() {
-    // enable_logs(5);
+    // common::enable_logs(5);
     let mut port = 8090;
     let peers = ["a", "b", "c"];
     let mut store_one = Vec::new();
@@ -19,18 +19,19 @@ fn test_full_sync() {
 
         let _ = fs::remove_file(&log_path);
 
-        store_one.extend(common::generate_files(&store_one_path, &peer_name));
-        store_two.extend(common::generate_files(&store_two_path, &peer_name));
+        store_one.extend(common::generate_files(&store_one_path, peer_name));
+        store_two.extend(common::generate_files(&store_two_path, peer_name));
 
         let config = format!(
             r#"
+node_id="{}"
 port={}
 log_path = {:?}
 [paths]
 store_one = {:?}
 store_two = {:?}
 "#,
-            port, log_path, store_one_path, store_two_path
+            peer_name, port, log_path, store_one_path, store_two_path
         );
         let config = iron_carrier::config::Config::new_from_str(config).unwrap();
         configs.push(config);

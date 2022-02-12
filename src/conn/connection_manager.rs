@@ -72,7 +72,6 @@ impl ConnectionManager {
 
         if let Some(service_discovery) = &self.service_discovery {
             for instance_info in service_discovery.get_known_services() {
-                log::debug!("{:?}", instance_info);
                 let id = &instance_info.attributes["id"];
                 for addr in instance_info.get_socket_addresses() {
                     addresses.insert(addr, id.clone());
@@ -90,7 +89,7 @@ impl ConnectionManager {
             }
         }
 
-        log::debug!("{} peers are available to connect", addresses.len());
+        log::info!("{} peers are available to connect", addresses.len());
 
         addresses.into_iter().collect()
     }

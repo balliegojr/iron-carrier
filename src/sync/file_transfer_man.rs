@@ -14,7 +14,9 @@ use crate::{
     conn::{CommandDispatcher, Commands},
     fs::{self, FileInfo},
     hash_helper,
+    storage_state::StorageState,
     transaction_log::{EventStatus, EventType, TransactionLogWriter},
+    IronCarrierError,
 };
 
 use super::{file_watcher::SupressionType, WatcherEvent};
@@ -67,6 +69,7 @@ pub struct FileTransferMan {
     sync_out: HashMap<u64, FileSync>,
     sync_in: HashMap<u64, FileSync>,
     log_writer: TransactionLogWriter<File>,
+    storage_state: Arc<StorageState>,
 }
 
 impl FileTransferMan {
@@ -74,6 +77,7 @@ impl FileTransferMan {
         commands: CommandDispatcher,
         config: Arc<Config>,
         log_writer: TransactionLogWriter<File>,
+        storage_state: Arc<StorageState>,
     ) -> Self {
         Self {
             commands,
@@ -81,6 +85,7 @@ impl FileTransferMan {
             sync_out: HashMap::new(),
             sync_in: HashMap::new(),
             log_writer,
+            storage_state,
         }
     }
 
@@ -106,27 +111,32 @@ impl FileTransferMan {
                 self.move_file(src, dest)?;
                 Ok(peer_id.is_none())
             }
-            FileHandlerEvent::SendFile(file_info, peer_id, is_new_file) => {
-                self.send_prepare_sync(file_info, &peer_id, is_new_file, false)
+            FileHandlerEvent::SendFile(file_info, to_peer_id, is_new_file) => {
+                self.send_prepare_sync(file_info, &to_peer_id, is_new_file, peer_id.is_some())
             }
             FileHandlerEvent::BroadcastFile(file_info, is_new_file) => {
                 self.broadcast_prepare_sync(file_info, is_new_file)
             }
             FileHandlerEvent::RequestFile(file_info, to_peer_id, is_new_file) => {
-                // FIXME: improve this flow
-                if peer_id.is_none() {
-                    self.commands.to(
-                        FileHandlerEvent::RequestFile(
-                            file_info,
-                            self.config.node_id.clone(),
-                            is_new_file,
-                        ),
-                        &to_peer_id,
-                    );
-                    Ok(false)
-                } else {
-                    self.send_prepare_sync(file_info, &to_peer_id, is_new_file, true)
-                }
+                self.commands.to(
+                    FileHandlerEvent::SendFile(file_info, self.config.node_id.clone(), is_new_file),
+                    &to_peer_id,
+                );
+                Ok(false)
+                // // FIXME: improve this flow
+                // if peer_id.is_none() {
+                //     self.commands.to(
+                //         FileHandlerEvent::RequestFile(
+                //             file_info,
+                //             self.config.node_id.clone(),
+                //             is_new_file,
+                //         ),
+                //         &to_peer_id,
+                //     );
+                //     Ok(false)
+                // } else {
+                //     self.send_prepare_sync(file_info, &to_peer_id, is_new_file, true)
+                // }
             }
             FileHandlerEvent::PrepareSync(file_info, file_hash, block_index, consume_queue) => self
                 .handle_prepare_sync(
@@ -147,7 +157,7 @@ impl FileTransferMan {
     }
 
     fn delete_file(&mut self, file: FileInfo) -> crate::Result<()> {
-        match fs::delete_file(&file, &self.config) {
+        match fs::delete_file(&file, &self.config, &self.storage_state) {
             Ok(_) => {
                 self.log_writer.append(
                     file.storage.to_string(),
@@ -166,7 +176,7 @@ impl FileTransferMan {
     }
 
     fn move_file(&mut self, src: FileInfo, dest: FileInfo) -> crate::Result<()> {
-        match fs::move_file(&src, &dest, &self.config) {
+        match fs::move_file(&src, &dest, &self.config, &self.storage_state) {
             Err(err) => {
                 log::error!("Failed to move file: {}", err);
             }
@@ -429,7 +439,10 @@ impl FileTransferMan {
         block_index: usize,
         buf: &[u8],
     ) -> crate::Result<bool> {
-        let file_sync = self.sync_in.get_mut(&file_hash).unwrap();
+        let file_sync = match self.sync_in.get_mut(&file_hash) {
+            Some(file_sync) => file_sync,
+            None => return Err(IronCarrierError::FileNotFound.into()),
+        };
         let (position, _) = file_sync.block_index[block_index];
         file_sync.file_handler.write_all_at(buf, position as u64)?;
 
@@ -449,6 +462,8 @@ impl FileTransferMan {
                     EventType::Write(file_info.path.clone()),
                     EventStatus::Finished,
                 )?;
+
+                self.storage_state.invalidate_state(&file_info.storage);
 
                 self.commands
                     .now(WatcherEvent::Supress(file_info, SupressionType::Write));

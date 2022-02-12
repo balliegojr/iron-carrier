@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
@@ -69,14 +71,25 @@ pub fn tree_compare<P: AsRef<Path>>(lhs: P, rhs: P) {
     let l_files = walk_path(lhs);
     let r_files = walk_path(rhs);
 
-    assert_eq!(l_files.len(), r_files.len());
+    assert_eq!(
+        l_files.len(),
+        r_files.len(),
+        "l_files.len() = {}, r_files.len() = {}",
+        l_files.len(),
+        r_files.len()
+    );
 
     for (l, r) in l_files.into_iter().zip(r_files) {
         assert_eq!(l.file_name(), r.file_name());
         let l_metadata = l.metadata().unwrap();
         let r_metadata = r.metadata().unwrap();
 
-        assert_eq!(l_metadata.len(), r_metadata.len());
+        assert_eq!(
+            l_metadata.len(),
+            r_metadata.len(),
+            "files sizes diverge for {:?}",
+            l,
+        );
         assert_eq!(
             l_metadata
                 .modified()
@@ -90,11 +103,15 @@ pub fn tree_compare<P: AsRef<Path>>(lhs: P, rhs: P) {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
+            "modification time diverge for {:?}",
+            l
         );
 
         assert_eq!(
-            &std::fs::read(l).unwrap()[..],
-            &std::fs::read(r).unwrap()[..],
+            &std::fs::read(&l).unwrap()[..],
+            &std::fs::read(&r).unwrap()[..],
+            "contents diverge for {:?}",
+            l
         )
     }
 }
