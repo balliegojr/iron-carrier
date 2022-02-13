@@ -89,6 +89,11 @@ impl FileTransferMan {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.sync_in.clear();
+        self.sync_out.clear();
+    }
+
     pub fn handle_stream(&mut self, data: &[u8], _peer_id: &str) -> crate::Result<bool> {
         let file_hash = u64::from_be_bytes(data[0..8].try_into().unwrap());
         let block_index = u64::from_be_bytes(data[8..16].try_into().unwrap()) as usize;

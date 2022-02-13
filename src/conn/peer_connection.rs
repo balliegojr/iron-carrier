@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use message_io::network::{Endpoint, NetworkController};
 
-use crate::contants::{PEER_IDENTIFICATION_TIMEOUT, PEER_STALE_CONNECTION};
+use crate::constants::{PEER_IDENTIFICATION_TIMEOUT, PEER_STALE_CONNECTION};
 
 use super::{Commands, RawMessageType};
 

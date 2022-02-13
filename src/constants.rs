@@ -1,3 +1,4 @@
 pub const PEER_IDENTIFICATION_TIMEOUT: u64 = 1;
 pub const PEER_STALE_CONNECTION: u64 = 120;
 pub const PING_CONNECTIONS: u64 = 60;
+pub const CLEAR_TIMEOUT: u64 = 60;

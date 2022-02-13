@@ -22,6 +22,10 @@ impl StorageState {
             config,
         }
     }
+    pub fn clear(&self) {
+        self.hash_state.lock().unwrap().clear();
+        self.ignore_sets.lock().unwrap().clear();
+    }
 
     pub fn is_ignored<P: AsRef<Path>>(&self, storage: &str, path: P) -> bool {
         let mut ignore_sets = self.ignore_sets.lock().unwrap();

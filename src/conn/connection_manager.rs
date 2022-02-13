@@ -10,7 +10,13 @@ use std::{
     time::Duration,
 };
 
-use crate::{config::Config, contants::PING_CONNECTIONS, sync::SyncEvent, IronCarrierError};
+use crate::{
+    config::Config,
+    constants::{CLEAR_TIMEOUT, PING_CONNECTIONS},
+    debouncer::{debounce_action, Debouncer},
+    sync::SyncEvent,
+    IronCarrierError,
+};
 
 use super::{CommandDispatcher, Commands, HandlerEvent, PeerConnection, RawMessageType};
 
@@ -67,6 +73,11 @@ impl ConnectionManager {
             dispatcher,
         }
     }
+
+    fn clear(&mut self) {
+        self.event_queue.lock().unwrap().clear()
+    }
+
     fn get_addresses_to_connect(&self) -> Vec<(SocketAddr, Option<String>)> {
         let mut addresses = HashMap::new();
 
@@ -110,6 +121,11 @@ impl ConnectionManager {
             SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, self.config.port),
         )?;
 
+        let dispatcher = self.command_dispatcher();
+        let clear = debounce_action(Duration::from_secs(CLEAR_TIMEOUT), move || {
+            dispatcher.now(Commands::Clear);
+        });
+
         self.listener
             .take()
             .expect("on_command can only be called once")
@@ -122,7 +138,7 @@ impl ConnectionManager {
                 match result {
                     Ok(maybe_command) => {
                         if let Some((command, peer_id)) = maybe_command {
-                            self.execute_command(command, peer_id, &mut command_callback);
+                            self.execute_command(command, peer_id, &mut command_callback, &clear);
                         }
                     }
                     Err(err) => {
@@ -139,6 +155,7 @@ impl ConnectionManager {
         command: Commands,
         peer_id: Option<String>,
         command_callback: &mut impl FnMut(Commands, Option<String>) -> crate::Result<bool>,
+        clear: &Debouncer,
     ) {
         match &peer_id {
             Some(peer_id) => {
@@ -152,6 +169,12 @@ impl ConnectionManager {
             None => {
                 log::trace!("{} - Executing command: {} ", self.config.node_id, &command);
             }
+        }
+
+        if !matches!(command, Commands::Clear) {
+            clear.invoke();
+        } else {
+            self.clear();
         }
 
         match command_callback(command, peer_id) {

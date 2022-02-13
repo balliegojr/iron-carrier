@@ -11,7 +11,7 @@ pub enum Commands {
     FileHandler(FileHandlerEvent),
     Stream(Vec<u8>),
     Watcher(WatcherEvent),
-    Cleanup,
+    Clear,
 }
 
 impl From<SyncEvent> for Commands {
@@ -39,7 +39,7 @@ impl Display for Commands {
             Commands::FileHandler(event) => write!(f, "file event {}", event),
             Commands::Stream(_) => write!(f, "Stream"),
             Commands::Watcher(event) => write!(f, "watcher {}", event),
-            Commands::Cleanup => write!(f, "cleanup"),
+            Commands::Clear => write!(f, "Clear"),
         }
     }
 }

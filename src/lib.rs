@@ -20,7 +20,7 @@ mod conn;
 mod fs;
 mod transaction_log;
 // mod network;
-mod contants;
+mod constants;
 mod debouncer;
 mod hash_helper;
 mod storage_state;
@@ -109,8 +109,11 @@ pub fn run(config: config::Config) -> crate::Result<()> {
         storage_state.clone(),
     );
 
-    let mut synchronizer =
-        Synchronizer::new(config, connection_man.command_dispatcher(), storage_state)?;
+    let mut synchronizer = Synchronizer::new(
+        config,
+        connection_man.command_dispatcher(),
+        storage_state.clone(),
+    )?;
 
     connection_man.on_command(move |command, peer_id| -> crate::Result<bool> {
         match command {
@@ -127,8 +130,12 @@ pub fn run(config: config::Config) -> crate::Result<()> {
                 Some(watcher) => watcher.handle_event(event),
                 None => Ok(false),
             },
-            Commands::Cleanup => {
+            Commands::Clear => {
                 log_writer.compress_log()?;
+                file_transfer_man.clear();
+                storage_state.clear();
+                synchronizer.clear();
+
                 Ok(false)
             }
         }

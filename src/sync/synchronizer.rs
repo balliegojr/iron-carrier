@@ -30,6 +30,10 @@ impl Synchronizer {
         Ok(s)
     }
 
+    pub fn clear(&mut self) {
+        self.session_state = SynchronizationState::new(self.commands.clone());
+    }
+
     pub fn handle_signal(&mut self, signal: SyncEvent) -> crate::Result<bool> {
         match signal {
             SyncEvent::StartSync => {

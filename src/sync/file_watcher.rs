@@ -126,7 +126,7 @@ impl FileWatcher {
                 }
 
                 let mut supression_guard = event_supression.lock().unwrap();
-                if let Some((storage, event)) = map_to_sync_event(
+                if let Some(event) = map_to_sync_event(
                     event,
                     &config.paths,
                     &mut supression_guard,
@@ -183,75 +183,64 @@ fn map_to_sync_event(
     event_supression: &mut HashMap<FileInfo, SupressionType>,
     log_writer: &mut TransactionLogWriter<File>,
     storage_state: &StorageState,
-) -> Option<(String, FileHandlerEvent)> {
+) -> Option<FileHandlerEvent> {
     match event {
         notify::DebouncedEvent::Create(file_path) => {
-            match get_file_info(
+            let file = get_file_info(
                 paths,
                 event_supression,
                 file_path,
                 SupressionType::Write,
                 storage_state,
-            ) {
-                Some(file) => {
-                    log_writer.append(
-                        file.storage.clone(),
-                        EventType::Write(file.path.clone()),
-                        EventStatus::Finished,
-                    );
+            )?;
 
-                    Some((
-                        file.storage.clone(),
-                        FileHandlerEvent::BroadcastFile(file, true),
-                    ))
-                }
-                None => None,
-            }
+            log_writer
+                .append(
+                    file.storage.clone(),
+                    EventType::Write(file.path.clone()),
+                    EventStatus::Finished,
+                )
+                .ok()?;
+
+            Some(FileHandlerEvent::BroadcastFile(file, true))
         }
 
         notify::DebouncedEvent::Write(file_path) => {
-            match get_file_info(
+            let file = get_file_info(
                 paths,
                 event_supression,
                 file_path,
                 SupressionType::Write,
                 storage_state,
-            ) {
-                Some(file) => {
-                    log_writer.append(
-                        file.storage.clone(),
-                        EventType::Write(file.path.clone()),
-                        EventStatus::Finished,
-                    );
+            )?;
 
-                    Some((
-                        file.storage.clone(),
-                        FileHandlerEvent::BroadcastFile(file, false),
-                    ))
-                }
-                None => None,
-            }
+            log_writer
+                .append(
+                    file.storage.clone(),
+                    EventType::Write(file.path.clone()),
+                    EventStatus::Finished,
+                )
+                .ok()?;
+
+            Some(FileHandlerEvent::BroadcastFile(file, false))
         }
         notify::DebouncedEvent::Remove(file_path) => {
-            log::trace!("Received remove event for {:?}", file_path);
-            match get_file_info(
+            let file = get_file_info(
                 paths,
                 event_supression,
                 file_path,
                 SupressionType::Delete,
                 storage_state,
-            ) {
-                Some(file) => {
-                    log_writer.append(
-                        file.storage.clone(),
-                        EventType::Delete(file.path.clone()),
-                        EventStatus::Finished,
-                    );
+            )?;
+            log_writer
+                .append(
+                    file.storage.clone(),
+                    EventType::Delete(file.path.clone()),
+                    EventStatus::Finished,
+                )
+                .ok()?;
 
-                    Some((file.storage.clone(), FileHandlerEvent::DeleteFile(file)))
-                }
-                None => None,
-            }
+            Some(FileHandlerEvent::DeleteFile(file))
         }
         notify::DebouncedEvent::Rename(src_path, dest_path) => {
             let src_file = get_file_info(
@@ -260,29 +249,24 @@ fn map_to_sync_event(
                 src_path,
                 SupressionType::Delete,
                 storage_state,
-            );
+            )?;
             let dest_file = get_file_info(
                 paths,
                 event_supression,
                 dest_path,
                 SupressionType::Rename,
                 storage_state,
-            );
+            )?;
 
-            match (src_file, dest_file) {
-                (Some(src_file), Some(dest_file)) => {
-                    log_writer.append(
-                        src_file.storage.clone(),
-                        EventType::Move(src_file.path.clone(), dest_file.path.clone()),
-                        EventStatus::Finished,
-                    );
-                    Some((
-                        src_file.storage.clone(),
-                        FileHandlerEvent::MoveFile(src_file, dest_file),
-                    ))
-                }
-                _ => None,
-            }
+            log_writer
+                .append(
+                    src_file.storage.clone(),
+                    EventType::Move(src_file.path.clone(), dest_file.path.clone()),
+                    EventStatus::Finished,
+                )
+                .ok()?;
+
+            Some(FileHandlerEvent::MoveFile(src_file, dest_file))
         }
         _ => None,
     }
