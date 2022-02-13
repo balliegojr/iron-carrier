@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
@@ -10,6 +11,9 @@ use std::{
 
 use rand::distributions::Alphanumeric;
 use rand::Rng;
+
+const FOLDERS: usize = 3;
+const FILES_PER_FOLDER: usize = 5;
 
 pub fn enable_logs(verbosity: usize) {
     stderrlog::new()
@@ -68,8 +72,10 @@ fn timeout_check<F: FnMut() -> bool>(mut check: F) -> bool {
 }
 
 pub fn tree_compare<P: AsRef<Path>>(lhs: P, rhs: P) {
-    let l_files = walk_path(lhs);
-    let r_files = walk_path(rhs);
+    let (l_files, l_ignored) = walk_path(lhs);
+    let (r_files, r_ignored) = walk_path(rhs);
+
+    assert!(l_ignored.is_disjoint(&r_ignored),);
 
     assert_eq!(
         l_files.len(),
@@ -116,9 +122,10 @@ pub fn tree_compare<P: AsRef<Path>>(lhs: P, rhs: P) {
     }
 }
 
-fn walk_path<P: AsRef<Path>>(root_path: P) -> Vec<PathBuf> {
+fn walk_path<P: AsRef<Path>>(root_path: P) -> (Vec<PathBuf>, HashSet<PathBuf>) {
     let mut paths = vec![root_path.as_ref().to_owned()];
     let mut files = Vec::new();
+    let mut ignored = HashSet::new();
 
     while let Some(path) = paths.pop() {
         for entry in std::fs::read_dir(path).unwrap() {
@@ -130,21 +137,33 @@ fn walk_path<P: AsRef<Path>>(root_path: P) -> Vec<PathBuf> {
                 continue;
             }
 
+            if path.extension().map(|ext| ext == "log").unwrap_or_default() {
+                continue;
+            }
+
             if path
                 .file_name()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.ends_with("log"))
-                .unwrap()
+                .map(|name| name == ".ignore")
+                .unwrap_or_default()
             {
                 continue;
             }
 
-            files.push(path);
+            if path.extension().map(|ext| ext == "ig").unwrap_or_else(|| {
+                path.parent()
+                    .map(|p| p.ends_with("ignored_folder"))
+                    .unwrap_or_default()
+            }) {
+                ignored.insert(path.strip_prefix(&root_path).unwrap().to_path_buf());
+            } else {
+                files.push(path);
+            }
         }
     }
 
     files.sort();
-    files
+
+    (files, ignored)
 }
 pub fn generate_files<P: AsRef<Path>>(path: P, prefix: &str) -> Vec<PathBuf> {
     let _ = std::fs::remove_dir_all(&path);
@@ -157,26 +176,49 @@ pub fn unchecked_generate_files<P: AsRef<Path>>(path: P, prefix: &str) -> Vec<Pa
     let mut rng = rand::thread_rng();
     let mut files = Vec::new();
 
-    for _ in 0..5 {
-        let file_name = format!("{prefix}_{}.rng", get_name(&mut rng, 5));
-        let file_path = path.as_ref().join(file_name);
-        gen_file_with_rnd_content(&mut rng, &file_path);
-        files.push(file_path);
+    gen_ignore_file_at(path.as_ref());
+    let _ = std::fs::create_dir_all(path.as_ref().join("ignored_folder"));
+
+    for _ in 0..FILES_PER_FOLDER {
+        files.push(gen_file_at(path.as_ref(), "rng", prefix, &mut rng));
+        files.push(gen_file_at(path.as_ref(), "ig", prefix, &mut rng));
+
+        files.push(gen_file_at(
+            path.as_ref().join("ignored_folder"),
+            "rng",
+            prefix,
+            &mut rng,
+        ));
     }
 
-    for _ in 0..3 {
+    for _ in 0..FOLDERS {
         let folder = path.as_ref().join(get_name(&mut rng, 5));
         let _ = std::fs::create_dir_all(&folder);
 
-        for _ in 0..5 {
-            let file_name = format!("{prefix}_{}.rng", get_name(&mut rng, 5));
-            let file_path = folder.join(file_name);
-            gen_file_with_rnd_content(&mut rng, &file_path);
-            files.push(file_path);
+        for _ in 0..FILES_PER_FOLDER {
+            files.push(gen_file_at(&folder, "rng", prefix, &mut rng));
+            files.push(gen_file_at(&folder, "ig", prefix, &mut rng));
         }
     }
 
     files
+}
+
+fn gen_file_at<P: AsRef<Path>, R: Rng>(path: P, ext: &str, prefix: &str, rng: &mut R) -> PathBuf {
+    let file_name = format!("{prefix}_{}.{ext}", get_name(rng, 5));
+    let file_path = path.as_ref().join(file_name);
+    gen_file_with_rnd_content(rng, &file_path);
+    file_path
+}
+
+fn gen_ignore_file_at<P: AsRef<Path>>(path: P) {
+    let _ = std::fs::write(
+        path.as_ref().join(".ignore"),
+        r#"*.ig
+**/*.ig
+ignored_folder/
+"#,
+    );
 }
 
 fn gen_file_with_rnd_content<P: AsRef<Path>, R: Rng>(rng: &mut R, file_path: P) {

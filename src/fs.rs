@@ -164,21 +164,18 @@ pub fn walk_path(
                 continue;
             }
 
-            if storage_state.is_ignored(storage, &path) {
-                continue;
-            }
-
             if path.is_dir() {
                 paths.push(path);
                 continue;
             }
 
             let metadata = path.metadata()?;
-            files.insert(FileInfo::new(
-                storage.to_owned(),
-                path.strip_prefix(root_path)?.to_owned(),
-                metadata,
-            ));
+            let path = path.strip_prefix(root_path)?.to_owned();
+            if storage_state.is_ignored(storage, &path) {
+                continue;
+            }
+
+            files.insert(FileInfo::new(storage.to_owned(), path, metadata));
         }
     }
 

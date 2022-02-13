@@ -27,7 +27,7 @@ impl StorageState {
         let mut ignore_sets = self.ignore_sets.lock().unwrap();
         let glob_set = ignore_sets
             .entry(storage.to_string())
-            .or_insert_with(|| get_glob_set(&path));
+            .or_insert_with(|| get_glob_set(&self.config.paths[storage]));
 
         glob_set
             .as_ref()
@@ -160,10 +160,7 @@ fn get_glob_set<P: AsRef<Path>>(path: P) -> Option<GlobSet> {
     let patterns = get_ignore_patterns(path.as_ref())?;
 
     let mut builder = GlobSetBuilder::new();
-    for pattern in patterns
-        .iter()
-        .map(|p| format!("{:?}/{}", path.as_ref(), p))
-    {
+    for pattern in patterns {
         let glob = match Glob::new(&pattern) {
             Ok(glob) => glob,
             Err(err) => {
@@ -194,7 +191,7 @@ fn get_ignore_patterns<P: AsRef<Path>>(path: P) -> Option<Vec<String>> {
         return None;
     }
 
-    let content = match std::fs::read_to_string(path.as_ref()) {
+    let content = match std::fs::read_to_string(ignore_file_path) {
         Ok(content) => content,
         Err(_) => {
             log::error!("Failed to read ignore file at {:?}", path.as_ref());
