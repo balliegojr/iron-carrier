@@ -149,11 +149,7 @@ fn walk_path<P: AsRef<Path>>(root_path: P) -> (Vec<PathBuf>, HashSet<PathBuf>) {
                 continue;
             }
 
-            if path.extension().map(|ext| ext == "ig").unwrap_or_else(|| {
-                path.parent()
-                    .map(|p| p.ends_with("ignored_folder"))
-                    .unwrap_or_default()
-            }) {
+            if is_ignored(&path) {
                 ignored.insert(path.strip_prefix(&root_path).unwrap().to_path_buf());
             } else {
                 files.push(path);
@@ -164,6 +160,14 @@ fn walk_path<P: AsRef<Path>>(root_path: P) -> (Vec<PathBuf>, HashSet<PathBuf>) {
     files.sort();
 
     (files, ignored)
+}
+pub fn is_ignored(path: &Path) -> bool {
+    path.extension().map(|ext| ext == "ig").unwrap_or_default()
+        || path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|p| p.eq("ignored_folder"))
+            .unwrap_or_default()
 }
 pub fn generate_files<P: AsRef<Path>>(path: P, prefix: &str) -> Vec<PathBuf> {
     let _ = std::fs::remove_dir_all(&path);
@@ -216,7 +220,7 @@ fn gen_ignore_file_at<P: AsRef<Path>>(path: P) {
         path.as_ref().join(".ignore"),
         r#"*.ig
 **/*.ig
-ignored_folder/
+ignored_folder/**
 "#,
     );
 }

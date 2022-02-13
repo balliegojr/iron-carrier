@@ -106,6 +106,15 @@ impl FileInfo {
             }
         }
     }
+
+    pub fn date_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let self_date = self.deleted_at.unwrap_or_else(|| self.modified_at.unwrap());
+        let other_date = other
+            .deleted_at
+            .unwrap_or_else(|| other.modified_at.unwrap());
+
+        self_date.cmp(&other_date)
+    }
 }
 
 impl Hash for FileInfo {

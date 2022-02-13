@@ -5,19 +5,21 @@ use std::{
 
 use crate::{conn::CommandDispatcher, fs::FileInfo};
 
-use super::{FileHandlerEvent, Origin, SyncEvent};
+use super::{FileHandlerEvent, SyncEvent};
 
 pub(crate) struct SynchronizationState {
+    node_id: String,
     storage_state: HashMap<String, HashSet<String>>,
-    current_storage_index: HashMap<Origin, Vec<FileInfo>>,
+    current_storage_index: HashMap<String, Vec<FileInfo>>,
     current_storage_peers: HashSet<String>,
     expected_state_replies: usize,
     commands: CommandDispatcher,
 }
 
 impl SynchronizationState {
-    pub fn new(commands: CommandDispatcher) -> Self {
+    pub fn new(node_id: String, commands: CommandDispatcher) -> Self {
         Self {
+            node_id,
             storage_state: HashMap::new(),
             current_storage_index: HashMap::new(),
             expected_state_replies: 0,
@@ -61,7 +63,7 @@ impl SynchronizationState {
         Some(storage)
     }
 
-    pub fn set_storage_index(&mut self, origin: Origin, index: Vec<FileInfo>) -> bool {
+    pub fn set_storage_index(&mut self, origin: String, index: Vec<FileInfo>) -> bool {
         self.current_storage_index.insert(origin, index);
         self.current_storage_peers.len() == self.current_storage_index.len() - 1
     }
@@ -70,7 +72,7 @@ impl SynchronizationState {
         let consolidated_index = self.get_consolidated_index();
         consolidated_index
             .into_iter()
-            .for_each(|(_, v)| self.convert_index_to_events(v));
+            .for_each(|(_, v)| self.execute_actions_for_file(v));
 
         self.current_storage_peers.clear();
 
@@ -81,8 +83,8 @@ impl SynchronizationState {
         }
     }
 
-    fn get_consolidated_index(&mut self) -> HashMap<PathBuf, HashMap<Origin, FileInfo>> {
-        let mut consolidated_index: HashMap<PathBuf, HashMap<Origin, FileInfo>> = HashMap::new();
+    fn get_consolidated_index(&mut self) -> HashMap<PathBuf, HashMap<String, FileInfo>> {
+        let mut consolidated_index: HashMap<PathBuf, HashMap<String, FileInfo>> = HashMap::new();
         for (origin, index) in std::mem::take(&mut self.current_storage_index) {
             for file in index {
                 consolidated_index
@@ -94,102 +96,108 @@ impl SynchronizationState {
 
         consolidated_index
     }
-    /// convert each line of the consolidated index to a vec of actions
-    fn convert_index_to_events(&self, files: HashMap<Origin, FileInfo>) {
-        let (source, source_file) = files
-            .iter()
-            .max_by(|(_, a), (_, b)| {
-                a.deleted_at
-                    .unwrap_or_else(|| a.modified_at.unwrap())
-                    .cmp(&b.deleted_at.unwrap_or_else(|| b.modified_at.unwrap()))
-            })
-            .unwrap();
+    /// Execute the necessary actions for this file
+    /// Most of the actions here are propagated to every other peer, the only exception is when we need to request the file for this peer
+    /// For this scenario, we trigger a secondary sync to propagate the file to other peers
+    fn execute_actions_for_file(&self, mut files: HashMap<String, FileInfo>) {
+        let local_file = files.remove(&self.node_id);
 
-        match source {
-            Origin::Initiator => {
-                for action in self.current_storage_peers.iter().filter_map(|peer_id| {
-                    self.get_action_for_peer_file(
-                        source_file,
-                        files.get(&Origin::Peer(peer_id.clone())),
-                        peer_id.clone(),
-                    )
-                }) {
-                    self.commands.enqueue(action);
+        let most_recent = files
+            .iter()
+            .max_by(|(_, a), (_, b)| a.date_cmp(b))
+            .map(|(peer, _)| peer.to_owned());
+
+        match (local_file, most_recent) {
+            (None, Some(peer)) => {
+                let peer_file = files.remove(&peer).unwrap();
+                if peer_file.is_deleted() {
+                    // There is no local file, se propagate delete to where other peers
+                    self.propagate_delete(files);
+                } else {
+                    // There is no local file, we request ir from peer, no further action will be taken
+                    self.commands
+                        .enqueue(FileHandlerEvent::RequestFile(peer_file, peer, true));
                 }
             }
-            Origin::Peer(origin_peer) => {
-                if source_file.is_deleted() {
-                    log::trace!(
-                        "{:?} is deleted at origin, deleting on this node",
-                        source_file.path
-                    );
-                    self.commands
-                        .now(FileHandlerEvent::DeleteFile((*source_file).clone()))
-                } else {
-                    let is_out_of_sync = files
-                        .get(&Origin::Initiator)
-                        .map(|local_file| source_file.is_out_of_sync(local_file))
-                        .unwrap_or(true);
-
-                    if is_out_of_sync {
-                        log::trace!("{:?} is newer at origin, requesting", source_file.path);
-                        self.commands.enqueue(FileHandlerEvent::RequestFile(
-                            (*source_file).clone(),
-                            origin_peer.clone(),
-                            !files.contains_key(&Origin::Initiator),
-                        ))
+            (Some(local_file), None) => {
+                if !local_file.is_deleted() {
+                    // There is a local file, and no other peer has it, we need to propagate
+                    for peer in &self.current_storage_peers {
+                        self.commands.enqueue(FileHandlerEvent::SendFile(
+                            local_file.clone(),
+                            peer.to_string(),
+                            true,
+                        ));
                     }
                 }
+            }
+            (Some(local_file), Some(peer)) => {
+                let ord = {
+                    let peer_file = files.get(&peer).unwrap();
+                    local_file.date_cmp(peer_file)
+                };
 
-                for action in self
-                    .current_storage_peers
-                    .iter()
-                    .filter(|peer| **peer != *origin_peer)
-                    .filter_map(|peer_id| {
-                        self.get_action_for_peer_file(
-                            source_file,
-                            files.get(&Origin::Peer(peer_id.clone())),
-                            peer_id.clone(),
-                        )
-                    })
-                {
-                    self.commands.enqueue(action);
+                // Both files exist, we check for the most recent one
+                match ord {
+                    std::cmp::Ordering::Less => {
+                        // Peer file is more recent than local file
+                        let peer_file = files.remove(&peer).unwrap();
+                        match (local_file.is_deleted(), peer_file.is_deleted()) {
+                            (is_local_deleted, true) => {
+                                // Peer file is deleted, we delete local file if needed and propagate deletion to other peers
+                                if !is_local_deleted {
+                                    self.commands.now(FileHandlerEvent::DeleteFile(local_file));
+                                }
+                                self.propagate_delete(files)
+                            }
+                            // We request the file from peer
+                            (is_new_file, false) => self.commands.enqueue(
+                                FileHandlerEvent::RequestFile(peer_file, peer, is_new_file),
+                            ),
+                        }
+                    }
+                    std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
+                        // local file is the most recent, we propagate its state to every peer
+                        if local_file.is_deleted() {
+                            // delete on every peer that has the file
+                            self.propagate_delete(files);
+                        } else {
+                            // Create or update the file on every other peer
+                            for (peer, is_new_file) in
+                                self.current_storage_peers.iter().filter_map(|peer| {
+                                    match files.remove(peer) {
+                                        Some(peer_file) => {
+                                            if local_file.is_out_of_sync(&peer_file) {
+                                                Some((peer, false))
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        None => Some((peer, true)),
+                                    }
+                                })
+                            {
+                                self.commands.enqueue(FileHandlerEvent::SendFile(
+                                    local_file.clone(),
+                                    peer.clone(),
+                                    is_new_file,
+                                ))
+                            }
+                        }
+                    }
                 }
             }
+            _ => unreachable!(),
         }
     }
 
-    fn get_action_for_peer_file(
-        &self,
-        source_file: &FileInfo,
-        peer_file: Option<&FileInfo>,
-        peer_id: String,
-    ) -> Option<FileHandlerEvent> {
-        match peer_file {
-            Some(peer_file) => {
-                if source_file.is_out_of_sync(peer_file) {
-                    log::trace!("file {:?} is out of sync with peer", source_file.path);
-                    Some(FileHandlerEvent::SendFile(
-                        source_file.clone(),
-                        peer_id,
-                        false,
-                    ))
-                } else {
-                    None
-                }
-            }
-            None => {
-                if source_file.is_deleted() {
-                    None
-                } else {
-                    log::trace!("file {:?} does not exist on peer", source_file.path);
-                    Some(FileHandlerEvent::SendFile(
-                        source_file.clone(),
-                        peer_id,
-                        true,
-                    ))
-                }
-            }
+    fn propagate_delete(&self, files: HashMap<String, FileInfo>) {
+        for (peer, peer_file) in files
+            .into_iter()
+            .filter(|(_, peer_file)| !peer_file.is_deleted())
+        {
+            self.commands
+                .to(FileHandlerEvent::DeleteFile(peer_file), &peer);
         }
     }
 }

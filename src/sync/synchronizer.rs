@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use super::{synchronization_session::SynchronizationState, SyncEvent};
-use crate::{
-    config::Config, conn::CommandDispatcher, fs, storage_state::StorageState, sync::Origin,
-};
+use crate::{config::Config, conn::CommandDispatcher, fs, storage_state::StorageState};
 
 pub struct Synchronizer {
     config: Arc<Config>,
@@ -19,10 +17,10 @@ impl Synchronizer {
         storage_state: Arc<StorageState>,
     ) -> crate::Result<Self> {
         log::debug!("Initializing synchronizer");
-
+        let node_id = config.node_id.clone();
         let s = Synchronizer {
             config,
-            session_state: SynchronizationState::new(commands.clone()),
+            session_state: SynchronizationState::new(node_id, commands.clone()),
             storage_state,
             commands,
         };
@@ -31,7 +29,8 @@ impl Synchronizer {
     }
 
     pub fn clear(&mut self) {
-        self.session_state = SynchronizationState::new(self.commands.clone());
+        self.session_state =
+            SynchronizationState::new(self.config.node_id.clone(), self.commands.clone());
     }
 
     pub fn handle_signal(&mut self, signal: SyncEvent) -> crate::Result<bool> {
@@ -90,9 +89,9 @@ impl Synchronizer {
                 self.commands.now(SyncEvent::SetStorageIndex(index));
             }
             SyncEvent::SetStorageIndex(index) => {
-                let origin = Origin::Initiator;
-
-                let have_all_indexes = self.session_state.set_storage_index(origin, index);
+                let have_all_indexes = self
+                    .session_state
+                    .set_storage_index(self.config.node_id.clone(), index);
                 if have_all_indexes {
                     self.session_state.build_event_queue();
                     return Ok(true);
@@ -139,10 +138,12 @@ impl Synchronizer {
 
                 self.commands.to(SyncEvent::SetStorageIndex(index), peer_id);
             }
-            SyncEvent::SetStorageIndex(index) => {
-                let origin = Origin::Peer(peer_id.to_string());
+            SyncEvent::SetStorageIndex(mut index) => {
+                index.retain(|f| !self.storage_state.is_ignored(&f.storage, &f.path));
 
-                let have_all_indexes = self.session_state.set_storage_index(origin, index);
+                let have_all_indexes = self
+                    .session_state
+                    .set_storage_index(peer_id.to_string(), index);
                 if have_all_indexes {
                     self.session_state.build_event_queue();
                     return Ok(true);

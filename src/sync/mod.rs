@@ -49,9 +49,3 @@ impl std::fmt::Display for SyncEvent {
         }
     }
 }
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub(crate) enum Origin {
-    Initiator,
-    Peer(String),
-}

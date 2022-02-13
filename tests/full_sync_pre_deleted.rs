@@ -9,6 +9,7 @@ mod common;
 
 #[test]
 fn test_sync_deleted_files() {
+    // common::enable_logs(5);
     let mut port = 8100;
     let peers = ["g", "h"];
     let mut configs = Vec::new();
@@ -23,6 +24,7 @@ fn test_sync_deleted_files() {
 
         let config = format!(
             r#"
+node_id="{peer_name}"
 port={port}
 log_path = {:?} 
 delay_watcher_events=1
@@ -57,7 +59,7 @@ store_one = {:?}
         .open(log_path)
         .unwrap();
 
-    for file in files.iter() {
+    for file in files.iter().filter(|f| !common::is_ignored(f)) {
         let log_line = format!(
             "{},store_one,Delete:{},Finished\n",
             SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 5,
@@ -73,6 +75,10 @@ store_one = {:?}
     }
 
     for file in files {
-        common::assert_file_deleted(file);
+        if common::is_ignored(&file) {
+            common::assert_file_exists(file);
+        } else {
+            common::assert_file_deleted(file);
+        }
     }
 }
