@@ -1,6 +1,6 @@
 [package]
 name = "iron-carrier"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ilson Roberto Balliego Junior"]
 edition = "2021"
 

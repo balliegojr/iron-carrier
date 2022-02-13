@@ -1,9 +1,0 @@
-
-log_path = "/app/log"
-
-peers = [
-  "ic_one:25230"
-]
-
-[paths]
-sync = "/app/sync"
