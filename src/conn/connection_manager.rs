@@ -297,7 +297,13 @@ impl ConnectionManager {
     ) -> crate::Result<Option<(Commands, Option<String>)>> {
         self.update_last_access(&endpoint);
 
-        let message_type = RawMessageType::try_from(data[0])?;
+        let message_type = match RawMessageType::try_from(data[0]) {
+            Ok(message_type) => message_type,
+            Err(err) => {
+                log::error!("Received invalid message {} from {endpoint:?}", data[0]);
+                return Err(err.into());
+            }
+        };
 
         match message_type {
             RawMessageType::SetId => {

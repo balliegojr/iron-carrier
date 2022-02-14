@@ -29,6 +29,7 @@ impl TryFrom<u8> for RawMessageType {
             0 => Ok(RawMessageType::SetId),
             1 => Ok(RawMessageType::Command),
             2 => Ok(RawMessageType::Stream),
+            3 => Ok(RawMessageType::Ping),
             _ => Err(IronCarrierError::InvalidMessage),
         }
     }
