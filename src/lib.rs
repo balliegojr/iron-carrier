@@ -15,6 +15,8 @@ use sync::{FileTransferMan, FileWatcher, Synchronizer};
 use thiserror::Error;
 use transaction_log::TransactionLogWriter;
 
+use crate::negotiator::Negotiator;
+
 pub mod config;
 mod conn;
 mod fs;
@@ -23,6 +25,7 @@ mod transaction_log;
 mod constants;
 mod debouncer;
 mod hash_helper;
+mod negotiator;
 mod storage_state;
 mod sync;
 
@@ -109,6 +112,7 @@ pub fn run(config: config::Config) -> crate::Result<()> {
         storage_state.clone(),
     );
 
+    let mut negotiator = Negotiator::new(connection_man.command_dispatcher());
     let mut synchronizer = Synchronizer::new(
         config,
         connection_man.command_dispatcher(),
@@ -117,10 +121,16 @@ pub fn run(config: config::Config) -> crate::Result<()> {
 
     connection_man.on_command(move |command, peer_id| -> crate::Result<bool> {
         match command {
-            Commands::Command(event) => match peer_id {
-                Some(peer_id) => synchronizer.handle_network_event(event, &peer_id),
-                None => synchronizer.handle_signal(event),
-            },
+            Commands::Command(event) => {
+                if matches!(event, sync::SyncEvent::StartSync) && peer_id.is_some() {
+                    negotiator.set_passive();
+                }
+
+                match peer_id {
+                    Some(peer_id) => synchronizer.handle_network_event(event, &peer_id),
+                    None => synchronizer.handle_signal(event),
+                }
+            }
 
             Commands::Stream(data) => file_transfer_man.handle_stream(&data, &peer_id.unwrap()),
             Commands::FileHandler(event) => {
@@ -135,7 +145,12 @@ pub fn run(config: config::Config) -> crate::Result<()> {
                 file_transfer_man.clear();
                 storage_state.clear();
                 synchronizer.clear();
+                negotiator.clear();
 
+                Ok(false)
+            }
+            Commands::Negotiation(event) => {
+                negotiator.handle_negotiation(event, peer_id);
                 Ok(false)
             }
         }

@@ -2,6 +2,7 @@ use message_io::{
     network::{Endpoint, NetEvent, Transport},
     node::{self, NodeHandler, NodeListener},
 };
+use rand::Rng;
 use simple_mdns::ServiceDiscovery;
 use std::{
     collections::{HashMap, LinkedList},
@@ -14,7 +15,7 @@ use crate::{
     config::Config,
     constants::{CLEAR_TIMEOUT, PING_CONNECTIONS},
     debouncer::{debounce_action, Debouncer},
-    sync::SyncEvent,
+    negotiator::Negotiation,
     IronCarrierError,
 };
 
@@ -215,13 +216,7 @@ impl ConnectionManager {
         match event {
             HandlerEvent::Command(signal_event) => Ok(Some((signal_event, None))),
             HandlerEvent::Connection(control_event) => {
-                if self.handle_connection_flow(control_event)? {
-                    if self.event_queue.lock().expect("Poisoned lock").is_empty() {
-                        return Ok(Some((SyncEvent::StartSync.into(), None)));
-                    } else {
-                        self.handler.signals().send(HandlerEvent::ConsumeQueue);
-                    }
-                }
+                self.handle_connection_flow(control_event)?;
                 Ok(None)
             }
             HandlerEvent::ConsumeQueue => Ok(self
@@ -242,6 +237,13 @@ impl ConnectionManager {
             ConnectionFlow::PingConnections.into(),
             Duration::from_secs(PING_CONNECTIONS),
         );
+
+        let mut rng = rand::thread_rng();
+        let timeout = rng.gen_range(4.0..4.5);
+
+        self.handler
+            .signals()
+            .send_with_timer(Negotiation::Start.into(), Duration::from_secs_f64(timeout));
     }
 
     fn handle_connected(&mut self, endpoint: Endpoint, success: bool) {
@@ -307,15 +309,7 @@ impl ConnectionManager {
 
         match message_type {
             RawMessageType::SetId => {
-                let should_start_sync = self.handle_set_id(&data[1..], endpoint);
-                if should_start_sync {
-                    if self.event_queue.lock().expect("Poisoned lock").is_empty() {
-                        return Ok(Some((SyncEvent::StartSync.into(), None)));
-                    } else {
-                        self.handler.signals().send(HandlerEvent::ConsumeQueue);
-                        return Ok(None);
-                    }
-                }
+                self.handle_set_id(&data[1..], endpoint);
             }
             RawMessageType::Command => {
                 let message = bincode::deserialize(&data[1..])?;
@@ -349,7 +343,7 @@ impl ConnectionManager {
         Ok(None)
     }
 
-    fn handle_set_id(&mut self, data: &[u8], endpoint: Endpoint) -> bool {
+    fn handle_set_id(&mut self, data: &[u8], endpoint: Endpoint) {
         let node_id = String::from_utf8_lossy(data).to_string();
 
         {
@@ -363,7 +357,6 @@ impl ConnectionManager {
                     endpoint
                 );
                 // self.waiting_identification.remove(&endpoint);
-                return false;
             } else if let std::collections::hash_map::Entry::Vacant(entry) =
                 id_lookup.entry(endpoint)
             {
@@ -377,29 +370,19 @@ impl ConnectionManager {
                 };
             }
         }
-
-        self.should_start_sync()
     }
 
-    fn should_start_sync(&self) -> bool {
-        let connections = self.connections.read().expect("Poisoned lock");
-        self.waiting_identification.is_empty()
-            && !connections.is_empty()
-            && self.config.node_id.lt(connections.keys().min().unwrap())
-    }
-
-    fn handle_connection_flow(&mut self, event: ConnectionFlow) -> crate::Result<bool> {
+    fn handle_connection_flow(&mut self, event: ConnectionFlow) -> crate::Result<()> {
         match event {
             ConnectionFlow::StartConnections(attempt) => {
                 self.handle_start_connections(attempt)?;
-                Ok(false)
             }
-            ConnectionFlow::CheckConnectionLiveness => Ok(self.handle_liveness_check()),
+            ConnectionFlow::CheckConnectionLiveness => self.handle_liveness_check(),
             ConnectionFlow::PingConnections => {
                 self.handle_ping_connections();
-                Ok(false)
             }
         }
+        Ok(())
     }
 
     fn handle_start_connections(&mut self, attempt: u8) -> crate::Result<()> {
@@ -474,10 +457,7 @@ impl ConnectionManager {
         );
     }
 
-    fn handle_liveness_check(&mut self) -> bool {
-        let has_waiting = !self.waiting_identification.is_empty();
-        let mut removed_connections = false;
-
+    fn handle_liveness_check(&mut self) {
         let unidentified: Vec<Endpoint> = self
             .waiting_identification
             .values()
@@ -489,7 +469,6 @@ impl ConnectionManager {
             log::debug!("connection to {} is stale", connection.addr());
             self.handler.network().remove(connection.resource_id());
             self.waiting_identification.remove(&connection);
-            removed_connections = true;
         }
 
         let endpoints: Vec<Endpoint> = self
@@ -517,8 +496,6 @@ impl ConnectionManager {
                 Duration::from_secs(1),
             );
         }
-
-        has_waiting && removed_connections && self.should_start_sync()
     }
 
     fn handle_ping_connections(&self) {

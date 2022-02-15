@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-use crate::sync::{FileHandlerEvent, SyncEvent, WatcherEvent};
+use crate::{
+    negotiator::Negotiation,
+    sync::{FileHandlerEvent, SyncEvent, WatcherEvent},
+};
 
 use super::HandlerEvent;
 
@@ -11,7 +14,14 @@ pub enum Commands {
     FileHandler(FileHandlerEvent),
     Stream(Vec<u8>),
     Watcher(WatcherEvent),
+    Negotiation(Negotiation),
     Clear,
+}
+
+impl From<Negotiation> for Commands {
+    fn from(v: Negotiation) -> Self {
+        Self::Negotiation(v)
+    }
 }
 
 impl From<SyncEvent> for Commands {
@@ -35,11 +45,12 @@ impl From<WatcherEvent> for Commands {
 impl Display for Commands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            Commands::Command(event) => write!(f, "command {}", event),
-            Commands::FileHandler(event) => write!(f, "file event {}", event),
+            Commands::Command(event) => write!(f, "command {event}"),
+            Commands::FileHandler(event) => write!(f, "file event {event}"),
             Commands::Stream(_) => write!(f, "Stream"),
-            Commands::Watcher(event) => write!(f, "watcher {}", event),
+            Commands::Watcher(event) => write!(f, "watcher {event}"),
             Commands::Clear => write!(f, "Clear"),
+            Commands::Negotiation(event) => write!(f, "negotiation {event}"),
         }
     }
 }

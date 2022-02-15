@@ -2,6 +2,7 @@ use message_io::node::NodeHandler;
 use std::{
     collections::{HashMap, LinkedList},
     sync::{Arc, Mutex, RwLock},
+    time::Duration,
 };
 
 use super::{Commands, HandlerEvent, PeerConnection, RawMessageType};
@@ -27,6 +28,13 @@ impl CommandDispatcher {
     pub fn now<T: Into<Commands>>(&self, event: T) {
         let event: Commands = event.into();
         self.handler.signals().send(event.into());
+    }
+
+    pub fn after<T: Into<Commands>>(&self, event: T, duration: Duration) {
+        let event: Commands = event.into();
+        self.handler
+            .signals()
+            .send_with_timer(event.into(), duration);
     }
 
     pub fn enqueue<T: Into<Commands>>(&self, event: T) {
