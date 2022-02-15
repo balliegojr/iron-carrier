@@ -114,9 +114,13 @@ impl SynchronizationState {
                     // There is no local file, se propagate delete to where other peers
                     self.propagate_delete(files);
                 } else {
-                    // There is no local file, we request ir from peer, no further action will be taken
-                    self.commands
-                        .enqueue(FileHandlerEvent::RequestFile(peer_file, peer, true));
+                    // There is no local file, we request ir from peer, and then propagate to other peers
+                    self.commands.enqueue(FileHandlerEvent::RequestFile(
+                        peer_file.clone(),
+                        peer.clone(),
+                        true,
+                    ));
+                    self.propagate_file_to_other_peers(peer_file, peer, files);
                 }
             }
             (Some(local_file), None) => {
@@ -150,10 +154,15 @@ impl SynchronizationState {
                                 }
                                 self.propagate_delete(files)
                             }
-                            // We request the file from peer
-                            (is_new_file, false) => self.commands.enqueue(
-                                FileHandlerEvent::RequestFile(peer_file, peer, is_new_file),
-                            ),
+                            // We request the file from peer, and then propagate to other peers
+                            (is_new_file, false) => {
+                                self.commands.enqueue(FileHandlerEvent::RequestFile(
+                                    peer_file.clone(),
+                                    peer.clone(),
+                                    is_new_file,
+                                ));
+                                self.propagate_file_to_other_peers(peer_file, peer, files);
+                            }
                         }
                     }
                     std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
@@ -198,6 +207,29 @@ impl SynchronizationState {
         {
             self.commands
                 .to(FileHandlerEvent::DeleteFile(peer_file), &peer);
+        }
+    }
+
+    fn propagate_file_to_other_peers(
+        &self,
+        file: FileInfo,
+        except: String,
+        files: HashMap<String, FileInfo>,
+    ) {
+        let peers = self.current_storage_peers.iter().filter(|p| {
+            except.ne(p.as_str())
+                && files
+                    .get(p.as_str())
+                    .map(|f| f.is_out_of_sync(&file))
+                    .unwrap_or(true)
+        });
+        for peer in peers {
+            let is_new = files.contains_key(peer);
+            self.commands.enqueue(FileHandlerEvent::SendFile(
+                file.clone(),
+                peer.to_string(),
+                is_new,
+            ));
         }
     }
 }
