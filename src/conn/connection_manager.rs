@@ -396,49 +396,23 @@ impl ConnectionManager {
                 );
             } else {
                 self.event_queue.lock().expect("Poisoned lock").clear();
-                return Ok(());
             }
+            return Ok(());
         }
 
         self.start_liveness_check();
         for (socket_addr, node_id) in addresses_to_connect {
             log::debug!("connecting to {} with node id {:?}", socket_addr, &node_id);
+            let (endpoint, _) = self
+                .handler
+                .network()
+                .connect(TRANSPORT_PROTOCOL, socket_addr)
+                .map_err(|_| {
+                    IronCarrierError::ServerStartError("Could not connect to peer".into())
+                })?;
 
-            match node_id {
-                Some(node_id) => {
-                    let mut connections = self.connections.write().expect("Poisoned lock");
-                    if connections.contains_key(&node_id) {
-                        continue;
-                    }
-
-                    let (endpoint, _) = self
-                        .handler
-                        .network()
-                        .connect(TRANSPORT_PROTOCOL, socket_addr)
-                        .map_err(|_| {
-                            IronCarrierError::ServerStartError("Could not connect to peer".into())
-                        })?;
-
-                    self.id_lookup
-                        .write()
-                        .expect("Poisoned lock")
-                        .insert(endpoint, node_id.clone());
-
-                    connections.insert(node_id, endpoint.into());
-                }
-                None => {
-                    let (endpoint, _) = self
-                        .handler
-                        .network()
-                        .connect(TRANSPORT_PROTOCOL, socket_addr)
-                        .map_err(|_| {
-                            IronCarrierError::ServerStartError("Could not connect to peer".into())
-                        })?;
-
-                    self.waiting_identification
-                        .insert(endpoint, endpoint.into());
-                }
-            }
+            self.waiting_identification
+                .insert(endpoint, endpoint.into());
         }
 
         Ok(())
