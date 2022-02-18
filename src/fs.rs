@@ -5,7 +5,7 @@ use std::{
     cmp::Ord,
     collections::HashSet,
     fs,
-    hash::{Hash, Hasher},
+    hash::Hash,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
@@ -15,6 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::{
     config::Config,
+    hash_helper::{self, HASHER},
     storage_state::StorageState,
     transaction_log::{get_log_reader, EventType},
     IronCarrierError,
@@ -197,17 +198,13 @@ pub fn walk_path(
 }
 
 pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
-    let mut s = crc32fast::Hasher::new();
+    let mut digest = HASHER.digest();
 
     for file in files.filter(|f| !f.is_deleted()) {
-        file.storage.hash(&mut s);
-        file.path.hash(&mut s);
-        file.modified_at.hash(&mut s);
-        // file.deleted_at.is_some().hash(&mut s);
-        file.size.hash(&mut s);
+        hash_helper::calculate_file_hash_dig(file, &mut digest);
     }
 
-    s.finish()
+    digest.finalize()
 }
 
 fn get_deleted_files(config: &Config, storage: &str) -> crate::Result<HashSet<FileInfo>> {
@@ -344,8 +341,6 @@ pub fn is_special_file(path: &Path) -> bool {
 mod tests {
     use std::{fs::File, sync::Arc};
 
-    use crate::hash_helper::calculate_hash;
-
     use super::*;
 
     #[test]
@@ -386,16 +381,16 @@ a = "./tmp/fs/read_local_files"
             storage: "a".to_owned(),
             path: Path::new("./some_file_path").to_owned(),
             // created_at: None,
-            modified_at: None,
-            size: None,
+            modified_at: Some(0),
+            size: Some(0),
             deleted_at: None,
             permissions: 0,
         };
 
-        assert_eq!(calculate_hash(&file), 2549185459);
+        assert_eq!(hash_helper::calculate_file_hash(&file), 4552872816654674580);
 
         file.path = Path::new("./some_other_file").to_owned();
-        assert_ne!(calculate_hash(&file), 2549185459);
+        assert_ne!(hash_helper::calculate_file_hash(&file), 4552872816654674580);
     }
 
     #[test]

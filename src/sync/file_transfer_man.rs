@@ -209,7 +209,7 @@ impl FileTransferMan {
     ) -> crate::Result<bool> {
         log::info!("Sending file {:?} to peer", file_info.path);
 
-        let file_hash = hash_helper::calculate_hash(&file_info);
+        let file_hash = hash_helper::calculate_file_hash(&file_info);
         let event = match self.sync_out.get_mut(&file_hash) {
             Some(file_sync) => {
                 if let Some(peers_count) = file_sync.peers_count.as_mut() {
@@ -259,7 +259,7 @@ impl FileTransferMan {
     ) -> crate::Result<bool> {
         log::info!("Broadcast prepare sync file {:?}", file_info.path);
 
-        let file_hash = hash_helper::calculate_hash(&file_info);
+        let file_hash = hash_helper::calculate_file_hash(&file_info);
         let file_path = file_info.get_absolute_path(&self.config)?;
         let mut file_handler = std::fs::File::open(file_path)?;
         let file_size = file_info.size.unwrap();
