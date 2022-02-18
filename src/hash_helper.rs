@@ -1,9 +1,8 @@
 use rand::Rng;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
-    let mut s = DefaultHasher::new();
+    let mut s = crc32fast::Hasher::new();
     t.hash(&mut s);
     s.finish()
 }
@@ -23,6 +22,6 @@ mod tests {
     use super::*;
     #[test]
     fn calc_hash() {
-        assert_eq!(calculate_hash(&"dope info"), 3362353728198126061);
+        assert_eq!(calculate_hash(&"dope info"), 113823638);
     }
 }

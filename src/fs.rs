@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ord,
-    collections::{hash_map::DefaultHasher, HashSet},
+    collections::HashSet,
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -197,7 +197,7 @@ pub fn walk_path(
 }
 
 pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
-    let mut s = DefaultHasher::new();
+    let mut s = crc32fast::Hasher::new();
 
     for file in files.filter(|f| !f.is_deleted()) {
         file.storage.hash(&mut s);
@@ -392,10 +392,10 @@ a = "./tmp/fs/read_local_files"
             permissions: 0,
         };
 
-        assert_eq!(calculate_hash(&file), 4940976808124407048);
+        assert_eq!(calculate_hash(&file), 2549185459);
 
         file.path = Path::new("./some_other_file").to_owned();
-        assert_ne!(calculate_hash(&file), 17615170043123433502);
+        assert_ne!(calculate_hash(&file), 2549185459);
     }
 
     #[test]

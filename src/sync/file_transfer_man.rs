@@ -292,8 +292,6 @@ impl FileTransferMan {
         file_size: u64,
         calculate_hash: bool,
     ) -> Vec<(u64, u64)> {
-        //TODO: implement proper hashing/checksum
-
         if file_size == 0 {
             return Vec::new();
         }
