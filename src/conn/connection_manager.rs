@@ -237,9 +237,11 @@ impl ConnectionManager {
             ConnectionFlow::PingConnections.into(),
             Duration::from_secs(PING_CONNECTIONS),
         );
+    }
 
+    fn send_start_negotiaion(&self) {
         let mut rng = rand::thread_rng();
-        let timeout = rng.gen_range(4.0..4.5);
+        let timeout = rng.gen_range(1.0..1.5);
 
         self.handler
             .signals()
@@ -401,6 +403,8 @@ impl ConnectionManager {
         }
 
         self.start_liveness_check();
+        self.send_start_negotiaion();
+
         for (socket_addr, node_id) in addresses_to_connect {
             log::debug!("connecting to {} with node id {:?}", socket_addr, &node_id);
             let (endpoint, _) = self
