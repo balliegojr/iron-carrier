@@ -128,20 +128,6 @@ impl FileTransferMan {
                     &to_peer_id,
                 );
                 Ok(false)
-                // // FIXME: improve this flow
-                // if peer_id.is_none() {
-                //     self.commands.to(
-                //         FileHandlerEvent::RequestFile(
-                //             file_info,
-                //             self.config.node_id.clone(),
-                //             is_new_file,
-                //         ),
-                //         &to_peer_id,
-                //     );
-                //     Ok(false)
-                // } else {
-                //     self.send_prepare_sync(file_info, &to_peer_id, is_new_file, true)
-                // }
             }
             FileHandlerEvent::PrepareSync(file_info, file_hash, block_index, consume_queue) => self
                 .handle_prepare_sync(
@@ -208,6 +194,15 @@ impl FileTransferMan {
         is_request: bool,
     ) -> crate::Result<bool> {
         log::info!("Sending file {:?} to peer", file_info.path);
+        let empty_file = file_info.size.unwrap() == 0;
+        if empty_file {
+            self.commands.to(
+                FileHandlerEvent::PrepareSync(file_info, 0, Vec::new(), is_request),
+                peer_id,
+            );
+
+            return Ok(is_request);
+        }
 
         let file_hash = hash_helper::calculate_file_hash(&file_info);
         let event = match self.sync_out.get_mut(&file_hash) {
@@ -259,30 +254,35 @@ impl FileTransferMan {
     ) -> crate::Result<bool> {
         log::info!("Broadcast prepare sync file {:?}", file_info.path);
 
-        let file_hash = hash_helper::calculate_file_hash(&file_info);
-        let file_path = file_info.get_absolute_path(&self.config)?;
-        let mut file_handler = std::fs::File::open(file_path)?;
-        let file_size = file_info.size.unwrap();
-        let block_size = get_block_size(file_size);
-        let block_index =
-            self.get_file_block_index(&mut file_handler, block_size, file_size, !is_new_file);
+        if file_info.size.unwrap() != 0 {
+            let file_hash = hash_helper::calculate_file_hash(&file_info);
+            let file_path = file_info.get_absolute_path(&self.config)?;
+            let mut file_handler = std::fs::File::open(file_path)?;
+            let file_size = file_info.size.unwrap();
+            let block_size = get_block_size(file_size);
+            let block_index =
+                self.get_file_block_index(&mut file_handler, block_size, file_size, !is_new_file);
 
-        let mut file_sync = FileSync {
-            file_info: file_info.clone(),
-            file_handler,
-            block_index: block_index.clone(),
-            block_size,
-            peers_count: None,
-            consume_queue: true,
-        };
+            let mut file_sync = FileSync {
+                file_info: file_info.clone(),
+                file_handler,
+                block_index: block_index.clone(),
+                block_size,
+                peers_count: None,
+                consume_queue: true,
+            };
 
-        let event = FileHandlerEvent::PrepareSync(file_info, file_hash, block_index, false);
+            let event = FileHandlerEvent::PrepareSync(file_info, file_hash, block_index, false);
 
-        let peers = self.commands.broadcast(event);
-        file_sync.peers_count = Some(peers as u32);
-        self.sync_out.insert(file_hash, file_sync);
-
-        Ok(false)
+            let peers = self.commands.broadcast(event);
+            file_sync.peers_count = Some(peers as u32);
+            self.sync_out.insert(file_hash, file_sync);
+            Ok(false)
+        } else {
+            let event = FileHandlerEvent::PrepareSync(file_info, 0, Vec::new(), false);
+            self.commands.broadcast(event);
+            Ok(true)
+        }
     }
 
     fn get_file_block_index(
@@ -348,6 +348,17 @@ impl FileTransferMan {
             .create(true)
             .read(true)
             .open(file_path)?;
+
+        if file_info.size.unwrap() == 0 {
+            file_handler.flush()?;
+            fs::fix_times_and_permissions(&file_info, &self.config)?;
+            self.log_writer.append(
+                file_info.storage.clone(),
+                EventType::Write(file_info.path),
+                EventStatus::Finished,
+            )?;
+            return Ok(consume_queue);
+        }
 
         let local_file_size = file_handler.metadata()?.size();
 
