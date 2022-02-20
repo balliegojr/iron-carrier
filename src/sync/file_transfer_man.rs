@@ -351,12 +351,20 @@ impl FileTransferMan {
 
         if file_info.size.unwrap() == 0 {
             file_handler.flush()?;
+
+            self.storage_state.invalidate_state(&file_info.storage);
+            self.commands.now(WatcherEvent::Supress(
+                file_info.clone(),
+                SupressionType::Write,
+            ));
+
             fs::fix_times_and_permissions(&file_info, &self.config)?;
             self.log_writer.append(
                 file_info.storage.clone(),
                 EventType::Write(file_info.path),
                 EventStatus::Finished,
             )?;
+
             return Ok(consume_queue);
         }
 
