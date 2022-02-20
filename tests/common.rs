@@ -9,11 +9,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rand::distributions::Alphanumeric;
+use rand::distributions::{Alphanumeric, Standard};
 use rand::Rng;
 
-const FOLDERS: usize = 3;
-const FILES_PER_FOLDER: usize = 5;
+const FOLDERS: usize = 1;
+const FILES_PER_FOLDER: usize = 2;
 
 pub fn enable_logs(verbosity: usize) {
     stderrlog::new()
@@ -183,15 +183,17 @@ pub fn unchecked_generate_files<P: AsRef<Path>>(path: P, prefix: &str) -> Vec<Pa
     gen_ignore_file_at(path.as_ref());
     let _ = std::fs::create_dir_all(path.as_ref().join("ignored_folder"));
 
+    // files.push(gen_file_at(path.as_ref(), "zero", prefix, &mut rng, 0));
     for _ in 0..FILES_PER_FOLDER {
-        files.push(gen_file_at(path.as_ref(), "rng", prefix, &mut rng));
-        files.push(gen_file_at(path.as_ref(), "ig", prefix, &mut rng));
+        files.push(gen_file_at(path.as_ref(), "rng", prefix, &mut rng, 512));
+        files.push(gen_file_at(path.as_ref(), "ig", prefix, &mut rng, 256));
 
         files.push(gen_file_at(
             path.as_ref().join("ignored_folder"),
             "rng",
             prefix,
             &mut rng,
+            128,
         ));
     }
 
@@ -200,18 +202,29 @@ pub fn unchecked_generate_files<P: AsRef<Path>>(path: P, prefix: &str) -> Vec<Pa
         let _ = std::fs::create_dir_all(&folder);
 
         for _ in 0..FILES_PER_FOLDER {
-            files.push(gen_file_at(&folder, "rng", prefix, &mut rng));
-            files.push(gen_file_at(&folder, "ig", prefix, &mut rng));
+            files.push(gen_file_at(&folder, "rng", prefix, &mut rng, 1024));
+            files.push(gen_file_at(&folder, "ig", prefix, &mut rng, 512));
         }
     }
 
     files
 }
 
-fn gen_file_at<P: AsRef<Path>, R: Rng>(path: P, ext: &str, prefix: &str, rng: &mut R) -> PathBuf {
+fn gen_file_at<P: AsRef<Path>, R: Rng>(
+    path: P,
+    ext: &str,
+    prefix: &str,
+    rng: &mut R,
+    file_length: usize,
+) -> PathBuf {
     let file_name = format!("{prefix}_{}.{ext}", get_name(rng, 5));
     let file_path = path.as_ref().join(file_name);
-    gen_file_with_rnd_content(rng, &file_path);
+    match file_length {
+        0 => {
+            let _ = std::fs::File::create(&file_path);
+        }
+        _ => gen_file_with_rnd_content(rng, &file_path, file_length),
+    }
     file_path
 }
 
@@ -225,9 +238,12 @@ ignored_folder/**
     );
 }
 
-fn gen_file_with_rnd_content<P: AsRef<Path>, R: Rng>(rng: &mut R, file_path: P) {
-    let mut file_content = [0u8; 1024];
-    rng.fill(&mut file_content);
+fn gen_file_with_rnd_content<P: AsRef<Path>, R: Rng>(
+    rng: &mut R,
+    file_path: P,
+    file_length: usize,
+) {
+    let file_content: Vec<u8> = rng.sample_iter(Standard).take(file_length).collect();
 
     let _ = std::fs::write(&file_path, &file_content);
     std::thread::sleep(Duration::from_millis(100))

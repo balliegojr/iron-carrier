@@ -6,7 +6,7 @@ use crate::constants::{PEER_IDENTIFICATION_TIMEOUT, PEER_STALE_CONNECTION};
 
 use super::{Commands, RawMessageType};
 
-#[derive(Debug)]
+#[derive(Debug, Eq)]
 pub struct PeerConnection {
     endpoint: Endpoint,
     last_access: Instant,
@@ -60,5 +60,31 @@ impl From<Endpoint> for PeerConnection {
             endpoint,
             last_access: Instant::now(),
         }
+    }
+}
+
+impl Ord for PeerConnection {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.endpoint
+            .resource_id()
+            .raw()
+            .cmp(&other.endpoint.resource_id().raw())
+        // self.last_access.cmp(&other.last_access)
+    }
+}
+
+impl PartialEq for PeerConnection {
+    fn eq(&self, other: &Self) -> bool {
+        self.endpoint == other.endpoint
+    }
+}
+
+impl PartialOrd for PeerConnection {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.endpoint
+            .resource_id()
+            .raw()
+            .partial_cmp(&other.endpoint.resource_id().raw())
+        // self.last_access.partial_cmp(&other.last_access)
     }
 }

@@ -10,13 +10,13 @@ use super::{Commands, HandlerEvent, PeerConnection, RawMessageType};
 #[derive(Clone)]
 pub struct CommandDispatcher {
     handler: NodeHandler<HandlerEvent>,
-    connections: Arc<RwLock<HashMap<String, PeerConnection>>>,
+    connections: Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>,
     event_queue: Arc<Mutex<LinkedList<Commands>>>,
 }
 impl CommandDispatcher {
     pub fn new(
         handler: NodeHandler<HandlerEvent>,
-        connections: Arc<RwLock<HashMap<String, PeerConnection>>>,
+        connections: Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>,
         event_queue: Arc<Mutex<LinkedList<Commands>>>,
     ) -> Self {
         Self {
@@ -49,13 +49,19 @@ impl CommandDispatcher {
     pub fn to<T: Into<Commands>>(&self, event: T, peer_id: &str) {
         let event: Commands = event.into();
         let mut connections = self.connections.write().expect("Poisoned lock");
-        if let Some(connection) = connections.get_mut(peer_id) {
-            match event {
-                Commands::Stream(data) => {
-                    connection.send_raw(self.handler.network(), RawMessageType::Stream, &data)
-                }
-                event => connection.send_command(self.handler.network(), &event),
+        let connection = match connections.get_mut(peer_id) {
+            Some(it) if !it.is_empty() => it.first().unwrap(),
+            _ => {
+                log::error!("Connection to {peer_id} not found");
+                return;
             }
+        };
+
+        match event {
+            Commands::Stream(data) => {
+                connection.send_raw(self.handler.network(), RawMessageType::Stream, &data)
+            }
+            event => connection.send_command(self.handler.network(), &event),
         }
     }
     pub fn broadcast<T: Into<Commands>>(&self, event: T) -> usize {
@@ -75,7 +81,7 @@ impl CommandDispatcher {
         };
 
         let mut connections = self.connections.write().expect("Poisoned lock");
-        for connection in connections.values_mut() {
+        for connection in connections.values_mut().filter_map(|c| c.first()) {
             connection.send_data(controller, &data);
         }
         connections.len()

@@ -111,7 +111,7 @@ impl Negotiator {
     }
 
     fn round_results(&mut self) {
-        if self.accepted >= self.peers / 2 {
+        if self.accepted == self.peers {
             if !matches!(self.state, State::Active) {
                 self.state = State::Active;
                 self.commands.now(SyncEvent::StartSync);

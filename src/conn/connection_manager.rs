@@ -13,7 +13,10 @@ use std::{
 
 use crate::{
     config::Config,
-    constants::{CLEAR_TIMEOUT, PING_CONNECTIONS},
+    constants::{
+        CLEAR_TIMEOUT, PING_CONNECTIONS, START_CONNECTIONS_RETRIES, START_CONNECTIONS_RETRY_WAIT,
+        START_NEGOTIATION_MAX, START_NEGOTIATION_MIN,
+    },
     debouncer::{debounce_action, Debouncer},
     negotiator::Negotiation,
     IronCarrierError,
@@ -39,12 +42,13 @@ impl From<ConnectionFlow> for HandlerEvent {
 pub struct ConnectionManager {
     config: Arc<Config>,
 
-    connections: Arc<RwLock<HashMap<String, PeerConnection>>>,
+    connections: Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>,
     id_lookup: Arc<RwLock<HashMap<Endpoint, String>>>,
     waiting_identification: HashMap<Endpoint, PeerConnection>,
 
     event_queue: Arc<Mutex<LinkedList<Commands>>>,
     liveness_check_is_running: bool,
+    can_start_negotiations: bool,
 
     handler: NodeHandler<HandlerEvent>,
     dispatcher: CommandDispatcher,
@@ -70,8 +74,9 @@ impl ConnectionManager {
             connections,
             id_lookup: Arc::new(HashMap::new().into()),
             event_queue,
-            liveness_check_is_running: false,
             dispatcher,
+            liveness_check_is_running: false,
+            can_start_negotiations: true,
         }
     }
 
@@ -101,7 +106,11 @@ impl ConnectionManager {
             }
         }
 
-        log::info!("{} peers are available to connect", addresses.len());
+        log::info!(
+            "{} - {} peers are available to connect",
+            self.config.node_id,
+            addresses.len()
+        );
 
         addresses.into_iter().collect()
     }
@@ -201,7 +210,11 @@ impl ConnectionManager {
                 return self.handle_network_message(endpoint, data)
             }
             NetEvent::Disconnected(endpoint) => {
-                log::info!("Connection lost: {}", endpoint.addr());
+                log::info!(
+                    "{} - Connection lost: {}",
+                    self.config.node_id,
+                    endpoint.addr()
+                );
                 self.remove_endpoint(&endpoint);
             }
         }
@@ -239,9 +252,15 @@ impl ConnectionManager {
         );
     }
 
-    fn send_start_negotiaion(&self) {
+    fn start_negotiations(&mut self) {
+        if !self.can_start_negotiations || !self.waiting_identification.is_empty() {
+            return;
+        }
+
+        self.can_start_negotiations = false;
+
         let mut rng = rand::thread_rng();
-        let timeout = rng.gen_range(1.0..1.5);
+        let timeout = rng.gen_range(START_NEGOTIATION_MIN..START_NEGOTIATION_MAX);
 
         self.handler
             .signals()
@@ -250,31 +269,24 @@ impl ConnectionManager {
 
     fn handle_connected(&mut self, endpoint: Endpoint, success: bool) {
         if !success {
-            log::info!("Failed to connect to {}", endpoint.addr());
+            log::info!(
+                "{} - Failed to connect to {}",
+                self.config.node_id,
+                endpoint.addr()
+            );
             self.remove_endpoint(&endpoint);
         } else {
-            let id_lookup = self.id_lookup.read().expect("Poisoned lock");
-            let mut connections = self.connections.write().expect("Poisoned lock");
-
-            let connection = match id_lookup.get(&endpoint) {
-                Some(peer_id) => {
-                    log::info!("Connected to peer {} with id {}", endpoint.addr(), peer_id);
-                    connections.get_mut(peer_id)
-                }
-                None => {
-                    log::info!("Connected to peer {} without id", endpoint.addr());
-                    self.waiting_identification.get_mut(&endpoint)
-                }
-            };
-
-            match connection {
+            match self.waiting_identification.get_mut(&endpoint) {
                 Some(connection) => connection.send_raw(
                     self.handler.network(),
                     RawMessageType::SetId,
                     self.config.node_id.as_bytes(),
                 ),
                 None => {
-                    log::error!("Can't find connection to endpoint")
+                    log::error!(
+                        "{} - Can't find connection to endpoint",
+                        self.config.node_id
+                    )
                 }
             }
         }
@@ -282,7 +294,11 @@ impl ConnectionManager {
 
     fn handle_accepted(&mut self, endpoint: Endpoint) {
         // Whenever we connect to a peer or accept a new connection, we send the node_id of this peer
-        log::info!("Accepted connection from {}", endpoint.addr());
+        log::info!(
+            "{} - Accepted connection from {}",
+            self.config.node_id,
+            endpoint.addr()
+        );
         let connection: PeerConnection = endpoint.into();
         connection.send_raw(
             self.handler.network(),
@@ -349,29 +365,29 @@ impl ConnectionManager {
         let node_id = String::from_utf8_lossy(data).to_string();
 
         {
-            let mut id_lookup = self.id_lookup.write().expect("Poisoned lock");
             let mut connections = self.connections.write().expect("Poisoned lock");
 
-            if connections.contains_key(&node_id) && self.config.node_id.lt(&node_id) {
-                log::debug!(
-                    "Received duplicated node_id {}, removing endpoint {}",
-                    node_id,
-                    endpoint
-                );
-                // self.waiting_identification.remove(&endpoint);
-            } else if let std::collections::hash_map::Entry::Vacant(entry) =
-                id_lookup.entry(endpoint)
-            {
-                entry.insert(node_id.to_string());
-                match self.waiting_identification.remove(&endpoint) {
-                    Some(mut connection) => {
-                        connection.touch();
-                        connections.insert(node_id, connection)
-                    }
-                    None => connections.insert(node_id, endpoint.into()),
-                };
+            match self.waiting_identification.remove(&endpoint) {
+                Some(mut connection) => {
+                    let mut id_lookup = self.id_lookup.write().expect("Poisoned lock");
+                    id_lookup.insert(endpoint, node_id.to_string());
+
+                    connection.touch();
+                    let peer_connections = connections.entry(node_id).or_default();
+                    peer_connections.push(connection);
+                    peer_connections.sort();
+                }
+                None => {
+                    log::error!(
+                        "{} - No connection waiting to be identified",
+                        self.config.node_id
+                    );
+                    self.handler.network().remove(endpoint.resource_id());
+                }
             }
         }
+
+        self.start_negotiations();
     }
 
     fn handle_connection_flow(&mut self, event: ConnectionFlow) -> crate::Result<()> {
@@ -390,11 +406,11 @@ impl ConnectionManager {
     fn handle_start_connections(&mut self, attempt: u8) -> crate::Result<()> {
         let addresses_to_connect = self.get_addresses_to_connect();
         if addresses_to_connect.is_empty() {
-            if attempt < 3 {
+            if attempt < START_CONNECTIONS_RETRIES {
                 let attempt = attempt + 1;
                 self.handler.signals().send_with_timer(
                     ConnectionFlow::StartConnections(attempt).into(),
-                    Duration::from_secs((attempt * 10) as u64),
+                    Duration::from_secs((attempt * START_CONNECTIONS_RETRY_WAIT) as u64),
                 );
             } else {
                 self.event_queue.lock().expect("Poisoned lock").clear();
@@ -403,10 +419,13 @@ impl ConnectionManager {
         }
 
         self.start_liveness_check();
-        self.send_start_negotiaion();
 
         for (socket_addr, node_id) in addresses_to_connect {
-            log::debug!("connecting to {} with node id {:?}", socket_addr, &node_id);
+            log::debug!(
+                "{} - Connecting to {socket_addr} with node id {:?}",
+                self.config.node_id,
+                &node_id
+            );
             let (endpoint, _) = self
                 .handler
                 .network()
@@ -427,7 +446,7 @@ impl ConnectionManager {
             return;
         }
 
-        log::trace!("Started liveness check");
+        log::trace!("{} - Started liveness check", self.config.node_id);
         self.liveness_check_is_running = true;
         self.handler.signals().send_with_timer(
             ConnectionFlow::CheckConnectionLiveness.into(),
@@ -444,7 +463,11 @@ impl ConnectionManager {
             .collect();
 
         for connection in unidentified {
-            log::debug!("connection to {} is stale", connection.addr());
+            log::debug!(
+                "{} - Connection to {} is stale",
+                self.config.node_id,
+                connection.addr()
+            );
             self.handler.network().remove(connection.resource_id());
             self.waiting_identification.remove(&connection);
         }
@@ -454,12 +477,16 @@ impl ConnectionManager {
             .read()
             .expect("Poisoned lock")
             .values()
-            .filter(|v| v.is_stale(true))
+            .filter_map(|connections| connections.iter().find(|c| c.is_stale(true)))
             .map(|v| v.endpoint())
             .collect();
 
         for endpoint in endpoints {
-            log::debug!("connection to {} is stale", endpoint.addr());
+            log::debug!(
+                "{} connection to {} is stale",
+                self.config.node_id,
+                endpoint.addr()
+            );
             self.remove_endpoint(&endpoint)
         }
 
@@ -473,11 +500,18 @@ impl ConnectionManager {
                 ConnectionFlow::CheckConnectionLiveness.into(),
                 Duration::from_secs(1),
             );
+            self.start_negotiations();
         }
     }
 
     fn handle_ping_connections(&self) {
-        for connection in self.connections.read().expect("Poisoned lock").values() {
+        for connection in self
+            .connections
+            .read()
+            .expect("Poisoned lock")
+            .values()
+            .filter_map(|c| c.first())
+        {
             connection.send_raw(self.handler.network(), RawMessageType::Ping, &[]);
         }
 
@@ -488,32 +522,60 @@ impl ConnectionManager {
     }
 
     fn update_last_access(&mut self, endpoint: &Endpoint) {
-        if let Some(peer_id) = self.id_lookup.read().expect("Poisoned lock").get(endpoint) {
-            if let Some(connection) = self
-                .connections
-                .write()
-                .expect("Poisoned lock")
-                .get_mut(peer_id)
-            {
-                connection.touch()
-            }
+        let id_lookup = self.id_lookup.read().expect("Poisoned Lock");
+        let peer_id = match id_lookup.get(endpoint) {
+            Some(peer_id) => peer_id,
+            None => return,
+        };
+
+        let mut connections = self.connections.write().expect("Poisoned lock");
+        let peer_connections = match connections.get_mut(peer_id) {
+            Some(connections) => connections,
+            None => return,
+        };
+
+        if let Some(connection) = peer_connections
+            .iter_mut()
+            .find(|c| c.endpoint() == *endpoint)
+        {
+            connection.touch();
+            peer_connections.sort();
         }
     }
 
     fn remove_endpoint(&mut self, endpoint: &Endpoint) {
+        self.handler.network().remove(endpoint.resource_id());
+
         let mut id_lookup = self.id_lookup.write().expect("Poisoned lock");
         let mut connections = self.connections.write().expect("Poisoned lock");
 
         match id_lookup.remove(endpoint) {
-            Some(node_id) => {
-                if !id_lookup.values().any(|x| x == &node_id) {
-                    log::debug!("Removed {} from connections", node_id);
-                    connections.remove(&node_id);
+            Some(node_id) => match connections.entry(node_id.to_string()) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let peer_connections = e.get_mut();
+                    peer_connections.retain(|c| c.endpoint() != *endpoint);
+
+                    log::debug!(
+                        "{} - Removed a connection to {node_id}",
+                        self.config.node_id
+                    );
+
+                    if peer_connections.is_empty() {
+                        e.remove_entry();
+                        log::debug!(
+                            "{} - Removed {node_id} from connections",
+                            self.config.node_id
+                        );
+                    } else {
+                        peer_connections.sort();
+                    }
                 }
-            }
+                std::collections::hash_map::Entry::Vacant(_) => {}
+            },
             None => {
                 log::debug!(
-                    "Removed unidentified peer from connections, {}",
+                    "{} - Removed unidentified peer from connections, {}",
+                    self.config.node_id,
                     endpoint.addr()
                 );
                 self.waiting_identification.remove(endpoint);

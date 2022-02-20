@@ -1,10 +1,10 @@
 use clap::{App, Arg};
-use iron_carrier::config::Config;
+use iron_carrier::{config::Config, constants::VERSION};
 use std::{path::PathBuf, process::exit};
 
 fn main() {
     let matches = App::new("Iron Carrier")
-        .version("0.1")
+        .version(VERSION)
         .author("Ilson Roberto Balliego Junior <ilson.balliego@gmail.com>")
         .about("Synchronize your files")
         .arg(

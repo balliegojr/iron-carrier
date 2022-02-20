@@ -22,7 +22,7 @@ mod conn;
 mod fs;
 mod transaction_log;
 // mod network;
-mod constants;
+pub mod constants;
 mod debouncer;
 mod hash_helper;
 mod negotiator;
