@@ -413,6 +413,7 @@ impl ConnectionManager {
                     Duration::from_secs((attempt * START_CONNECTIONS_RETRY_WAIT) as u64),
                 );
             } else {
+                self.can_start_negotiations = false;
                 self.event_queue.lock().expect("Poisoned lock").clear();
             }
             return Ok(());
