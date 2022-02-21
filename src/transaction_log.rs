@@ -348,6 +348,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(windows))]
     #[test]
     pub fn test_can_parse_events() {
         let log = TransactionLogReader::new({
@@ -403,6 +404,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     pub fn test_get_failed_writes() {
         let log = TransactionLogReader::new({
