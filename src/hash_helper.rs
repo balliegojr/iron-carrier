@@ -1,5 +1,3 @@
-use std::os::unix::prelude::OsStrExt;
-
 use crc::{Crc, Digest, CRC_64_GO_ISO};
 use rand::Rng;
 
@@ -18,7 +16,9 @@ pub fn calculate_file_hash(file: &FileInfo) -> u64 {
 }
 pub fn calculate_file_hash_dig(file: &FileInfo, digest: &mut Digest<u64>) {
     digest.update(file.storage.as_bytes());
-    digest.update(file.path.as_os_str().as_bytes());
+    if let Some(path) = file.path.to_str() {
+        digest.update(path.as_bytes());
+    }
     if file.is_deleted() {
         digest.update(&file.deleted_at.unwrap().to_le_bytes());
     } else {

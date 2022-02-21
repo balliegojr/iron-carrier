@@ -2,8 +2,7 @@ use std::{
     cmp,
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::{Read, Write},
-    os::unix::prelude::{FileExt, MetadataExt},
+    io::{Read, Seek, SeekFrom, Write},
     sync::Arc,
 };
 
@@ -368,7 +367,7 @@ impl FileTransferMan {
             return Ok(consume_queue);
         }
 
-        let local_file_size = file_handler.metadata()?.size();
+        let local_file_size = file_handler.metadata()?.len();
 
         let block_size = get_block_size(file_info.size.unwrap());
         let local_block_index =
@@ -424,9 +423,13 @@ impl FileTransferMan {
             let bytes_to_read = cmp::min(file_sync.block_size, file_size - position) as usize;
             let mut buf = vec![0u8; bytes_to_read];
 
-            file_sync
-                .file_handler
-                .read_exact_at(&mut buf[..bytes_to_read], position as u64)?;
+            if file_sync.file_handler.seek(SeekFrom::Start(position))? == position as u64 {
+                file_sync
+                    .file_handler
+                    .read_exact(&mut buf[..bytes_to_read])?;
+            } else {
+                return Err(IronCarrierError::IOReadingError.into());
+            }
 
             let mut data = Vec::with_capacity(bytes_to_read + 16);
             data.extend(file_hash.to_be_bytes());
@@ -466,7 +469,9 @@ impl FileTransferMan {
             None => return Err(IronCarrierError::FileNotFound.into()),
         };
         let (position, _) = file_sync.block_index[block_index];
-        file_sync.file_handler.write_all_at(buf, position as u64)?;
+        if file_sync.file_handler.seek(SeekFrom::Start(position))? == position {
+            file_sync.file_handler.write_all(buf)?;
+        }
 
         Ok(false)
     }
