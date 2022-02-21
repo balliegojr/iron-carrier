@@ -60,7 +60,6 @@ mod tests {
         assert_eq!(1, *count.lock().unwrap());
 
         for _ in 0..100 {
-            thread::sleep(Duration::from_millis(50));
             debouncer.invoke();
         }
 
