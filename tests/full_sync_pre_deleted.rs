@@ -25,6 +25,7 @@ fn test_sync_deleted_files() {
         let config = format!(
             r#"
 node_id="{peer_name}"
+group="pre_deleted"
 port={port}
 log_path = {:?} 
 delay_watcher_events=1

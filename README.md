@@ -43,6 +43,10 @@ with the **--config** flag.
 The minimum configuration file consists of a map of folders to be in sync in those computers.  
 Each folder is aliased in the configuration file, so the folder structure can be different in different computers
 
+## Group of nodes
+It is possible to provide a `group` in the config file. Each node will only communicate with
+another node in the same group. 
+
 ## Ignoring files
 Each root folder can have a **.ignore** file with glob patterns to ignore files, the file must be
 always located at the root.  
@@ -54,6 +58,9 @@ you want to synchronize
 ```toml
 # 10 character long unique id for this node
 node_id = "my_node_id"
+
+# 20 character long group name
+group = "sync_group"
 
 # listening port, defaults to 25230
 port = 25230  

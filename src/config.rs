@@ -34,6 +34,10 @@ fn empty_string() -> String {
 pub struct Config {
     #[serde(default = "empty_string")]
     pub node_id: String,
+
+    /// Option group of nodes to sync
+    pub group: Option<String>,
+
     /// Contains the folder that will be watched for synchronization  
     /// **Key** is the path alias  
     /// **Value** is the path itself  
@@ -127,6 +131,18 @@ impl Config {
 
         if self.log_path.exists() && self.log_path.is_dir() {
             self.log_path.push("iron-carrier.log");
+        }
+
+        if let Some(group) = &self.group {
+            if group.len() > 20 {
+                return Err(
+                    IronCarrierError::ConfigFileIsInvalid("Group name is too long".into()).into(),
+                );
+            }
+
+            if group.is_empty() {
+                self.group = None;
+            }
         }
 
         Ok(self)

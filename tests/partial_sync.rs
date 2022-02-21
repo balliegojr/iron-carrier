@@ -15,6 +15,7 @@ fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
         let config = format!(
             r#"
 node_id="{peer_name}"
+group="partial_sync"
 port={port}
 log_path = "/tmp/partial_sync/peer_{peer_name}/peer_log.log"
 delay_watcher_events=1

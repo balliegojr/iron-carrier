@@ -15,7 +15,7 @@ use crate::{
     config::Config,
     constants::{
         CLEAR_TIMEOUT, PING_CONNECTIONS, START_CONNECTIONS_RETRIES, START_CONNECTIONS_RETRY_WAIT,
-        START_NEGOTIATION_MAX, START_NEGOTIATION_MIN,
+        START_NEGOTIATION_MAX, START_NEGOTIATION_MIN, VERSION,
     },
     debouncer::{debounce_action, Debouncer},
     negotiator::Negotiation,
@@ -88,7 +88,31 @@ impl ConnectionManager {
         let mut addresses = HashMap::new();
 
         if let Some(service_discovery) = &self.service_discovery {
-            for instance_info in service_discovery.get_known_services() {
+            let services: Vec<simple_mdns::InstanceInformation> = match &self.config.group {
+                Some(group) => service_discovery
+                    .get_known_services()
+                    .into_iter()
+                    .filter(|service| {
+                        service
+                            .attributes
+                            .get("g")
+                            .iter()
+                            .map(|g| match g {
+                                Some(g) => g == group,
+                                None => false,
+                            })
+                            .next()
+                            .unwrap_or_default()
+                    })
+                    .collect(),
+                None => service_discovery
+                    .get_known_services()
+                    .into_iter()
+                    .filter(|service| !service.attributes.contains_key("g"))
+                    .collect(),
+            };
+
+            for instance_info in services {
                 let id = &instance_info.attributes["id"];
                 for addr in instance_info.get_socket_addresses() {
                     addresses.insert(addr, id.clone());
@@ -269,19 +293,19 @@ impl ConnectionManager {
 
     fn handle_connected(&mut self, endpoint: Endpoint, success: bool) {
         if !success {
-            log::info!(
+            log::error!(
                 "{} - Failed to connect to {}",
                 self.config.node_id,
                 endpoint.addr()
             );
             self.remove_endpoint(&endpoint);
         } else {
-            match self.waiting_identification.get_mut(&endpoint) {
-                Some(connection) => connection.send_raw(
-                    self.handler.network(),
-                    RawMessageType::SetId,
-                    self.config.node_id.as_bytes(),
-                ),
+            match self.waiting_identification.get(&endpoint) {
+                Some(connection) => {
+                    if self.send_id(connection).is_err() {
+                        log::error!("Failed to send id to peer {endpoint}");
+                    }
+                }
                 None => {
                     log::error!(
                         "{} - Can't find connection to endpoint",
@@ -300,14 +324,20 @@ impl ConnectionManager {
             endpoint.addr()
         );
         let connection: PeerConnection = endpoint.into();
-        connection.send_raw(
-            self.handler.network(),
-            RawMessageType::SetId,
-            self.config.node_id.as_bytes(),
-        );
-
+        if self.send_id(&connection).is_err() {
+            log::error!("Failed to send id to peer {endpoint}");
+        }
         self.start_liveness_check();
         self.waiting_identification.insert(endpoint, connection);
+    }
+
+    fn send_id(&self, connection: &PeerConnection) -> crate::Result<()> {
+        let message =
+            &bincode::serialize(&(self.config.node_id.to_string(), self.config.group.clone()))?;
+
+        connection.send_raw(self.handler.network(), RawMessageType::SetId, &message[..]);
+
+        Ok(())
     }
 
     fn handle_network_message(
@@ -327,7 +357,7 @@ impl ConnectionManager {
 
         match message_type {
             RawMessageType::SetId => {
-                self.handle_set_id(&data[1..], endpoint);
+                self.handle_set_id(&data[1..], endpoint)?;
             }
             RawMessageType::Command => {
                 let message = bincode::deserialize(&data[1..])?;
@@ -361,14 +391,19 @@ impl ConnectionManager {
         Ok(None)
     }
 
-    fn handle_set_id(&mut self, data: &[u8], endpoint: Endpoint) {
-        let node_id = String::from_utf8_lossy(data).to_string();
+    fn handle_set_id(&mut self, data: &[u8], endpoint: Endpoint) -> crate::Result<()> {
+        let (node_id, group): (String, Option<String>) = bincode::deserialize(data)?;
 
         {
             let mut connections = self.connections.write().expect("Poisoned lock");
 
             match self.waiting_identification.remove(&endpoint) {
                 Some(mut connection) => {
+                    if group != self.config.group {
+                        self.handler.network().remove(endpoint.resource_id());
+                        return Ok(());
+                    }
+
                     let mut id_lookup = self.id_lookup.write().expect("Poisoned lock");
                     id_lookup.insert(endpoint, node_id.to_string());
 
@@ -388,6 +423,7 @@ impl ConnectionManager {
         }
 
         self.start_negotiations();
+        Ok(())
     }
 
     fn handle_connection_flow(&mut self, event: ConnectionFlow) -> crate::Result<()> {
@@ -597,10 +633,16 @@ fn get_service_discovery(config: &Config) -> Option<ServiceDiscovery> {
     service_info.ip_addresses = get_my_ips()?;
     service_info
         .attributes
-        .insert("v".into(), Some("0.1".into()));
+        .insert("v".into(), Some(VERSION.into()));
     service_info.attributes.insert("id".into(), Some(node_id));
 
-    sd.add_service_info(service_info);
+    if config.group.is_some() {
+        service_info
+            .attributes
+            .insert("g".into(), config.group.clone());
+    }
+
+    sd.add_service_info(service_info).ok()?;
 
     Some(sd)
 }

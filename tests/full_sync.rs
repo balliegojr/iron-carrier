@@ -24,14 +24,14 @@ fn test_full_sync() {
 
         let config = format!(
             r#"
-node_id="{}"
-port={}
-log_path = {:?}
+node_id="{peer_name}"
+group="full_sync"
+port={port}
+log_path = {log_path:?}
 [paths]
-store_one = {:?}
-store_two = {:?}
+store_one = {store_one_path:?}
+store_two = {store_two_path:?}
 "#,
-            peer_name, port, log_path, store_one_path, store_two_path
         );
         let config = iron_carrier::config::Config::new_from_str(config).unwrap();
         configs.push(config);
