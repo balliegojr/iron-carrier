@@ -57,15 +57,15 @@ pub struct ConnectionManager {
 }
 
 impl ConnectionManager {
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: Arc<Config>) -> crate::Result<Self> {
+        let service_discovery = get_service_discovery(&config)?;
         let (handler, listener) = node::split::<HandlerEvent>();
-        let service_discovery = get_service_discovery(&config);
         let connections = Arc::new(RwLock::new(HashMap::new()));
         let event_queue = Arc::new(Mutex::new(LinkedList::new()));
         let dispatcher =
             CommandDispatcher::new(handler.clone(), connections.clone(), event_queue.clone());
 
-        Self {
+        Ok(Self {
             handler,
             listener: Some(listener),
             config,
@@ -77,7 +77,7 @@ impl ConnectionManager {
             dispatcher,
             liveness_check_is_running: false,
             can_start_negotiations: true,
-        }
+        })
     }
 
     fn clear(&mut self) {
@@ -620,13 +620,13 @@ impl ConnectionManager {
         }
     }
 }
-fn get_service_discovery(config: &Config) -> Option<ServiceDiscovery> {
+fn get_service_discovery(config: &Config) -> crate::Result<Option<ServiceDiscovery>> {
     if !config.enable_service_discovery {
-        return None;
+        return Ok(None);
     }
 
     let node_id = config.node_id.clone();
-    let mut sd = ServiceDiscovery::new(&node_id, "_ironcarrier._tcp.local", 600).unwrap();
+    let mut sd = ServiceDiscovery::new(&node_id, "_ironcarrier._tcp.local", 600)?;
 
     let mut service_info = simple_mdns::InstanceInformation::default();
     service_info.ports.push(config.port);
@@ -642,13 +642,12 @@ fn get_service_discovery(config: &Config) -> Option<ServiceDiscovery> {
             .insert("g".into(), config.group.clone());
     }
 
-    sd.add_service_info(service_info).ok()?;
+    sd.add_service_info(service_info)?;
 
-    Some(sd)
+    Ok(Some(sd))
 }
-fn get_my_ips() -> Option<Vec<IpAddr>> {
-    let addrs = if_addrs::get_if_addrs()
-        .ok()?
+fn get_my_ips() -> crate::Result<Vec<IpAddr>> {
+    let addrs = if_addrs::get_if_addrs()?
         .iter()
         .filter_map(|iface| {
             if iface.addr.is_loopback() {
@@ -659,5 +658,5 @@ fn get_my_ips() -> Option<Vec<IpAddr>> {
         })
         .collect();
 
-    Some(addrs)
+    Ok(addrs)
 }

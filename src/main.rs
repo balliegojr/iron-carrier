@@ -25,7 +25,7 @@ fn main() {
     let verbosity = matches.occurrences_of("v") as usize;
 
     stderrlog::new()
-        .module(module_path!())
+        .modules([module_path!(), "simple_mdns"])
         .verbosity(verbosity)
         .timestamp(stderrlog::Timestamp::Second)
         .init()

@@ -4,7 +4,7 @@
 
 #![feature(hash_drain_filter)]
 
-use std::{fs::File, net::SocketAddr, sync::Arc};
+use std::{fs::File, net::SocketAddr, sync::Arc, time::Duration};
 
 use config::Config;
 use conn::{CommandDispatcher, Commands, ConnectionManager};
@@ -30,7 +30,7 @@ mod storage_state;
 mod sync;
 
 /// Result<T, IronCarrierError> alias
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + 'static + Send + Sync>>;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Error types
 #[derive(Debug, Error, Serialize, Deserialize)]
@@ -97,7 +97,7 @@ pub fn run(config: config::Config) -> crate::Result<()> {
     let storage_state = Arc::new(storage_state::StorageState::new(config.clone()));
 
     let mut log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
-    let connection_man = ConnectionManager::new(config.clone());
+    let connection_man = get_connection_manager_when_ready(config.clone());
     let file_watcher = get_file_watcher(
         config.clone(),
         connection_man.command_dispatcher(),
@@ -167,5 +167,18 @@ fn get_file_watcher(
         FileWatcher::new(dispatcher, config, log_writer, storage_state).ok()
     } else {
         None
+    }
+}
+
+fn get_connection_manager_when_ready(config: Arc<Config>) -> ConnectionManager {
+    loop {
+        let connection_manager = ConnectionManager::new(config.clone());
+        match connection_manager {
+            Ok(connection_manager) => return connection_manager,
+            Err(err) => {
+                log::error!("Error initializing connection {err}");
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
     }
 }
