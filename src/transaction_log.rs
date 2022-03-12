@@ -10,15 +10,10 @@ use std::{
 };
 use thiserror::Error;
 
-use crate::IronCarrierError;
+use crate::{constants::LINE_ENDING, IronCarrierError};
 
 const TRANSACTION_KEEP_LIMIT_SECS: u64 = 30 * 24 * 60 * 60;
 const LOG_MIN_COMPRESSING_SIZE: u64 = 1024u64.pow(3);
-
-#[cfg(not(windows))]
-const LINE_ENDING: &str = "\n";
-#[cfg(windows)]
-const LINE_ENDING: &str = "\r\n";
 
 pub(crate) fn get_log_reader(log_path: &Path) -> crate::Result<TransactionLogReader<File>> {
     log::info!("Reading log file: {:?}", log_path);
@@ -185,7 +180,10 @@ impl<T: Read> Iterator for TransactionLogIter<T> {
     fn next(&mut self) -> Option<Self::Item> {
         let mut line = String::new();
         match self.stream.read_line(&mut line) {
-            Ok(size) if size > 0 => Some(line.strip_suffix(LINE_ENDING)?.parse()),
+            Ok(size) if size > 0 => match line.strip_suffix(LINE_ENDING) {
+                Some(stripped) => Some(stripped.parse()),
+                None => Some(line.parse()),
+            },
             Ok(_) => None,
             Err(err) => Some(Err(TransactionLogError::IoError(err))),
         }
@@ -348,20 +346,22 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(windows))]
     #[test]
     pub fn test_can_parse_events() {
         let log = TransactionLogReader::new({
-            let bytes = br#"
-12,books,Delete:some/file/deleted,Finished
-14,books,Write:some/file/update,Started
-15,books,Write:some/file/update,Finished
-16,books,Move:some/file/source:some/file/destination,Finished
-"#
+            let bytes = [
+                "12,books,Delete:some/file/deleted,Finished",
+                "14,books,Write:some/file/update,Started",
+                "15,books,Write:some/file/update,Finished",
+                "16,books,Move:some/file/source:some/file/destination,Finished",
+            ]
+            .join(LINE_ENDING)
+            .as_bytes()
             .to_vec();
+
             Cursor::new(bytes)
         });
-        let mut events = log.get_log_events().filter_map(|ev| ev.ok());
+        let mut events = log.get_log_events().filter_map(|ev| dbg!(ev).ok());
 
         assert_eq!(
             LogEvent {
@@ -404,23 +404,24 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     pub fn test_get_failed_writes() {
         let log = TransactionLogReader::new({
-            let bytes = br#"
-12,books,Delete:some/file/deleted,Finished
-14,books,Write:some/file/update,Started
-15,books,Write:some/file/update,Finished
-16,books,Move:some/file/source:some/file/destination,Finished
-17,books,Write:file_one,Started
-18,books,Write:file_two,Started
-18,books,Write:file_two,Finished
-18,books,Write:file_one,Finished
-19,books,Write:file_two,Started
-20,books,Write:file_one,Started
-21,books,Write:file_three,Started
-"#
+            let bytes = [
+                "12,books,Delete:some/file/deleted,Finished",
+                "14,books,Write:some/file/update,Started",
+                "15,books,Write:some/file/update,Finished",
+                "16,books,Move:some/file/source:some/file/destination,Finished",
+                "17,books,Write:file_one,Started",
+                "18,books,Write:file_two,Started",
+                "18,books,Write:file_two,Finished",
+                "18,books,Write:file_one,Finished",
+                "19,books,Write:file_two,Started",
+                "20,books,Write:file_one,Started",
+                "21,books,Write:file_three,Started",
+            ]
+            .join(LINE_ENDING)
+            .as_bytes()
             .to_vec();
             Cursor::new(bytes)
         });

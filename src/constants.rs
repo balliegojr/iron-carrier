@@ -13,3 +13,8 @@ pub const START_NEGOTIATION_MIN: f64 = 0.250;
 pub const START_NEGOTIATION_MAX: f64 = 0.5;
 
 pub const DNS_RESOURCE_CACHE: u32 = 3600;
+
+#[cfg(not(windows))]
+pub const LINE_ENDING: &str = "\n";
+#[cfg(windows)]
+pub const LINE_ENDING: &str = "\r\n";

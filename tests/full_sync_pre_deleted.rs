@@ -5,6 +5,8 @@ use std::str::FromStr;
 use std::thread;
 use std::{fs, time::SystemTime};
 
+use iron_carrier::constants::LINE_ENDING;
+
 mod common;
 
 #[test]
@@ -62,9 +64,10 @@ store_one = {:?}
 
     for file in files.iter().filter(|f| !common::is_ignored(f)) {
         let log_line = format!(
-            "{},store_one,Delete:{},Finished\n",
+            "{},store_one,Delete:{},Finished{}",
             SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 5,
-            file.strip_prefix(&store_path).unwrap().to_str().unwrap()
+            file.strip_prefix(&store_path).unwrap().to_str().unwrap(),
+            LINE_ENDING
         );
         log.write_all(log_line.as_bytes()).unwrap();
     }
