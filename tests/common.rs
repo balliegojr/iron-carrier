@@ -24,6 +24,18 @@ pub fn enable_logs(verbosity: usize) {
         .unwrap();
 }
 
+pub fn truncate_file<P: AsRef<Path>>(path: P) -> Result<(), std::io::Error> {
+    let mut f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+
+    let cur_size = f.metadata()?.len();
+    if cur_size > 0 {
+        f.set_len(cur_size / 2)?;
+        f.flush()?;
+    }
+
+    Ok(())
+}
+
 /// Append `content` to file in `path` if it exists
 pub fn append_content<P: AsRef<Path>>(path: P, content: &[u8]) {
     let mut f = std::fs::OpenOptions::new()

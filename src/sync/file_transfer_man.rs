@@ -367,9 +367,16 @@ impl FileTransferMan {
             return Ok(consume_queue);
         }
 
-        let local_file_size = file_handler.metadata()?.len();
+        let remote_file_size = file_info.size.unwrap();
+        let mut local_file_size = file_handler.metadata()?.len();
+        let file_size_changed = local_file_size != remote_file_size;
 
-        let block_size = get_block_size(file_info.size.unwrap());
+        if file_size_changed {
+            file_handler.set_len(remote_file_size)?;
+            local_file_size = remote_file_size;
+        }
+
+        let block_size = get_block_size(remote_file_size);
         let local_block_index =
             self.get_file_block_index(&mut file_handler, block_size, local_file_size, true);
 
@@ -399,6 +406,20 @@ impl FileTransferMan {
             };
 
             self.sync_in.insert(file_hash, file_sync);
+        } else if file_size_changed {
+            file_handler.flush()?;
+            self.storage_state.invalidate_state(&file_info.storage);
+            self.commands.now(WatcherEvent::Supress(
+                file_info.clone(),
+                SupressionType::Write,
+            ));
+
+            storage::fix_times_and_permissions(&file_info, &self.config)?;
+            self.log_writer.append(
+                file_info.storage.clone(),
+                EventType::Write(file_info.path),
+                EventStatus::Finished,
+            )?;
         }
 
         self.commands.to(

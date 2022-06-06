@@ -40,16 +40,6 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
             format!("/tmp/partial_sync/peer_{peer_1}/store_one"),
             format!("/tmp/partial_sync/peer_{peer_3}/store_one"),
         );
-
-        common::tree_compare(
-            format!("/tmp/partial_sync/peer_{peer_1}/store_two"),
-            format!("/tmp/partial_sync/peer_{peer_2}/store_two"),
-        );
-
-        common::tree_compare(
-            format!("/tmp/partial_sync/peer_{peer_1}/store_two"),
-            format!("/tmp/partial_sync/peer_{peer_3}/store_two"),
-        );
     };
 
     // cleanup from prev executions
