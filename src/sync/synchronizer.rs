@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{synchronization_session::SynchronizationState, SyncEvent};
-use crate::{config::Config, conn::CommandDispatcher, fs, storage_state::StorageState};
+use crate::{config::Config, conn::CommandDispatcher, storage, storage_state::StorageState};
 
 pub struct Synchronizer {
     config: Arc<Config>,
@@ -85,7 +85,8 @@ impl Synchronizer {
                 }
             },
             SyncEvent::BuildStorageIndex(storage) => {
-                let index = fs::walk_path(&self.config, &storage, &self.storage_state).unwrap();
+                let index =
+                    storage::walk_path(&self.config, &storage, &self.storage_state).unwrap();
                 self.commands.now(SyncEvent::SetStorageIndex(index));
             }
             SyncEvent::SetStorageIndex(index) => {
@@ -134,7 +135,8 @@ impl Synchronizer {
                     return Ok(false);
                 }
 
-                let index = fs::walk_path(&self.config, &storage, &self.storage_state).unwrap();
+                let index =
+                    storage::walk_path(&self.config, &storage, &self.storage_state).unwrap();
 
                 self.commands.to(SyncEvent::SetStorageIndex(index), peer_id);
             }

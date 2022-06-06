@@ -210,8 +210,8 @@ fn get_storage_state(
     storage: &str,
     storage_state: &StorageState,
 ) -> crate::Result<u64> {
-    let storage_index = crate::fs::walk_path(config, storage, storage_state)?;
-    let hash = crate::fs::get_state_hash(storage_index.iter());
+    let storage_index = crate::storage::walk_path(config, storage, storage_state)?;
+    let hash = crate::storage::get_state_hash(storage_index.iter());
 
     log::trace!("{storage} hash is {hash}");
     Ok(hash)

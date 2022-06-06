@@ -1,7 +1,7 @@
 use crc::{Crc, Digest, CRC_64_GO_ISO};
 use rand::Rng;
 
-use crate::fs::FileInfo;
+use crate::storage::FileInfo;
 
 pub const HASHER: Crc<u64> = Crc::<u64>::new(&CRC_64_GO_ISO);
 

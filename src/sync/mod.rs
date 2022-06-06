@@ -14,7 +14,7 @@ mod synchronization_session;
 mod synchronizer;
 pub use synchronizer::Synchronizer;
 
-use crate::fs::FileInfo;
+use crate::storage::FileInfo;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SyncEvent {

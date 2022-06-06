@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::Config,
     conn::{CommandDispatcher, Commands},
-    fs::{self, FileInfo},
     hash_helper,
+    storage::{self, FileInfo},
     storage_state::StorageState,
     transaction_log::{EventStatus, EventType, TransactionLogWriter},
     IronCarrierError,
@@ -147,7 +147,7 @@ impl FileTransferMan {
     }
 
     fn delete_file(&mut self, file: FileInfo) -> crate::Result<()> {
-        match fs::delete_file(&file, &self.config, &self.storage_state) {
+        match storage::delete_file(&file, &self.config, &self.storage_state) {
             Ok(_) => {
                 self.log_writer.append(
                     file.storage.to_string(),
@@ -166,7 +166,7 @@ impl FileTransferMan {
     }
 
     fn move_file(&mut self, src: FileInfo, dest: FileInfo) -> crate::Result<()> {
-        match fs::move_file(&src, &dest, &self.config, &self.storage_state) {
+        match storage::move_file(&src, &dest, &self.config, &self.storage_state) {
             Err(err) => {
                 log::error!("Failed to move file: {}", err);
             }
@@ -357,7 +357,7 @@ impl FileTransferMan {
                 SupressionType::Write,
             ));
 
-            fs::fix_times_and_permissions(&file_info, &self.config)?;
+            storage::fix_times_and_permissions(&file_info, &self.config)?;
             self.log_writer.append(
                 file_info.storage.clone(),
                 EventType::Write(file_info.path),
@@ -481,7 +481,7 @@ impl FileTransferMan {
             Some(mut file_sync) => {
                 file_sync.file_handler.flush()?;
 
-                fs::fix_times_and_permissions(&file_sync.file_info, &self.config)?;
+                storage::fix_times_and_permissions(&file_sync.file_info, &self.config)?;
 
                 let file_info = { file_sync.file_info };
                 self.log_writer.append(

@@ -16,7 +16,7 @@ use super::FileHandlerEvent;
 use crate::{
     config::Config,
     conn::CommandDispatcher,
-    fs::FileInfo,
+    storage::FileInfo,
     storage_state::StorageState,
     transaction_log::{EventStatus, EventType, TransactionLogWriter},
 };
@@ -279,7 +279,7 @@ fn get_file_info(
     supression_type: SupressionType,
     storage_state: &StorageState,
 ) -> Option<FileInfo> {
-    if crate::fs::is_special_file(&file_path) || file_path.is_dir() {
+    if crate::storage::is_special_file(&file_path) || file_path.is_dir() {
         log::trace!("Event for {:?} ignored", file_path);
         return None;
     }

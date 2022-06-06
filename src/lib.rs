@@ -19,7 +19,7 @@ use crate::negotiator::Negotiator;
 
 pub mod config;
 mod conn;
-mod fs;
+mod storage;
 mod transaction_log;
 // mod network;
 pub mod constants;
