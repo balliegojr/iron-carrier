@@ -60,7 +60,7 @@ pub fn walk_path(
                 continue;
             }
 
-            files.insert(FileInfo::new(storage.to_owned(), path, metadata));
+            files.replace(FileInfo::new(storage.to_owned(), path, metadata));
         }
     }
 
