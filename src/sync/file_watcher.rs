@@ -51,9 +51,9 @@ pub struct FileWatcher {
 impl FileWatcher {
     pub fn new(
         dispatcher: CommandDispatcher,
-        config: Arc<Config>,
+        config: &'static Config,
         log_writer: TransactionLogWriter<File>,
-        storage_state: Arc<StorageState>,
+        storage_state: &'static StorageState,
     ) -> crate::Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut _notify_watcher = watcher(tx, Duration::from_secs(config.delay_watcher_events))?;
@@ -102,9 +102,9 @@ impl FileWatcher {
         &self,
         notify_events_receiver: std::sync::mpsc::Receiver<DebouncedEvent>,
         dispatcher: CommandDispatcher,
-        config: Arc<Config>,
+        config: &'static Config,
         mut log_writer: TransactionLogWriter<File>,
-        storage_state: Arc<StorageState>,
+        storage_state: &'static StorageState,
     ) {
         let event_supression = self.event_supression.clone();
         let debounce_delay = match config.delay_watcher_events {
@@ -131,7 +131,7 @@ impl FileWatcher {
                     &config.paths,
                     &mut supression_guard,
                     &mut log_writer,
-                    &storage_state,
+                    storage_state,
                 ) {
                     debouncer.invoke();
 

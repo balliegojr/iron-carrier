@@ -1,20 +1,18 @@
-use std::sync::Arc;
-
 use super::{synchronization_session::SynchronizationState, SyncEvent};
 use crate::{config::Config, conn::CommandDispatcher, storage, storage_state::StorageState};
 
 pub struct Synchronizer {
-    config: Arc<Config>,
+    config: &'static Config,
     session_state: SynchronizationState,
-    storage_state: Arc<StorageState>,
+    storage_state: &'static StorageState,
     commands: CommandDispatcher,
 }
 
 impl Synchronizer {
     pub fn new(
-        config: Arc<Config>,
+        config: &'static Config,
         commands: CommandDispatcher,
-        storage_state: Arc<StorageState>,
+        storage_state: &'static StorageState,
     ) -> crate::Result<Self> {
         log::debug!("Initializing synchronizer");
         let node_id = config.node_id.clone();
@@ -85,8 +83,7 @@ impl Synchronizer {
                 }
             },
             SyncEvent::BuildStorageIndex(storage) => {
-                let index =
-                    storage::walk_path(&self.config, &storage, &self.storage_state).unwrap();
+                let index = storage::walk_path(self.config, &storage, self.storage_state)?;
                 self.commands.now(SyncEvent::SetStorageIndex(index));
             }
             SyncEvent::SetStorageIndex(index) => {
@@ -135,8 +132,7 @@ impl Synchronizer {
                     return Ok(false);
                 }
 
-                let index =
-                    storage::walk_path(&self.config, &storage, &self.storage_state).unwrap();
+                let index = storage::walk_path(self.config, &storage, self.storage_state).unwrap();
 
                 self.commands.to(SyncEvent::SetStorageIndex(index), peer_id);
             }

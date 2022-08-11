@@ -4,7 +4,7 @@
 
 #![feature(hash_drain_filter)]
 
-use std::{fs::File, net::SocketAddr, sync::Arc, time::Duration};
+use std::{fs::File, net::SocketAddr, time::Duration};
 
 use config::Config;
 use conn::{CommandDispatcher, Commands, ConnectionManager};
@@ -90,34 +90,31 @@ impl From<bincode::Error> for IronCarrierError {
     }
 }
 
-pub fn run(config: config::Config) -> crate::Result<()> {
+pub fn run(config: &'static config::Config) -> crate::Result<()> {
     log::trace!("My id is {}", config.node_id);
 
-    let config = Arc::new(config);
-    let storage_state = Arc::new(storage_state::StorageState::new(config.clone()));
+    let storage_state: &'static StorageState =
+        Box::leak(Box::new(storage_state::StorageState::new(config)));
 
     let mut log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
-    let connection_man = get_connection_manager_when_ready(config.clone());
+    let connection_man = get_connection_manager_when_ready(config);
     let file_watcher = get_file_watcher(
-        config.clone(),
+        config,
         connection_man.command_dispatcher(),
         log_writer.clone(),
-        storage_state.clone(),
+        storage_state,
     );
 
     let mut file_transfer_man = FileTransferMan::new(
         connection_man.command_dispatcher(),
-        config.clone(),
+        config,
         log_writer.clone(),
-        storage_state.clone(),
+        storage_state,
     );
 
     let mut negotiator = Negotiator::new(connection_man.command_dispatcher());
-    let mut synchronizer = Synchronizer::new(
-        config,
-        connection_man.command_dispatcher(),
-        storage_state.clone(),
-    )?;
+    let mut synchronizer =
+        Synchronizer::new(config, connection_man.command_dispatcher(), storage_state)?;
 
     connection_man.on_command(move |command, peer_id| -> crate::Result<bool> {
         match command {
@@ -158,10 +155,10 @@ pub fn run(config: config::Config) -> crate::Result<()> {
 }
 
 fn get_file_watcher(
-    config: Arc<Config>,
+    config: &'static Config,
     dispatcher: CommandDispatcher,
     log_writer: TransactionLogWriter<File>,
-    storage_state: Arc<StorageState>,
+    storage_state: &'static StorageState,
 ) -> Option<FileWatcher> {
     if config.enable_file_watcher {
         FileWatcher::new(dispatcher, config, log_writer, storage_state).ok()
@@ -170,9 +167,9 @@ fn get_file_watcher(
     }
 }
 
-fn get_connection_manager_when_ready(config: Arc<Config>) -> ConnectionManager {
+fn get_connection_manager_when_ready(config: &'static Config) -> ConnectionManager {
     loop {
-        let connection_manager = ConnectionManager::new(config.clone());
+        let connection_manager = ConnectionManager::new(config);
         match connection_manager {
             Ok(connection_manager) => return connection_manager,
             Err(err) => {

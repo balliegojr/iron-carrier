@@ -3,7 +3,6 @@ use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -63,20 +62,20 @@ impl std::fmt::Display for FileHandlerEvent {
 }
 
 pub struct FileTransferMan {
-    config: Arc<Config>,
+    config: &'static Config,
     commands: CommandDispatcher,
     sync_out: HashMap<u64, FileSync>,
     sync_in: HashMap<u64, FileSync>,
     log_writer: TransactionLogWriter<File>,
-    storage_state: Arc<StorageState>,
+    storage_state: &'static StorageState,
 }
 
 impl FileTransferMan {
     pub fn new(
         commands: CommandDispatcher,
-        config: Arc<Config>,
+        config: &'static Config,
         log_writer: TransactionLogWriter<File>,
-        storage_state: Arc<StorageState>,
+        storage_state: &'static StorageState,
     ) -> Self {
         Self {
             commands,
@@ -147,7 +146,7 @@ impl FileTransferMan {
     }
 
     fn delete_file(&mut self, file: FileInfo) -> crate::Result<()> {
-        match storage::delete_file(&file, &self.config, &self.storage_state) {
+        match storage::delete_file(&file, self.config, self.storage_state) {
             Ok(_) => {
                 self.log_writer.append(
                     file.storage.to_string(),
@@ -166,7 +165,7 @@ impl FileTransferMan {
     }
 
     fn move_file(&mut self, src: FileInfo, dest: FileInfo) -> crate::Result<()> {
-        match storage::move_file(&src, &dest, &self.config, &self.storage_state) {
+        match storage::move_file(&src, &dest, self.config, self.storage_state) {
             Err(err) => {
                 log::error!("Failed to move file: {}", err);
             }
@@ -218,7 +217,7 @@ impl FileTransferMan {
                 )
             }
             None => {
-                let file_path = file_info.get_absolute_path(&self.config)?;
+                let file_path = file_info.get_absolute_path(self.config)?;
                 let mut file_handler = std::fs::File::open(file_path)?;
                 let file_size = file_info.size.unwrap();
                 let block_size = get_block_size(file_size);
@@ -255,7 +254,7 @@ impl FileTransferMan {
 
         if file_info.size.unwrap() != 0 {
             let file_hash = hash_helper::calculate_file_hash(&file_info);
-            let file_path = file_info.get_absolute_path(&self.config)?;
+            let file_path = file_info.get_absolute_path(self.config)?;
             let mut file_handler = std::fs::File::open(file_path)?;
             let file_size = file_info.size.unwrap();
             let block_size = get_block_size(file_size);
@@ -327,7 +326,7 @@ impl FileTransferMan {
         peer_id: &str,
         consume_queue: bool,
     ) -> crate::Result<bool> {
-        let file_path = file_info.get_absolute_path(&self.config)?;
+        let file_path = file_info.get_absolute_path(self.config)?;
 
         if let Some(parent) = file_path.parent() {
             if !parent.exists() {
@@ -357,7 +356,7 @@ impl FileTransferMan {
                 SupressionType::Write,
             ));
 
-            storage::fix_times_and_permissions(&file_info, &self.config)?;
+            storage::fix_times_and_permissions(&file_info, self.config)?;
             self.log_writer.append(
                 file_info.storage.clone(),
                 EventType::Write(file_info.path),
@@ -414,7 +413,7 @@ impl FileTransferMan {
                 SupressionType::Write,
             ));
 
-            storage::fix_times_and_permissions(&file_info, &self.config)?;
+            storage::fix_times_and_permissions(&file_info, self.config)?;
             self.log_writer.append(
                 file_info.storage.clone(),
                 EventType::Write(file_info.path),
@@ -502,7 +501,7 @@ impl FileTransferMan {
             Some(mut file_sync) => {
                 file_sync.file_handler.flush()?;
 
-                storage::fix_times_and_permissions(&file_sync.file_info, &self.config)?;
+                storage::fix_times_and_permissions(&file_sync.file_info, self.config)?;
 
                 let file_info = { file_sync.file_info };
                 self.log_writer.append(

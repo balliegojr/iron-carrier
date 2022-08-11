@@ -214,7 +214,7 @@ pub fn is_special_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, sync::Arc};
+    use std::fs::File;
 
     use super::*;
 
@@ -224,19 +224,17 @@ mod tests {
         File::create("./tmp/fs/read_local_files/file_1")?;
         File::create("./tmp/fs/read_local_files/file_2")?;
 
-        let config = Arc::new(
-            Config::new_from_str(
-                r#"
+        let config = Config::new_from_str(
+            r#"
 log_path = "./tmp/fs/logfile.log"
 [paths]
 a = "./tmp/fs/read_local_files"
 "#
-                .to_string(),
-            )
-            .expect("Failed to parse config"),
-        );
+            .to_string(),
+        )
+        .expect("Failed to parse config");
 
-        let mut files: Vec<FileInfo> = walk_path(&config, "a", &StorageState::new(config.clone()))
+        let mut files: Vec<FileInfo> = walk_path(config, "a", &StorageState::new(config))
             .unwrap()
             .into_iter()
             .collect();

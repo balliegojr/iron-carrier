@@ -1,7 +1,7 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
     path::Path,
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -9,13 +9,13 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use crate::config::Config;
 
 pub struct StorageState {
-    config: Arc<Config>,
+    config: &'static Config,
     hash_state: Mutex<HashMap<String, StorageHashState>>,
     ignore_sets: Mutex<HashMap<String, Option<GlobSet>>>,
 }
 
 impl StorageState {
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: &'static Config) -> Self {
         Self {
             hash_state: HashMap::new().into(),
             ignore_sets: HashMap::new().into(),
@@ -66,7 +66,7 @@ impl StorageState {
             .filter_map(|storage| {
                 let storage_state = hash_state.entry(storage.to_string()).or_insert_with(|| {
                     StorageHashState::CurrentHash(
-                        get_storage_state(&self.config, storage, self).unwrap(),
+                        get_storage_state(self.config, storage, self).unwrap(),
                     )
                 });
 

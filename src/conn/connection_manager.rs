@@ -40,7 +40,7 @@ impl From<ConnectionFlow> for HandlerEvent {
 }
 
 pub struct ConnectionManager {
-    config: Arc<Config>,
+    config: &'static Config,
 
     connections: Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>,
     id_lookup: Arc<RwLock<HashMap<Endpoint, String>>>,
@@ -57,8 +57,8 @@ pub struct ConnectionManager {
 }
 
 impl ConnectionManager {
-    pub fn new(config: Arc<Config>) -> crate::Result<Self> {
-        let service_discovery = get_service_discovery(&config)?;
+    pub fn new(config: &'static Config) -> crate::Result<Self> {
+        let service_discovery = get_service_discovery(config)?;
         let (handler, listener) = node::split::<HandlerEvent>();
         let connections = Arc::new(RwLock::new(HashMap::new()));
         let event_queue = Arc::new(Mutex::new(LinkedList::new()));

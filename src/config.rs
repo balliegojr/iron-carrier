@@ -73,7 +73,7 @@ impl Config {
     /// [Ok]`(`[Config]`)` if successful  
     /// [IronCarrierError::ConfigFileNotFound] if the provided path doesn't exists   
     /// [IronCarrierError::ConfigFileIsInvalid] if the provided configuration is not valid   
-    pub fn new(config_path: &Path) -> crate::Result<Self> {
+    pub fn new(config_path: &Path) -> crate::Result<&'static Self> {
         log::debug!("reading config file {:?}", config_path);
 
         match read_to_string(config_path) {
@@ -83,10 +83,14 @@ impl Config {
     }
 
     /// Parses the given content into [Config]
-    pub fn new_from_str(content: String) -> crate::Result<Self> {
-        toml::from_str::<Config>(&content)?
-            .fill_node_id()
-            .validate()
+    pub fn new_from_str(content: String) -> crate::Result<&'static Self> {
+        let config = Box::new(
+            toml::from_str::<Config>(&content)
+                .map(|c| c.fill_node_id())
+                .map(|c| c.validate())??,
+        );
+
+        Ok(Box::leak(config))
     }
 
     fn fill_node_id(mut self) -> Self {
@@ -167,12 +171,12 @@ mod tests {
         .to_owned();
 
         let config = Config::new_from_str(config_content)?;
-        let peers = config.peers.unwrap();
+        let peers = config.peers.as_ref().unwrap();
 
         assert_eq!(1, peers.len());
         assert_eq!("127.0.0.1:8888", peers[0]);
 
-        let paths = config.paths;
+        let paths = &config.paths;
         assert_eq!(1, paths.len());
         assert_eq!(PathBuf::from("./tmp"), paths["a"]);
 
