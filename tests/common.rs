@@ -84,16 +84,18 @@ fn timeout_check<F: FnMut() -> bool>(mut check: F) -> bool {
 }
 
 pub fn tree_compare<P: AsRef<Path>>(lhs: P, rhs: P) {
-    let (l_files, l_ignored) = walk_path(lhs);
-    let (r_files, r_ignored) = walk_path(rhs);
+    let (l_files, l_ignored) = walk_path(lhs.as_ref());
+    let (r_files, r_ignored) = walk_path(rhs.as_ref());
 
     assert!(l_ignored.is_disjoint(&r_ignored),);
 
     assert_eq!(
         l_files.len(),
         r_files.len(),
-        "l_files.len() = {}, r_files.len() = {}",
+        "{:?} len() = {}, {:?} len() = {}",
+        lhs.as_ref(),
         l_files.len(),
+        rhs.as_ref(),
         r_files.len()
     );
 

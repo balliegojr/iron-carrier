@@ -305,7 +305,7 @@ impl FileTransferMan {
             match file.read_exact(&mut buf[..current_read]) {
                 Ok(_) => {
                     if calculate_hash {
-                        block_index.push((position, hash_helper::calculate_hash(&buf)));
+                        block_index.push((position, hash_helper::calculate_checksum(&buf)));
                     } else {
                         block_index.push((position, 0))
                     }

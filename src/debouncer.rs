@@ -1,15 +1,18 @@
 use std::{sync::mpsc::Sender, thread, time::Duration};
 
+/// Action execution debouncer, this is struct is built by calling [`debounce_action`]
 pub struct Debouncer {
     tx: Sender<()>,
 }
 
 impl Debouncer {
+    /// Invoke the action once, after the timeout elapsed.
     pub fn invoke(&self) {
         self.tx.send(()).unwrap();
     }
 }
 
+/// Creates a [`Debouncer`] for `action` with `timeout` duration.
 pub fn debounce_action<F: 'static + FnMut() + Send + Sync>(
     timeout: Duration,
     mut action: F,

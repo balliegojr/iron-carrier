@@ -76,7 +76,7 @@ pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
     let mut digest = HASHER.digest();
 
     for file in files.filter(|f| !f.is_deleted()) {
-        hash_helper::calculate_file_hash_dig(file, &mut digest);
+        hash_helper::calculate_file_hash_digest(file, &mut digest);
     }
 
     digest.finalize()
@@ -208,7 +208,7 @@ fn set_file_permissions(path: &Path, perm: u32) -> std::io::Result<()> {
 pub fn is_special_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.ends_with("ironcarrier") || ext.ends_with(".ignore"))
+        .map(|ext| ext.ends_with("ironcarrier"))
         .unwrap_or_default()
 }
 
