@@ -16,7 +16,8 @@ use std::os::unix::fs::PermissionsExt;
 use crate::{
     config::Config,
     hash_helper::{self, HASHER},
-    storage_state::StorageState,
+    ignored_files::IgnoredFiles,
+    storage_hash_cache::StorageHashCache,
     transaction_log::{get_log_reader, EventType},
 };
 
@@ -33,7 +34,7 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 pub fn walk_path(
     config: &Config,
     storage: &str,
-    storage_state: &StorageState,
+    ignored_files: &IgnoredFiles,
 ) -> crate::Result<Vec<FileInfo>> {
     let root_path = config.paths.get(storage).expect("Unexpected storage");
     let mut paths = vec![root_path.to_owned()];
@@ -56,7 +57,7 @@ pub fn walk_path(
 
             let metadata = path.metadata()?;
             let path = path.strip_prefix(root_path)?.to_owned();
-            if storage_state.is_ignored(storage, &path) {
+            if ignored_files.is_ignored(storage, &path) {
                 continue;
             }
 
@@ -129,7 +130,7 @@ fn get_failed_writes(config: &Config, storage: &str) -> crate::Result<HashSet<Fi
 pub fn delete_file(
     file_info: &FileInfo,
     config: &Config,
-    storage_state: &StorageState,
+    storage_state: &StorageHashCache,
 ) -> crate::Result<()> {
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
@@ -145,7 +146,7 @@ pub fn delete_file(
 
     log::debug!("{:?} removed", path);
 
-    storage_state.invalidate_state(&file_info.storage);
+    storage_state.invalidate_cache(&file_info.storage);
 
     Ok(())
 }
@@ -154,7 +155,7 @@ pub fn move_file<'b>(
     src_file: &'b FileInfo,
     dest_file: &'b FileInfo,
     config: &Config,
-    storage_state: &StorageState,
+    storage_state: &StorageHashCache,
 ) -> crate::Result<()> {
     let src_path = src_file.get_absolute_path(config)?;
     let dest_path = dest_file.get_absolute_path(config)?;
@@ -162,7 +163,7 @@ pub fn move_file<'b>(
     log::debug!("moving file {:?} to {:?}", src_path, dest_path);
 
     std::fs::rename(src_path, dest_path)?;
-    storage_state.invalidate_state(&src_file.storage);
+    storage_state.invalidate_cache(&src_file.storage);
 
     Ok(())
 }
@@ -234,7 +235,7 @@ a = "./tmp/fs/read_local_files"
         )
         .expect("Failed to parse config");
 
-        let mut files: Vec<FileInfo> = walk_path(config, "a", &StorageState::new(config))
+        let mut files: Vec<FileInfo> = walk_path(config, "a", &IgnoredFiles::new(config))
             .unwrap()
             .into_iter()
             .collect();

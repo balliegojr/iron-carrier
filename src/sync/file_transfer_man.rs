@@ -12,7 +12,7 @@ use crate::{
     conn::{CommandDispatcher, Commands},
     hash_helper,
     storage::{self, FileInfo},
-    storage_state::StorageState,
+    storage_hash_cache::StorageHashCache,
     transaction_log::{EventStatus, EventType, TransactionLogWriter},
     IronCarrierError,
 };
@@ -67,7 +67,7 @@ pub struct FileTransferMan {
     sync_out: HashMap<u64, FileSync>,
     sync_in: HashMap<u64, FileSync>,
     log_writer: TransactionLogWriter<File>,
-    storage_state: &'static StorageState,
+    storage_state: &'static StorageHashCache,
 }
 
 impl FileTransferMan {
@@ -75,7 +75,7 @@ impl FileTransferMan {
         commands: CommandDispatcher,
         config: &'static Config,
         log_writer: TransactionLogWriter<File>,
-        storage_state: &'static StorageState,
+        storage_state: &'static StorageHashCache,
     ) -> Self {
         Self {
             commands,
@@ -350,7 +350,7 @@ impl FileTransferMan {
         if file_info.size.unwrap() == 0 {
             file_handler.flush()?;
 
-            self.storage_state.invalidate_state(&file_info.storage);
+            self.storage_state.invalidate_cache(&file_info.storage);
             self.commands.now(WatcherEvent::Supress(
                 file_info.clone(),
                 SupressionType::Write,
@@ -407,7 +407,7 @@ impl FileTransferMan {
             self.sync_in.insert(file_hash, file_sync);
         } else if file_size_changed {
             file_handler.flush()?;
-            self.storage_state.invalidate_state(&file_info.storage);
+            self.storage_state.invalidate_cache(&file_info.storage);
             self.commands.now(WatcherEvent::Supress(
                 file_info.clone(),
                 SupressionType::Write,
@@ -510,7 +510,7 @@ impl FileTransferMan {
                     EventStatus::Finished,
                 )?;
 
-                self.storage_state.invalidate_state(&file_info.storage);
+                self.storage_state.invalidate_cache(&file_info.storage);
 
                 self.commands
                     .now(WatcherEvent::Supress(file_info, SupressionType::Write));

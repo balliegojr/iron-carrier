@@ -1,10 +1,14 @@
 use super::{synchronization_session::SynchronizationState, SyncEvent};
-use crate::{config::Config, conn::CommandDispatcher, storage, storage_state::StorageState};
+use crate::{
+    config::Config, conn::CommandDispatcher, ignored_files::IgnoredFiles, storage,
+    storage_hash_cache::StorageHashCache,
+};
 
 pub struct Synchronizer {
     config: &'static Config,
     session_state: SynchronizationState,
-    storage_state: &'static StorageState,
+    storage_state: &'static StorageHashCache,
+    ignored_files: &'static IgnoredFiles,
     commands: CommandDispatcher,
 }
 
@@ -12,7 +16,8 @@ impl Synchronizer {
     pub fn new(
         config: &'static Config,
         commands: CommandDispatcher,
-        storage_state: &'static StorageState,
+        storage_state: &'static StorageHashCache,
+        ignored_files: &'static IgnoredFiles,
     ) -> crate::Result<Self> {
         log::debug!("Initializing synchronizer");
         let node_id = config.node_id.clone();
@@ -20,6 +25,7 @@ impl Synchronizer {
             config,
             session_state: SynchronizationState::new(node_id, commands.clone()),
             storage_state,
+            ignored_files,
             commands,
         };
 
@@ -83,7 +89,7 @@ impl Synchronizer {
                 }
             },
             SyncEvent::BuildStorageIndex(storage) => {
-                let index = storage::walk_path(self.config, &storage, self.storage_state)?;
+                let index = storage::walk_path(self.config, &storage, self.ignored_files)?;
                 self.commands.now(SyncEvent::SetStorageIndex(index));
             }
             SyncEvent::SetStorageIndex(index) => {
@@ -132,12 +138,12 @@ impl Synchronizer {
                     return Ok(false);
                 }
 
-                let index = storage::walk_path(self.config, &storage, self.storage_state).unwrap();
+                let index = storage::walk_path(self.config, &storage, self.ignored_files).unwrap();
 
                 self.commands.to(SyncEvent::SetStorageIndex(index), peer_id);
             }
             SyncEvent::SetStorageIndex(mut index) => {
-                index.retain(|f| !self.storage_state.is_ignored(&f.storage, &f.path));
+                index.retain(|f| !self.ignored_files.is_ignored(&f.storage, &f.path));
 
                 let have_all_indexes = self
                     .session_state

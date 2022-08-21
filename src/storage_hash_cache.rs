@@ -1,45 +1,29 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
-    path::Path,
     sync::Mutex,
 };
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use crate::{config::Config, ignored_files::IgnoredFiles};
 
-use crate::config::Config;
-
-pub struct StorageState {
+pub struct StorageHashCache {
     config: &'static Config,
+    ignored_files: &'static IgnoredFiles,
     hash_state: Mutex<HashMap<String, StorageHashState>>,
-    ignore_sets: Mutex<HashMap<String, Option<GlobSet>>>,
 }
 
-impl StorageState {
-    pub fn new(config: &'static Config) -> Self {
+impl StorageHashCache {
+    pub fn new(config: &'static Config, ignored_files: &'static IgnoredFiles) -> Self {
         Self {
             hash_state: HashMap::new().into(),
-            ignore_sets: HashMap::new().into(),
+            ignored_files,
             config,
         }
     }
     pub fn clear(&self) {
         self.hash_state.lock().unwrap().clear();
-        self.ignore_sets.lock().unwrap().clear();
     }
 
-    pub fn is_ignored<P: AsRef<Path>>(&self, storage: &str, path: P) -> bool {
-        let mut ignore_sets = self.ignore_sets.lock().unwrap();
-        let glob_set = ignore_sets
-            .entry(storage.to_string())
-            .or_insert_with(|| get_glob_set(&self.config.paths[storage]));
-
-        glob_set
-            .as_ref()
-            .map(|set| set.is_match(path))
-            .unwrap_or_default()
-    }
-
-    pub fn invalidate_state(&self, storage: &str) {
+    pub fn invalidate_cache(&self, storage: &str) {
         let mut hash_state = self.hash_state.lock().unwrap();
         if let Entry::Occupied(entry) = hash_state.entry(storage.to_string()) {
             if matches!(*entry.get(), StorageHashState::CurrentHash(_)) {
@@ -66,7 +50,7 @@ impl StorageState {
             .filter_map(|storage| {
                 let storage_state = hash_state.entry(storage.to_string()).or_insert_with(|| {
                     StorageHashState::CurrentHash(
-                        get_storage_state(self.config, storage, self).unwrap(),
+                        get_storage_state(self.config, storage, self.ignored_files).unwrap(),
                     )
                 });
 
@@ -160,57 +144,12 @@ pub enum StorageHashState {
     SyncByPeer(String),
 }
 
-fn get_glob_set<P: AsRef<Path>>(path: P) -> Option<GlobSet> {
-    let patterns = get_ignore_patterns(path.as_ref())?;
-
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        let glob = match Glob::new(&pattern) {
-            Ok(glob) => glob,
-            Err(err) => {
-                log::error!(
-                    "Found invalid glob pattern {} at {:?}: {err}",
-                    pattern,
-                    path.as_ref()
-                );
-                continue;
-            }
-        };
-
-        builder.add(glob);
-    }
-
-    match builder.build() {
-        Ok(set) => Some(set),
-        Err(err) => {
-            log::error!("Failed to build glob set: {err}");
-            None
-        }
-    }
-}
-
-fn get_ignore_patterns<P: AsRef<Path>>(path: P) -> Option<Vec<String>> {
-    let ignore_file_path = path.as_ref().join(".ignore");
-    if !ignore_file_path.exists() {
-        return None;
-    }
-
-    let content = match std::fs::read_to_string(ignore_file_path) {
-        Ok(content) => content,
-        Err(_) => {
-            log::error!("Failed to read ignore file at {:?}", path.as_ref());
-            return None;
-        }
-    };
-    Some(content.lines().map(|s| s.to_string()).collect())
-}
-
 fn get_storage_state(
     config: &Config,
     storage: &str,
-    storage_state: &StorageState,
+    ignored_files: &IgnoredFiles,
 ) -> crate::Result<u64> {
-    let storage_index = crate::storage::walk_path(config, storage, storage_state)?;
+    let storage_index = crate::storage::walk_path(config, storage, ignored_files)?;
     let hash = crate::storage::get_state_hash(storage_index.iter());
 
     log::trace!("{storage} hash is {hash}");

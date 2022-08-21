@@ -16,8 +16,8 @@ use super::FileHandlerEvent;
 use crate::{
     config::Config,
     conn::CommandDispatcher,
+    ignored_files::IgnoredFiles,
     storage::FileInfo,
-    storage_state::StorageState,
     transaction_log::{EventStatus, EventType, TransactionLogWriter},
 };
 
@@ -53,7 +53,7 @@ impl FileWatcher {
         dispatcher: CommandDispatcher,
         config: &'static Config,
         log_writer: TransactionLogWriter<File>,
-        storage_state: &'static StorageState,
+        ignored_files: &'static IgnoredFiles,
     ) -> crate::Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut _notify_watcher = watcher(tx, Duration::from_secs(config.delay_watcher_events))?;
@@ -71,7 +71,7 @@ impl FileWatcher {
             _notify_watcher,
             event_supression: Arc::new(Mutex::new(HashMap::new())),
         };
-        file_watcher.start_event_processing(rx, dispatcher, config, log_writer, storage_state);
+        file_watcher.start_event_processing(rx, dispatcher, config, log_writer, ignored_files);
 
         Ok(file_watcher)
     }
@@ -104,7 +104,7 @@ impl FileWatcher {
         dispatcher: CommandDispatcher,
         config: &'static Config,
         mut log_writer: TransactionLogWriter<File>,
-        storage_state: &'static StorageState,
+        ignored_files: &'static IgnoredFiles,
     ) {
         let event_supression = self.event_supression.clone();
         let debounce_delay = match config.delay_watcher_events {
@@ -131,7 +131,7 @@ impl FileWatcher {
                     &config.paths,
                     &mut supression_guard,
                     &mut log_writer,
-                    storage_state,
+                    ignored_files,
                 ) {
                     debouncer.invoke();
 
@@ -182,7 +182,7 @@ fn map_to_sync_event(
     paths: &HashMap<String, PathBuf>,
     event_supression: &mut HashMap<FileInfo, SupressionType>,
     log_writer: &mut TransactionLogWriter<File>,
-    storage_state: &StorageState,
+    ignored_files: &IgnoredFiles,
 ) -> Option<FileHandlerEvent> {
     match event {
         notify::DebouncedEvent::Create(file_path) => {
@@ -191,7 +191,7 @@ fn map_to_sync_event(
                 event_supression,
                 file_path,
                 SupressionType::Write,
-                storage_state,
+                ignored_files,
             )?;
 
             log_writer
@@ -211,7 +211,7 @@ fn map_to_sync_event(
                 event_supression,
                 file_path,
                 SupressionType::Write,
-                storage_state,
+                ignored_files,
             )?;
 
             log_writer
@@ -230,7 +230,7 @@ fn map_to_sync_event(
                 event_supression,
                 file_path,
                 SupressionType::Delete,
-                storage_state,
+                ignored_files,
             )?;
             log_writer
                 .append(
@@ -248,14 +248,14 @@ fn map_to_sync_event(
                 event_supression,
                 src_path,
                 SupressionType::Delete,
-                storage_state,
+                ignored_files,
             )?;
             let dest_file = get_file_info(
                 paths,
                 event_supression,
                 dest_path,
                 SupressionType::Rename,
-                storage_state,
+                ignored_files,
             )?;
 
             log_writer
@@ -277,7 +277,7 @@ fn get_file_info(
     event_supression: &mut HashMap<FileInfo, SupressionType>,
     file_path: PathBuf,
     supression_type: SupressionType,
-    storage_state: &StorageState,
+    ignored_files: &IgnoredFiles,
 ) -> Option<FileInfo> {
     if crate::storage::is_special_file(&file_path) || file_path.is_dir() {
         log::trace!("Event for {:?} ignored", file_path);
@@ -287,7 +287,7 @@ fn get_file_info(
     let (storage, root) = get_storage_for_path(&file_path, paths)?;
     let relative_path = file_path.strip_prefix(&root).ok()?;
 
-    if storage_state.is_ignored(&storage, &relative_path) {
+    if ignored_files.is_ignored(&storage, &relative_path) {
         return None;
     }
 

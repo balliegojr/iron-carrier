@@ -9,25 +9,25 @@ use std::{fs::File, net::SocketAddr, time::Duration};
 use config::Config;
 use conn::{CommandDispatcher, Commands, ConnectionManager};
 use serde::{Deserialize, Serialize};
-use storage_state::StorageState;
+use storage_hash_cache::StorageHashCache;
 use sync::{FileTransferMan, FileWatcher, Synchronizer};
 
 use thiserror::Error;
 use transaction_log::TransactionLogWriter;
 
-use crate::negotiator::Negotiator;
+use crate::{ignored_files::IgnoredFiles, negotiator::Negotiator};
 
 pub mod config;
 mod conn;
-mod storage;
-mod transaction_log;
-// mod network;
 pub mod constants;
 mod debouncer;
 mod hash_helper;
+mod ignored_files;
 mod negotiator;
-mod storage_state;
+mod storage;
+mod storage_hash_cache;
 mod sync;
+mod transaction_log;
 
 /// Result<T, IronCarrierError> alias
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -93,8 +93,10 @@ impl From<bincode::Error> for IronCarrierError {
 pub fn run(config: &'static config::Config) -> crate::Result<()> {
     log::trace!("My id is {}", config.node_id);
 
-    let storage_state: &'static StorageState =
-        Box::leak(Box::new(storage_state::StorageState::new(config)));
+    let ignored_files: &'static IgnoredFiles = Box::leak(Box::new(IgnoredFiles::new(config)));
+    let storage_state: &'static StorageHashCache = Box::leak(Box::new(
+        storage_hash_cache::StorageHashCache::new(config, ignored_files),
+    ));
 
     let mut log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
     let connection_man = get_connection_manager_when_ready(config);
@@ -102,7 +104,7 @@ pub fn run(config: &'static config::Config) -> crate::Result<()> {
         config,
         connection_man.command_dispatcher(),
         log_writer.clone(),
-        storage_state,
+        ignored_files,
     );
 
     let mut file_transfer_man = FileTransferMan::new(
@@ -113,8 +115,12 @@ pub fn run(config: &'static config::Config) -> crate::Result<()> {
     );
 
     let mut negotiator = Negotiator::new(connection_man.command_dispatcher());
-    let mut synchronizer =
-        Synchronizer::new(config, connection_man.command_dispatcher(), storage_state)?;
+    let mut synchronizer = Synchronizer::new(
+        config,
+        connection_man.command_dispatcher(),
+        storage_state,
+        ignored_files,
+    )?;
 
     connection_man.on_command(move |command, peer_id| -> crate::Result<bool> {
         match command {
@@ -144,6 +150,9 @@ pub fn run(config: &'static config::Config) -> crate::Result<()> {
                 synchronizer.clear();
                 negotiator.clear();
 
+                // TODO: only clear ignored files when there is a change in the .ignore file
+                ignored_files.clear();
+
                 Ok(false)
             }
             Commands::Negotiation(event) => {
@@ -158,10 +167,10 @@ fn get_file_watcher(
     config: &'static Config,
     dispatcher: CommandDispatcher,
     log_writer: TransactionLogWriter<File>,
-    storage_state: &'static StorageState,
+    ignored_files: &'static IgnoredFiles,
 ) -> Option<FileWatcher> {
     if config.enable_file_watcher {
-        FileWatcher::new(dispatcher, config, log_writer, storage_state).ok()
+        FileWatcher::new(dispatcher, config, log_writer, ignored_files).ok()
     } else {
         None
     }

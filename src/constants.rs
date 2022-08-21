@@ -14,6 +14,8 @@ pub const START_NEGOTIATION_MAX: f64 = 0.5;
 
 pub const DNS_RESOURCE_CACHE: u32 = 3600;
 
+pub const IGNORE_FILE_NAME: &str = ".ignore";
+
 #[cfg(not(windows))]
 pub const LINE_ENDING: &str = "\n";
 #[cfg(windows)]
