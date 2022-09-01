@@ -2,14 +2,16 @@ use std::time::{Duration, Instant};
 
 use message_io::network::{Endpoint, NetworkController};
 
-use crate::constants::{PEER_IDENTIFICATION_TIMEOUT, PEER_STALE_CONNECTION};
-
-use super::{Commands, RawMessageType};
+use crate::{
+    constants::{PEER_IDENTIFICATION_TIMEOUT, PEER_STALE_CONNECTION},
+    events::{Commands, RawMessageType},
+};
 
 #[derive(Debug, Eq)]
 pub struct PeerConnection {
     endpoint: Endpoint,
     last_access: Instant,
+    is_identified: bool,
 }
 
 impl PeerConnection {
@@ -38,8 +40,8 @@ impl PeerConnection {
         self.last_access = Instant::now();
     }
 
-    pub fn is_stale(&self, is_identified: bool) -> bool {
-        let secs = if is_identified {
+    pub fn is_stale(&self) -> bool {
+        let secs = if self.is_identified {
             PEER_STALE_CONNECTION
         } else {
             PEER_IDENTIFICATION_TIMEOUT
@@ -52,6 +54,10 @@ impl PeerConnection {
     pub fn endpoint(&self) -> Endpoint {
         self.endpoint
     }
+
+    pub fn set_is_identified(&mut self, is_identified: bool) {
+        self.is_identified = is_identified;
+    }
 }
 
 impl From<Endpoint> for PeerConnection {
@@ -59,6 +65,7 @@ impl From<Endpoint> for PeerConnection {
         Self {
             endpoint,
             last_access: Instant::now(),
+            is_identified: false,
         }
     }
 }
@@ -69,7 +76,6 @@ impl Ord for PeerConnection {
             .resource_id()
             .raw()
             .cmp(&other.endpoint.resource_id().raw())
-        // self.last_access.cmp(&other.last_access)
     }
 }
 
@@ -85,6 +91,5 @@ impl PartialOrd for PeerConnection {
             .resource_id()
             .raw()
             .partial_cmp(&other.endpoint.resource_id().raw())
-        // self.last_access.partial_cmp(&other.last_access)
     }
 }

@@ -5,7 +5,7 @@ use std::{fmt::Display, time::Duration};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::{conn::CommandDispatcher, sync::SyncEvent};
+use crate::{events::CommandDispatcher, sync::SyncEvent};
 
 /// Possible states for this node
 enum State {

@@ -1,27 +1,29 @@
 use message_io::node::NodeHandler;
 use std::{
-    collections::{HashMap, LinkedList},
-    sync::{Arc, Mutex, RwLock},
+    collections::LinkedList,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
-use super::{Commands, HandlerEvent, PeerConnection, RawMessageType};
+use crate::connection::ConnectionHandler;
+
+use super::{Commands, HandlerEvent, RawMessageType};
 
 #[derive(Clone)]
 pub struct CommandDispatcher {
     handler: NodeHandler<HandlerEvent>,
-    connections: Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>,
+    connection_handler: Arc<Mutex<ConnectionHandler>>,
     event_queue: Arc<Mutex<LinkedList<Commands>>>,
 }
 impl CommandDispatcher {
     pub fn new(
         handler: NodeHandler<HandlerEvent>,
-        connections: Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>,
+        connection_handler: Arc<Mutex<ConnectionHandler>>,
         event_queue: Arc<Mutex<LinkedList<Commands>>>,
     ) -> Self {
         Self {
             handler,
-            connections,
+            connection_handler,
             event_queue,
         }
     }
@@ -48,21 +50,23 @@ impl CommandDispatcher {
 
     pub fn to<T: Into<Commands>>(&self, event: T, peer_id: &str) {
         let event: Commands = event.into();
-        let mut connections = self.connections.write().expect("Poisoned lock");
-        let connection = match connections.get_mut(peer_id) {
-            Some(it) if !it.is_empty() => it.first().unwrap(),
+
+        match self
+            .connection_handler
+            .lock()
+            .unwrap()
+            .get_connection(peer_id)
+        {
+            Some(connection) => match event {
+                Commands::Stream(data) => {
+                    connection.send_raw(self.handler.network(), RawMessageType::Stream, &data)
+                }
+                event => connection.send_command(self.handler.network(), &event),
+            },
             _ => {
                 log::error!("Connection to {peer_id} not found");
-                return;
             }
         };
-
-        match event {
-            Commands::Stream(data) => {
-                connection.send_raw(self.handler.network(), RawMessageType::Stream, &data)
-            }
-            event => connection.send_command(self.handler.network(), &event),
-        }
     }
     pub fn broadcast<T: Into<Commands>>(&self, event: T) -> usize {
         let event: Commands = event.into();
@@ -80,14 +84,16 @@ impl CommandDispatcher {
             }
         };
 
-        let mut connections = self.connections.write().expect("Poisoned lock");
-        for connection in connections.values_mut().filter_map(|c| c.first()) {
+        let mut broadcasted = 0;
+        let connection_handler = self.connection_handler.lock().unwrap();
+        for connection in connection_handler.get_connections() {
             connection.send_data(controller, &data);
+            broadcasted += 1;
         }
-        connections.len()
+        broadcasted
     }
 
     pub fn has_connections(&self) -> bool {
-        !self.connections.read().expect("Poisoned lock").is_empty()
+        self.connection_handler.lock().unwrap().has_connections()
     }
 }

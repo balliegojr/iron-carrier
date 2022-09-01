@@ -4,30 +4,38 @@
 
 #![feature(hash_drain_filter)]
 
-use std::{fs::File, net::SocketAddr, time::Duration};
-
-use config::Config;
-use conn::{CommandDispatcher, Commands, ConnectionManager};
 use serde::{Deserialize, Serialize};
-use storage_hash_cache::StorageHashCache;
-use sync::{FileTransferMan, FileWatcher, Synchronizer};
-
+use std::{fs::File, net::SocketAddr, time::Duration};
 use thiserror::Error;
-use transaction_log::TransactionLogWriter;
-
-use crate::{ignored_files::IgnoredFiles, negotiator::Negotiator};
 
 pub mod config;
-mod conn;
+use config::Config;
+
+mod connection;
+
+mod events;
+use events::{CommandDispatcher, CommandHandler, Commands};
+
 pub mod constants;
 mod debouncer;
 mod hash_helper;
+
 mod ignored_files;
+use ignored_files::IgnoredFiles;
+
 mod negotiator;
+use negotiator::Negotiator;
+
 mod storage;
+
 mod storage_hash_cache;
+use storage_hash_cache::StorageHashCache;
+
 mod sync;
+use sync::{FileTransferMan, FileWatcher, Synchronizer};
+
 mod transaction_log;
+use transaction_log::TransactionLogWriter;
 
 /// Result<T, IronCarrierError> alias
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -99,7 +107,7 @@ pub fn run(config: &'static config::Config) -> crate::Result<()> {
     ));
 
     let mut log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
-    let connection_man = get_connection_manager_when_ready(config);
+    let connection_man = get_command_handler_when_ready(config);
     let file_watcher = get_file_watcher(
         config,
         connection_man.command_dispatcher(),
@@ -176,9 +184,9 @@ fn get_file_watcher(
     }
 }
 
-fn get_connection_manager_when_ready(config: &'static Config) -> ConnectionManager {
+fn get_command_handler_when_ready(config: &'static Config) -> CommandHandler {
     loop {
-        let connection_manager = ConnectionManager::new(config);
+        let connection_manager = CommandHandler::new(config);
         match connection_manager {
             Ok(connection_manager) => return connection_manager,
             Err(err) => {

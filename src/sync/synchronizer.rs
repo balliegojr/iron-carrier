@@ -1,6 +1,6 @@
 use super::{synchronization_session::SynchronizationState, SyncEvent};
 use crate::{
-    config::Config, conn::CommandDispatcher, ignored_files::IgnoredFiles, storage,
+    config::Config, events::CommandDispatcher, ignored_files::IgnoredFiles, storage,
     storage_hash_cache::StorageHashCache,
 };
 

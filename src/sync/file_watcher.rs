@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::FileHandlerEvent;
 use crate::{
     config::Config,
-    conn::CommandDispatcher,
+    events::CommandDispatcher,
     ignored_files::IgnoredFiles,
     storage::FileInfo,
     transaction_log::{EventStatus, EventType, TransactionLogWriter},

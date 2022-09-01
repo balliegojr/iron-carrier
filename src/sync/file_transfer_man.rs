@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::Config,
-    conn::{CommandDispatcher, Commands},
+    events::{CommandDispatcher, Commands},
     hash_helper,
     storage::{self, FileInfo},
     storage_hash_cache::StorageHashCache,

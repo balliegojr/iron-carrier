@@ -15,6 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::{
     config::Config,
+    constants::IGNORE_FILE_NAME,
     hash_helper::{self, HASHER},
     ignored_files::IgnoredFiles,
     storage_hash_cache::StorageHashCache,
@@ -209,7 +210,7 @@ fn set_file_permissions(path: &Path, perm: u32) -> std::io::Result<()> {
 pub fn is_special_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.ends_with("ironcarrier"))
+        .map(|ext| ext.ends_with("ironcarrier") || ext.ends_with(IGNORE_FILE_NAME))
         .unwrap_or_default()
 }
 

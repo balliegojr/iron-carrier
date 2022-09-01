@@ -1,19 +1,15 @@
+use crate::IronCarrierError;
+
 mod commands;
 pub use commands::Commands;
-
-mod connection_manager;
-pub use connection_manager::ConnectionManager;
 
 mod dispatcher;
 pub use dispatcher::CommandDispatcher;
 
-mod peer_connection;
-pub use peer_connection::PeerConnection;
+mod command_handler;
+pub use command_handler::{CommandHandler, ConnectionFlow};
 
-use crate::IronCarrierError;
-
-use self::connection_manager::ConnectionFlow;
-
+#[derive(Debug)]
 pub enum RawMessageType {
     SetId = 0,
     Command,

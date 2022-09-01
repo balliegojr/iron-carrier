@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
 };
 
-use crate::{conn::CommandDispatcher, storage::FileInfo};
+use crate::{events::CommandDispatcher, storage::FileInfo};
 
 use super::{FileHandlerEvent, SyncEvent};
 
