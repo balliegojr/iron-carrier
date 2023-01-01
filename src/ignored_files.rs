@@ -26,7 +26,7 @@ impl IgnoredFiles {
         let mut ignore_sets = self.ignore_sets.lock().unwrap();
         let glob_set = ignore_sets
             .entry(storage.to_string())
-            .or_insert_with(|| get_glob_set(&self.config.paths[storage]));
+            .or_insert_with(|| get_glob_set(&self.config.storages[storage].path));
 
         glob_set
             .as_ref()

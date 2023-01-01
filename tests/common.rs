@@ -107,8 +107,7 @@ pub fn tree_compare<P: AsRef<Path>>(lhs: P, rhs: P) {
         assert_eq!(
             l_metadata.len(),
             r_metadata.len(),
-            "files sizes diverge for {:?}",
-            l,
+            "files sizes diverge for {l:?}",
         );
         assert_eq!(
             l_metadata
@@ -123,15 +122,13 @@ pub fn tree_compare<P: AsRef<Path>>(lhs: P, rhs: P) {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-            "modification time diverge for {:?}",
-            l
+            "modification time diverge for {l:?}"
         );
 
         assert_eq!(
             &std::fs::read(&l).unwrap()[..],
             &std::fs::read(&r).unwrap()[..],
-            "contents diverge for {:?}",
-            l
+            "contents diverge for {l:?}"
         )
     }
 }
@@ -259,7 +256,7 @@ fn gen_file_with_rnd_content<P: AsRef<Path>, R: Rng>(
 ) {
     let file_content: Vec<u8> = rng.sample_iter(Standard).take(file_length).collect();
 
-    let _ = std::fs::write(&file_path, &file_content);
+    let _ = std::fs::write(&file_path, file_content);
     std::thread::sleep(Duration::from_millis(100))
 }
 

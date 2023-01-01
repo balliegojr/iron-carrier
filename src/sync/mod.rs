@@ -38,13 +38,13 @@ impl std::fmt::Display for SyncEvent {
             SyncEvent::EndSync => write!(f, "End Sync"),
             SyncEvent::SyncNextStorage => write!(f, "Sync next storage"),
             SyncEvent::BuildStorageIndex(storage) => {
-                write!(f, "Build Storage Index: {}", storage)
+                write!(f, "Build Storage Index: {storage}")
             }
             SyncEvent::SetStorageIndex(_) => write!(f, "Set Storage Index"),
             SyncEvent::ExchangeStorageStates => write!(f, "Exchange storage states"),
             SyncEvent::QueryOutOfSyncStorages(_storages) => write!(f, "Query storages"),
             SyncEvent::ReplyOutOfSyncStorages(storages) => {
-                write!(f, "Storages To Sync {:?}", storages)
+                write!(f, "Storages To Sync {storages:?}")
             }
         }
     }

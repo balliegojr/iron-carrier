@@ -3,6 +3,7 @@
 //! Synchronize your files in differents machines on the same network
 
 #![feature(hash_drain_filter)]
+#![feature(let_chains)]
 
 use serde::{Deserialize, Serialize};
 use std::{fs::File, net::SocketAddr, time::Duration};
@@ -36,6 +37,8 @@ use sync::{FileTransferMan, FileWatcher, Synchronizer};
 
 mod transaction_log;
 use transaction_log::TransactionLogWriter;
+
+pub mod validation;
 
 /// Result<T, IronCarrierError> alias
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -98,7 +101,7 @@ impl From<bincode::Error> for IronCarrierError {
     }
 }
 
-pub fn run(config: &'static config::Config) -> crate::Result<()> {
+pub fn run(config: &'static validation::Valid<config::Config>) -> crate::Result<()> {
     log::trace!("My id is {}", config.node_id);
 
     let ignored_files: &'static IgnoredFiles = Box::leak(Box::new(IgnoredFiles::new(config)));

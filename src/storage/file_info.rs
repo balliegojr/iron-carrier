@@ -69,8 +69,8 @@ impl FileInfo {
     /// Returns the absolute path of the file for this file system  
     /// Using the provided root path for the alias in [Config]
     pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
-        match config.paths.get(&self.storage) {
-            Some(path) => match path.canonicalize() {
+        match config.storages.get(&self.storage) {
+            Some(path) => match path.path.canonicalize() {
                 Ok(mut root_path) => {
                     root_path.extend(self.path.components());
                     Ok(root_path)

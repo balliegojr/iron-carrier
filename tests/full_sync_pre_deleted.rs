@@ -5,7 +5,9 @@ use std::str::FromStr;
 use std::thread;
 use std::{fs, time::SystemTime};
 
+use iron_carrier::config::Config;
 use iron_carrier::constants::LINE_ENDING;
+use iron_carrier::validation::Validate;
 
 mod common;
 
@@ -29,16 +31,20 @@ fn test_sync_deleted_files() {
 node_id="{peer_name}"
 group="pre_deleted"
 port={port}
-log_path = {:?} 
+log_path = {log_path:?} 
 delay_watcher_events=1
-[paths]
-store_one = {:?}
-"#,
-            log_path, store_path
+[storages]
+store_one = {store_path:?}
+"#
         );
 
-        let config = iron_carrier::config::Config::new_from_str(config).unwrap();
-        configs.push(config);
+        configs.push(
+            config
+                .parse::<Config>()
+                .and_then(|config| config.validate())
+                .unwrap()
+                .leak(),
+        );
 
         port += 1;
     }

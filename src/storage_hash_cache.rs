@@ -34,7 +34,7 @@ impl StorageHashCache {
 
     pub fn has_any_available_to_sync(&self) -> bool {
         let hash_state = self.hash_state.lock().unwrap();
-        self.config.paths.keys().any(|storage| {
+        self.config.storages.keys().any(|storage| {
             hash_state
                 .get(storage.as_str())
                 .map(|state| matches!(state, StorageHashState::CurrentHash(_)))
@@ -45,7 +45,7 @@ impl StorageHashCache {
     pub fn get_available_to_sync(&self) -> HashMap<String, u64> {
         let mut hash_state = self.hash_state.lock().unwrap();
         self.config
-            .paths
+            .storages
             .keys()
             .filter_map(|storage| {
                 let storage_state = hash_state.entry(storage.to_string()).or_insert_with(|| {

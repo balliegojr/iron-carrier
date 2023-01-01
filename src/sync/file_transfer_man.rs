@@ -45,9 +45,9 @@ impl std::fmt::Display for FileHandlerEvent {
                 blocks.len()
             ),
             FileHandlerEvent::WriteChunk(file_hash, block, _) => {
-                write!(f, "WriteBlock - {} - Block Index {}", file_hash, block)
+                write!(f, "WriteBlock - {file_hash} - Block Index {block}")
             }
-            FileHandlerEvent::EndSync(file_hash) => write!(f, "EndSync - {}", file_hash),
+            FileHandlerEvent::EndSync(file_hash) => write!(f, "EndSync - {file_hash}"),
             FileHandlerEvent::DeleteFile(file) => write!(f, "Delete file {:?}", file.path),
             FileHandlerEvent::SendFile(file, peer_id, _) => {
                 write!(f, "Send file {:?} to {}", file.path, peer_id)
@@ -443,7 +443,7 @@ impl FileTransferMan {
             let bytes_to_read = cmp::min(file_sync.block_size, file_size - position) as usize;
             let mut buf = vec![0u8; bytes_to_read];
 
-            if file_sync.file_handler.seek(SeekFrom::Start(position))? == position as u64 {
+            if file_sync.file_handler.seek(SeekFrom::Start(position))? == position {
                 file_sync
                     .file_handler
                     .read_exact(&mut buf[..bytes_to_read])?;
@@ -453,7 +453,7 @@ impl FileTransferMan {
 
             let mut data = Vec::with_capacity(bytes_to_read + 16);
             data.extend(file_hash.to_be_bytes());
-            data.extend((index as u64).to_be_bytes());
+            data.extend((index).to_be_bytes());
             data.extend(&buf[..bytes_to_read]);
 
             self.commands.to(Commands::Stream(data), peer_id);

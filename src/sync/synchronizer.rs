@@ -40,7 +40,7 @@ impl Synchronizer {
     pub fn handle_signal(&mut self, signal: SyncEvent) -> crate::Result<bool> {
         match signal {
             SyncEvent::StartSync => {
-                if self.config.paths.is_empty() {
+                if self.config.storages.is_empty() {
                     log::error!(
                         "There are no storages to sync, be sure your configuration file is correct"
                     );
@@ -128,7 +128,7 @@ impl Synchronizer {
                 }
             }
             SyncEvent::BuildStorageIndex(storage) => {
-                if !self.config.paths.contains_key(&storage) {
+                if !self.config.storages.contains_key(&storage) {
                     log::error!("There is no such storage: {}", &storage);
                     return Ok(false);
                 }
