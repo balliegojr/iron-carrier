@@ -40,7 +40,7 @@ pub fn calculate_file_hash_digest(file: &FileInfo, digest: &mut Digest<u64>) {
 pub fn get_node_id(peer_port: u16) -> u64 {
     // The port must be used to generate the id, this way it is possible to run multiple instances in the same machine
     match machine_uid::get() {
-        Ok(machine_id) => calculate_checksum(format!("{}:::{}", machine_id, peer_port).as_bytes()),
+        Ok(machine_id) => calculate_checksum(format!("{machine_id}:::{peer_port}").as_bytes()),
         Err(_) => {
             let mut rng = rand::thread_rng();
             rng.gen::<u64>() + peer_port as u64

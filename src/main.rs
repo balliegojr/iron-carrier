@@ -1,5 +1,5 @@
 use clap::{App, Arg};
-use iron_carrier::{config::Config, constants::VERSION};
+use iron_carrier::{config::Config, constants::VERSION, validation::Validate};
 use std::{path::PathBuf, process::exit};
 
 fn main() {
@@ -41,7 +41,7 @@ fn main() {
         }
     };
 
-    let config = match Config::new(&config) {
+    let config = match Config::new(&config).and_then(|config| config.validate()) {
         Ok(config) => config,
         Err(e) => {
             log::error!("{}", e);
@@ -50,7 +50,7 @@ fn main() {
         }
     };
 
-    if let Err(e) = iron_carrier::run(config) {
+    if let Err(e) = iron_carrier::run(config.leak()) {
         log::error!("{}", e);
         exit(-1)
     };

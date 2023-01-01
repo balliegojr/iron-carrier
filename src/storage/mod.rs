@@ -37,7 +37,11 @@ pub fn walk_path(
     storage: &str,
     ignored_files: &IgnoredFiles,
 ) -> crate::Result<Vec<FileInfo>> {
-    let root_path = config.paths.get(storage).expect("Unexpected storage");
+    let root_path = config
+        .storages
+        .get(storage)
+        .map(|p| p.path.as_path())
+        .expect("Unexpected storage");
     let mut paths = vec![root_path.to_owned()];
 
     let mut files = get_deleted_files(config, storage)?;
@@ -226,15 +230,13 @@ mod tests {
         File::create("./tmp/fs/read_local_files/file_1")?;
         File::create("./tmp/fs/read_local_files/file_2")?;
 
-        let config = Config::new_from_str(
-            r#"
+        let config = r#"
 log_path = "./tmp/fs/logfile.log"
-[paths]
+[storages]
 a = "./tmp/fs/read_local_files"
 "#
-            .to_string(),
-        )
-        .expect("Failed to parse config");
+        .parse::<Config>()?
+        .leak();
 
         let mut files: Vec<FileInfo> = walk_path(config, "a", &IgnoredFiles::new(config))
             .unwrap()

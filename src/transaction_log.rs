@@ -69,7 +69,7 @@ impl<T: Write> TransactionLogWriter<T> {
         self.log_stream
             .lock()
             .expect("Poisoned lock")
-            .write_all(format!("{}{}", event, LINE_ENDING).as_bytes())?;
+            .write_all(format!("{event}{LINE_ENDING}").as_bytes())?;
 
         Ok(())
     }
@@ -292,7 +292,7 @@ pub enum EventStatus {
 
 impl std::fmt::Display for EventStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 

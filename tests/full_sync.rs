@@ -1,5 +1,8 @@
 use std::{fs, path::PathBuf, str::FromStr, thread, time::Duration};
 
+use iron_carrier::config::Config;
+use iron_carrier::validation::Validate;
+
 mod common;
 
 #[test]
@@ -28,13 +31,18 @@ node_id="{peer_name}"
 group="full_sync"
 port={port}
 log_path = {log_path:?}
-[paths]
+[storages]
 store_one = {store_one_path:?}
 store_two = {store_two_path:?}
 "#,
         );
-        let config = iron_carrier::config::Config::new_from_str(config).unwrap();
-        configs.push(config);
+        configs.push(
+            config
+                .parse::<Config>()
+                .and_then(|config| config.validate())
+                .unwrap()
+                .leak(),
+        );
 
         port += 1;
     }

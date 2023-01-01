@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::FileHandlerEvent;
 use crate::{
-    config::Config,
+    config::{Config, PathConfig},
     events::CommandDispatcher,
     ignored_files::IgnoredFiles,
     storage::FileInfo,
@@ -57,8 +57,8 @@ impl FileWatcher {
     ) -> crate::Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut _notify_watcher = watcher(tx, Duration::from_secs(config.delay_watcher_events))?;
-        for (_, path) in config.paths.iter() {
-            let path = path.canonicalize().unwrap();
+        for (_, path) in config.storages.iter() {
+            let path = path.path.canonicalize().unwrap();
             if _notify_watcher
                 .watch(path, RecursiveMode::Recursive)
                 .is_err()
@@ -128,7 +128,7 @@ impl FileWatcher {
                 let mut supression_guard = event_supression.lock().unwrap();
                 if let Some(event) = map_to_sync_event(
                     event,
-                    &config.paths,
+                    &config.storages,
                     &mut supression_guard,
                     &mut log_writer,
                     ignored_files,
@@ -151,7 +151,7 @@ impl FileWatcher {
 
 fn get_storage_for_path(
     file_path: &Path,
-    paths: &HashMap<String, PathBuf>,
+    paths: &HashMap<String, PathConfig>,
 ) -> Option<(String, PathBuf)> {
     let file_path = if file_path.is_relative() {
         file_path.canonicalize().ok()?
@@ -160,7 +160,7 @@ fn get_storage_for_path(
     };
 
     for (alias, config_path) in paths.iter() {
-        let config_path = match config_path.canonicalize() {
+        let config_path = match config_path.path.canonicalize() {
             Ok(config_path) => config_path,
             Err(_) => return None,
         };
@@ -179,7 +179,7 @@ fn get_storage_for_path(
 /// Returns [None] for ignored events
 fn map_to_sync_event(
     event: DebouncedEvent,
-    paths: &HashMap<String, PathBuf>,
+    paths: &HashMap<String, PathConfig>,
     event_supression: &mut HashMap<FileInfo, SupressionType>,
     log_writer: &mut TransactionLogWriter<File>,
     ignored_files: &IgnoredFiles,
@@ -273,7 +273,7 @@ fn map_to_sync_event(
 }
 
 fn get_file_info(
-    paths: &HashMap<String, PathBuf>,
+    paths: &HashMap<String, PathConfig>,
     event_supression: &mut HashMap<FileInfo, SupressionType>,
     file_path: PathBuf,
     supression_type: SupressionType,
@@ -285,9 +285,9 @@ fn get_file_info(
     }
 
     let (storage, root) = get_storage_for_path(&file_path, paths)?;
-    let relative_path = file_path.strip_prefix(&root).ok()?;
+    let relative_path = file_path.strip_prefix(root).ok()?;
 
-    if ignored_files.is_ignored(&storage, &relative_path) {
+    if ignored_files.is_ignored(&storage, relative_path) {
         return None;
     }
 

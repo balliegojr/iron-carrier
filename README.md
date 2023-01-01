@@ -55,40 +55,7 @@ you want to synchronize
 
 
 ## Configuration File
-```toml
-# 10 character long unique id for this node
-node_id = "my_node_id"
-
-# 20 character long group name
-group = "sync_group"
-
-# listening port, defaults to 25230
-port = 25230  
-
-# listen to events in real time, defaults to true
-enable_file_watcher = true
-
-# time to delay watcher events, in seconds, defaults to 10
-# useful to avoid sending the same file a lot of times
-delay_watcher_events = 10
-
-
-# Service discovery is active by default, it is possible to disable it and specify a list of  peers
-enable_service_discovery = true
-
-# Path location
-log_path = "~/.iron_carrier/iron_carrier.log"
-
-# Optional list of peers to sync
-peers = [
-    "otherpeer:8091"
-]
-
-# Paths to synchronize
-[paths]
-my_docs = "/home/my_user/Documents"
-some_pictures = "/home/my_user/Pictures"
-```
+TODO: new config example
 
 
 # Motivation

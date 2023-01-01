@@ -5,6 +5,7 @@ use std::{thread, time::Duration};
 
 mod common;
 use iron_carrier::config::Config;
+use iron_carrier::validation::Validate;
 
 #[test]
 fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,13 +20,17 @@ group="partial_sync"
 port={port}
 log_path = "/tmp/partial_sync/peer_{peer_name}/peer_log.log"
 delay_watcher_events=1
-[paths]
+[storages]
 store_one = "/tmp/partial_sync/peer_{peer_name}/store_one"
 store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
 "#,
         );
 
-        let config = Config::new_from_str(config).unwrap();
+        let config = config
+            .parse::<Config>()
+            .and_then(|config| config.validate())
+            .unwrap()
+            .leak();
         thread::spawn(move || {
             iron_carrier::run(config).expect("Carrier failed");
         });
@@ -76,7 +81,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
                 let _ = std::fs::rename(file, file.join("renamed.ren"));
             }
             2 => {
-                let _ = common::append_content(file, b"random content");
+                common::append_content(file, b"random content");
             }
             _ => {}
         }
@@ -96,7 +101,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
                 let _ = std::fs::rename(file, file.join("renamed.ren"));
             }
             2 => {
-                let _ = common::append_content(file, b"random content");
+                common::append_content(file, b"random content");
             }
             _ => {}
         }
