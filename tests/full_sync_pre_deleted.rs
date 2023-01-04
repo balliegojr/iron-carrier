@@ -7,7 +7,8 @@ use std::{fs, time::SystemTime};
 
 use iron_carrier::config::Config;
 use iron_carrier::constants::LINE_ENDING;
-use iron_carrier::validation::Validate;
+use iron_carrier::leak::Leak;
+use iron_carrier::validation::Unverified;
 
 mod common;
 
@@ -40,7 +41,7 @@ store_one = {store_path:?}
 
         configs.push(
             config
-                .parse::<Config>()
+                .parse::<Unverified<Config>>()
                 .and_then(|config| config.validate())
                 .unwrap()
                 .leak(),

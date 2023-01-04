@@ -1,28 +1,42 @@
 use std::ops::Deref;
 
-pub trait Validator {}
-
-pub trait Validate {
+pub trait Verifiable {
     fn is_valid(&self) -> crate::Result<()>;
-    fn validate(self) -> crate::Result<Valid<Self>>
-    where
-        Self: Sized + Validate,
-    {
-        self.is_valid().map(|_| Valid { inner: self })
-    }
 }
 
-pub struct Valid<T> {
+pub struct Verified<T> {
     inner: T,
 }
 
-impl<T: Validate + Sized> Valid<T> {
-    pub fn leak(self) -> &'static Self {
-        Box::leak(Box::new(self))
+impl<T: Verifiable> Deref for Verified<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
-impl<T: Validate> Deref for Valid<T> {
+pub struct Unverified<T>
+where
+    T: Verifiable,
+{
+    inner: T,
+}
+
+impl<T> Unverified<T>
+where
+    T: Verifiable,
+{
+    pub fn new(inner: T) -> Self {
+        Self { inner }
+    }
+
+    pub fn validate(self) -> crate::Result<Verified<T>> {
+        self.is_valid().map(|_| Verified { inner: self.inner })
+    }
+}
+
+impl<T: Verifiable> Deref for Unverified<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {

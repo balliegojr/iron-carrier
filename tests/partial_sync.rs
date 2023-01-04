@@ -1,3 +1,4 @@
+use iron_carrier::leak::Leak;
 use rand::seq::SliceRandom;
 use std::fs;
 use std::iter::Iterator;
@@ -5,7 +6,7 @@ use std::{thread, time::Duration};
 
 mod common;
 use iron_carrier::config::Config;
-use iron_carrier::validation::Validate;
+use iron_carrier::validation::Unverified;
 
 #[test]
 fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,7 +28,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
         );
 
         let config = config
-            .parse::<Config>()
+            .parse::<Unverified<Config>>()
             .and_then(|config| config.validate())
             .unwrap()
             .leak();

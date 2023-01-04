@@ -222,6 +222,8 @@ pub fn is_special_file(path: &Path) -> bool {
 mod tests {
     use std::fs::File;
 
+    use crate::{leak::Leak, validation::Unverified};
+
     use super::*;
 
     #[test]
@@ -235,7 +237,7 @@ log_path = "./tmp/fs/logfile.log"
 [storages]
 a = "./tmp/fs/read_local_files"
 "#
-        .parse::<Config>()?
+        .parse::<Unverified<Config>>()?
         .leak();
 
         let mut files: Vec<FileInfo> = walk_path(config, "a", &IgnoredFiles::new(config))

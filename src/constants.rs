@@ -1,4 +1,4 @@
-pub const VERSION: &str = "0.1";
+pub const VERSION: &str = "0.2";
 
 pub const PEER_IDENTIFICATION_TIMEOUT: u64 = 1;
 pub const PEER_STALE_CONNECTION: u64 = 120;
