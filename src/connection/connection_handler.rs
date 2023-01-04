@@ -2,7 +2,7 @@ use message_io::{
     network::{Endpoint, NetEvent, Transport},
     node::NodeHandler,
 };
-use simple_mdns::ServiceDiscovery;
+use simple_mdns::sync_discovery::ServiceDiscovery;
 use std::{
     collections::HashMap,
     net::{SocketAddr, ToSocketAddrs},

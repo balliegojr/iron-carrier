@@ -3,7 +3,8 @@ use std::{thread, time::Duration};
 
 mod common;
 use iron_carrier::config::Config;
-use iron_carrier::validation::Validate;
+use iron_carrier::leak::Leak;
+use iron_carrier::validation::Unverified;
 
 #[test]
 fn test_truncate() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,7 +25,7 @@ store_one = "/tmp/truncate/peer_{peer_name}/store_one"
         );
 
         let config = config
-            .parse::<Config>()
+            .parse::<Unverified<Config>>()
             .and_then(|config| config.validate())
             .unwrap()
             .leak();

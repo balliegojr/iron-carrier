@@ -1,4 +1,4 @@
-use simple_mdns::ServiceDiscovery;
+use simple_mdns::sync_discovery::ServiceDiscovery;
 use std::net::IpAddr;
 
 use crate::{config::Config, constants::VERSION};

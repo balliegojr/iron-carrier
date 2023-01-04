@@ -5,9 +5,11 @@
 #![feature(hash_drain_filter)]
 #![feature(let_chains)]
 
+use network::ConnectionHandler;
 use serde::{Deserialize, Serialize};
 use std::{fs::File, net::SocketAddr, time::Duration};
 use thiserror::Error;
+use validation::Verified;
 
 pub mod config;
 use config::Config;
@@ -24,10 +26,17 @@ mod hash_helper;
 mod ignored_files;
 use ignored_files::IgnoredFiles;
 
+pub mod leak;
+use leak::Leak;
+
 mod negotiator;
 use negotiator::Negotiator;
 
+mod network;
 mod storage;
+
+mod state_machine;
+mod states;
 
 mod storage_hash_cache;
 use storage_hash_cache::StorageHashCache;
@@ -101,77 +110,117 @@ impl From<bincode::Error> for IronCarrierError {
     }
 }
 
-pub fn run(config: &'static validation::Valid<config::Config>) -> crate::Result<()> {
+#[derive(Debug, Serialize, Deserialize)]
+enum NetworkEvents {}
+
+struct SharedState {
+    daemon: bool,
+    config: &'static Verified<Config>,
+    connection_handler: &'static ConnectionHandler<NetworkEvents>,
+}
+
+pub async fn run_full_sync(
+    config: &'static validation::Verified<config::Config>,
+) -> crate::Result<()> {
+    let connection_handler = network::ConnectionHandler::new(config).await?.leak();
+
+    let shared_state = SharedState {
+        daemon: false,
+        config,
+        connection_handler,
+    };
+    let state_machine = state_machine::StateStepper::new(shared_state);
+    state_machine
+        .execute(Box::<states::DiscoverPeers>::default())
+        .await;
+
+    Ok(())
+}
+
+pub async fn start_daemon(
+    config: &'static validation::Verified<config::Config>,
+) -> crate::Result<()> {
     log::trace!("My id is {}", config.node_id);
 
-    let ignored_files: &'static IgnoredFiles = Box::leak(Box::new(IgnoredFiles::new(config)));
-    let storage_state: &'static StorageHashCache = Box::leak(Box::new(
-        storage_hash_cache::StorageHashCache::new(config, ignored_files),
-    ));
+    let connection_handler = network::ConnectionHandler::new(config).await?.leak();
 
-    let mut log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
-    let connection_man = get_command_handler_when_ready(config);
-    let file_watcher = get_file_watcher(
+    let shared_state = SharedState {
+        daemon: true,
         config,
-        connection_man.command_dispatcher(),
-        log_writer.clone(),
-        ignored_files,
-    );
+        connection_handler,
+    };
+    let state_machine = state_machine::StateStepper::new(shared_state);
+    state_machine
+        .execute(Box::<states::DiscoverPeers>::default())
+        .await;
 
-    let mut file_transfer_man = FileTransferMan::new(
-        connection_man.command_dispatcher(),
-        config,
-        log_writer.clone(),
-        storage_state,
-    );
-
-    let mut negotiator = Negotiator::new(connection_man.command_dispatcher());
-    let mut synchronizer = Synchronizer::new(
-        config,
-        connection_man.command_dispatcher(),
-        storage_state,
-        ignored_files,
-    )?;
-
-    connection_man.on_command(move |command, peer_id| -> crate::Result<bool> {
-        match command {
-            Commands::Command(event) => {
-                if matches!(event, sync::SyncEvent::StartSync) && peer_id.is_some() {
-                    negotiator.set_passive();
-                }
-
-                match peer_id {
-                    Some(peer_id) => synchronizer.handle_network_event(event, &peer_id),
-                    None => synchronizer.handle_signal(event),
-                }
-            }
-
-            Commands::Stream(data) => file_transfer_man.handle_stream(&data, &peer_id.unwrap()),
-            Commands::FileHandler(event) => {
-                file_transfer_man.handle_event(event, peer_id.as_deref())
-            }
-            Commands::Watcher(event) => match &file_watcher {
-                Some(watcher) => watcher.handle_event(event),
-                None => Ok(false),
-            },
-            Commands::Clear => {
-                log_writer.compress_log()?;
-                file_transfer_man.clear();
-                storage_state.clear();
-                synchronizer.clear();
-                negotiator.clear();
-
-                // TODO: only clear ignored files when there is a change in the .ignore file
-                ignored_files.clear();
-
-                Ok(false)
-            }
-            Commands::Negotiation(event) => {
-                negotiator.handle_negotiation(event, peer_id);
-                Ok(false)
-            }
-        }
-    })
+    Ok(())
+    // let ignored_files = IgnoredFiles::new(config).leak();
+    // let storage_state = storage_hash_cache::StorageHashCache::new(config, ignored_files).leak();
+    //
+    // let mut log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
+    // let connection_man = get_command_handler_when_ready(config);
+    // let file_watcher = get_file_watcher(
+    //     config,
+    //     connection_man.command_dispatcher(),
+    //     log_writer.clone(),
+    //     ignored_files,
+    // );
+    //
+    // let mut file_transfer_man = FileTransferMan::new(
+    //     connection_man.command_dispatcher(),
+    //     config,
+    //     log_writer.clone(),
+    //     storage_state,
+    // );
+    //
+    // let mut negotiator = Negotiator::new(connection_man.command_dispatcher());
+    // let mut synchronizer = Synchronizer::new(
+    //     config,
+    //     connection_man.command_dispatcher(),
+    //     storage_state,
+    //     ignored_files,
+    // )?;
+    //
+    // connection_man.on_command(move |command, peer_id| -> crate::Result<bool> {
+    //     match command {
+    //         Commands::Command(event) => {
+    //             if matches!(event, sync::SyncEvent::StartSync) && peer_id.is_some() {
+    //                 negotiator.set_passive();
+    //             }
+    //
+    //             match peer_id {
+    //                 Some(peer_id) => synchronizer.handle_network_event(event, &peer_id),
+    //                 None => synchronizer.handle_signal(event),
+    //             }
+    //         }
+    //
+    //         Commands::Stream(data) => file_transfer_man.handle_stream(&data, &peer_id.unwrap()),
+    //         Commands::FileHandler(event) => {
+    //             file_transfer_man.handle_event(event, peer_id.as_deref())
+    //         }
+    //         Commands::Watcher(event) => match &file_watcher {
+    //             Some(watcher) => watcher.handle_event(event),
+    //             None => Ok(false),
+    //         },
+    //         Commands::Clear => {
+    //             log_writer.compress_log()?;
+    //             file_transfer_man.clear();
+    //             storage_state.clear();
+    //             synchronizer.clear();
+    //             negotiator.clear();
+    //
+    //             // TODO: only clear ignored files when there is a change in the .ignore file
+    //             ignored_files.clear();
+    //
+    //             Ok(false)
+    //         }
+    //         Commands::Negotiation(event) => {
+    //             negotiator.handle_negotiation(event, peer_id);
+    //             Ok(false)
+    //         }
+    //     }
+    // })
 }
 
 fn get_file_watcher(

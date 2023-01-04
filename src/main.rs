@@ -1,8 +1,9 @@
 use clap::{App, Arg};
-use iron_carrier::{config::Config, constants::VERSION, validation::Validate};
+use iron_carrier::{config::Config, constants::VERSION, leak::Leak, validation::Verified};
 use std::{path::PathBuf, process::exit};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let matches = App::new("Iron Carrier")
         .version(VERSION)
         .author("Ilson Roberto Balliego Junior <ilson.balliego@gmail.com>")
@@ -20,6 +21,12 @@ fn main() {
                 .multiple(true)
                 .help("Sets the level of verbosity"),
         )
+        .arg(
+            Arg::with_name("daemon")
+                .short("d")
+                .required(false)
+                .help("Runs as a daemon"),
+        )
         .get_matches();
 
     let verbosity = matches.occurrences_of("v") as usize;
@@ -31,29 +38,34 @@ fn main() {
         .init()
         .unwrap();
 
-    let config = match matches.value_of("config") {
-        Some(config) => config.into(),
-        None => {
-            let mut config_dir = get_project_dir();
-            config_dir.push("config.toml");
+    let config = get_config(matches.value_of("config")).leak();
 
-            config_dir
-        }
+    let execution_result = if matches.is_present("daemon") {
+        iron_carrier::start_daemon(config).await
+    } else {
+        iron_carrier::run_full_sync(config).await
     };
 
-    let config = match Config::new(&config).and_then(|config| config.validate()) {
+    if let Err(e) = execution_result {
+        log::error!("{e}");
+        exit(-1)
+    };
+}
+
+fn get_config(config_path: Option<&str>) -> Verified<Config> {
+    let config = match config_path {
+        Some(config) => config.into(),
+        None => get_project_dir().join("config.toml"),
+    };
+
+    match Config::new(&config).and_then(|config| config.validate()) {
         Ok(config) => config,
-        Err(e) => {
-            log::error!("{}", e);
+        Err(err) => {
+            log::error!("{err}");
             log::error!("Error reading config at {}", config.to_str().unwrap());
             exit(-1)
         }
-    };
-
-    if let Err(e) = iron_carrier::run(config.leak()) {
-        log::error!("{}", e);
-        exit(-1)
-    };
+    }
 }
 
 fn get_project_dir() -> PathBuf {
