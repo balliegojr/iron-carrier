@@ -7,6 +7,7 @@
 
 use network::ConnectionHandler;
 use serde::{Deserialize, Serialize};
+use states::consensus::ElectionEvents;
 use std::{fs::File, net::SocketAddr, time::Duration};
 use thiserror::Error;
 use validation::Verified;
@@ -111,12 +112,32 @@ impl From<bincode::Error> for IronCarrierError {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum NetworkEvents {}
+enum NetworkEvents {
+    ConsensusElection(ElectionEvents),
+    RequestTransition(Transition),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum Transition {
+    Consensus,
+    FullSync,
+}
 
 struct SharedState {
     daemon: bool,
     config: &'static Verified<Config>,
     connection_handler: &'static ConnectionHandler<NetworkEvents>,
+}
+
+// TODO: move the default state to a trait, so the state machine can handle this
+impl SharedState {
+    pub fn default_state(&self) -> Option<Box<dyn state_machine::StateStep<SharedState>>> {
+        if self.daemon {
+            Some(Box::new(states::Daemon::new()))
+        } else {
+            None
+        }
+    }
 }
 
 pub async fn run_full_sync(

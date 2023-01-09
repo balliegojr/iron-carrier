@@ -10,28 +10,21 @@ impl<T> StateStepper<T> {
     }
 
     pub async fn execute(self, initial_state: Box<dyn StateStep<T>>) {
-        let mut current_state = StateTransition::Next(initial_state);
+        let mut current_state = initial_state;
         loop {
-            match current_state {
-                StateTransition::Next(state) => {
-                    log::debug!("Running State: {state}");
-                    log::debug!("{state:?}");
+            log::debug!("Running State: {current_state}");
+            log::debug!("{current_state:?}");
 
-                    match state.execute(&self.shared_state).await {
-                        Ok(next_state) => {
-                            log::debug!("State Completed");
-                            current_state = next_state;
-                        }
-                        Err(err) => {
-                            log::error!("State Failed");
-                            log::error!("{err}");
-                            log::debug!("State Execution Aborted");
-                            break;
-                        }
-                    }
+            match current_state.execute(&self.shared_state).await {
+                Ok(Some(next_state)) => {
+                    log::debug!("State Completed");
+                    current_state = next_state;
                 }
-                StateTransition::Done => {
-                    log::debug!("Ran to completion");
+                Ok(None) => break,
+                Err(err) => {
+                    log::error!("State Failed");
+                    log::error!("{err}");
+                    log::debug!("State Execution Aborted");
                     break;
                 }
             }
@@ -39,11 +32,10 @@ impl<T> StateStepper<T> {
     }
 }
 
-pub enum StateTransition<T> {
-    Next(Box<dyn StateStep<T>>),
-    Done,
-}
 #[async_trait::async_trait]
-pub trait StateStep<T>: Display + std::fmt::Debug {
-    async fn execute(self: Box<Self>, shared_state: &T) -> crate::Result<StateTransition<T>>;
+pub trait StateStep<T>: Display + std::fmt::Debug + Sync + Send {
+    async fn execute(
+        self: Box<Self>,
+        shared_state: &T,
+    ) -> crate::Result<Option<Box<dyn StateStep<T>>>>;
 }
