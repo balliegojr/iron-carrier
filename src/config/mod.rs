@@ -29,6 +29,9 @@ pub struct Config {
     #[serde(default = "String::default")]
     pub node_id: String,
 
+    #[serde(skip)]
+    pub node_id_hashed: u64,
+
     /// Option group of nodes to sync
     pub group: Option<String>,
 
@@ -88,6 +91,8 @@ impl Config {
                 .take(20)
                 .collect();
         }
+
+        self.node_id_hashed = hash_helper::calculate_checksum(self.node_id.as_bytes());
 
         self
     }
