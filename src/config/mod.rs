@@ -117,7 +117,7 @@ impl Config {
 impl Unverified<Config> {}
 
 impl FromStr for Unverified<Config> {
-    type Err = Box<dyn Error>;
+    type Err = Box<dyn Error + Send + Sync>;
 
     fn from_str(content: &str) -> Result<Self, Self::Err> {
         Ok(toml::from_str::<Config>(content).map(|c| {

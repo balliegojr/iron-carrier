@@ -1,8 +1,10 @@
 use std::fmt::Display;
 
+use tokio_stream::StreamExt;
+
 use crate::{state_machine::StateStep, NetworkEvents, SharedState, Transition};
 
-use super::{Consensus, FullSync};
+use super::Consensus;
 
 pub struct Daemon {}
 
@@ -33,12 +35,18 @@ impl StateStep<SharedState> for Daemon {
         let _service_discovery =
             crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
 
+        let events_stream = shared_state.connection_handler.events_stream().await;
+        tokio::pin!(events_stream);
+
         loop {
-            match shared_state.connection_handler.next_event().await {
-                Some((_, NetworkEvents::RequestTransition(transition))) => match transition {
-                    Transition::Consensus => return Ok(Some(Box::new(Consensus::new()))),
-                    Transition::FullSync => return Ok(Some(Box::new(FullSync::new(false)))),
-                },
+            match events_stream.next().await {
+                Some((_, NetworkEvents::RequestTransition(Transition::Consensus))) => {
+                    return Ok(Some(Box::new(Consensus::new())))
+                }
+                // In case there is an ongoing election when this daemon becomes active
+                Some((_, NetworkEvents::ConsensusElection(_))) => {
+                    return Ok(Some(Box::new(Consensus::new())));
+                }
                 Some(_) => {}
                 None => break Ok(None),
             }

@@ -7,6 +7,7 @@ use std::{fmt::Display, time::Duration};
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
 
 use crate::{state_machine::StateStep, NetworkEvents, SharedState};
 
@@ -76,6 +77,9 @@ impl StateStep<SharedState> for Consensus {
             ))
             .await?;
 
+        let events = shared_state.connection_handler.events_stream().await;
+        tokio::pin!(events);
+
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline), if self.election_state == NodeState::Candidate => {
@@ -94,7 +98,7 @@ impl StateStep<SharedState> for Consensus {
 
                     deadline = tokio::time::Instant::now() + Duration::from_millis(get_timeout());
                 }
-                Some((peer_id, network_event)) = shared_state.connection_handler.next_event() => {
+                Some((peer_id, network_event)) = events.next() => {
                     match network_event {
                         NetworkEvents::ConsensusElection(ev) => {
                             match ev {
@@ -111,15 +115,16 @@ impl StateStep<SharedState> for Consensus {
                                     term.compute_vote(vote);
 
                                     if term.absolute_win() {
+                                        log::debug!("Node wins election");
                                         self.election_state = NodeState::Leader;
-                                        return Ok(Some(Box::new(crate::states::FullSync::new(true))))
+                                        return Ok(Some(Box::new(crate::states::FullSyncLeader::new())))
                                     }
                                 }
                                 _ => {}
                             }
                         }
-                        NetworkEvents::RequestTransition(crate::Transition::FullSync) => {
-                            return Ok(Some(Box::new(crate::states::FullSync::new(false))))
+                        NetworkEvents::RequestTransition(crate::Transition::FullSync) => if self.election_state == NodeState::Follower {
+                            return Ok(Some(Box::new(crate::states::FullSyncFollower::new(peer_id))))
                         }
                         _ => {}
                     }
@@ -154,7 +159,7 @@ impl ElectionTerm {
     }
 
     fn absolute_win(&self) -> bool {
-        self.voted_yes + self.voted_no == self.participants
+        self.voted_yes == self.participants
     }
 }
 

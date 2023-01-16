@@ -46,7 +46,7 @@ impl StateStep<SharedState> for DiscoverPeers {
         }
 
         if addresses.is_empty() {
-            Ok(None)
+            Ok(shared_state.default_state())
         } else {
             Ok(Some(Box::new(ConnectAllPeers::new(addresses))))
         }

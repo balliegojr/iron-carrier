@@ -1,42 +1,30 @@
-use std::{collections::HashMap, path::Path, sync::Mutex};
-
+use crate::constants::IGNORE_FILE_NAME;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-
-use crate::{config::Config, constants::IGNORE_FILE_NAME};
+use std::path::Path;
 
 /// Handle ignored files
+#[derive(Debug)]
 pub struct IgnoredFiles {
-    config: &'static Config,
-    ignore_sets: Mutex<HashMap<String, Option<GlobSet>>>,
+    ignore_sets: Option<GlobSet>,
 }
 
 impl IgnoredFiles {
-    pub fn new(config: &'static Config) -> Self {
+    pub async fn new(path: impl AsRef<Path>) -> Self {
         Self {
-            ignore_sets: HashMap::new().into(),
-            config,
+            ignore_sets: get_glob_set(path.as_ref()).await,
         }
     }
 
-    pub fn clear(&self) {
-        self.ignore_sets.lock().unwrap().clear();
-    }
-
-    pub fn is_ignored<P: AsRef<Path>>(&self, storage: &str, path: P) -> bool {
-        let mut ignore_sets = self.ignore_sets.lock().unwrap();
-        let glob_set = ignore_sets
-            .entry(storage.to_string())
-            .or_insert_with(|| get_glob_set(&self.config.storages[storage].path));
-
-        glob_set
+    pub fn is_ignored(&self, path: impl AsRef<Path>) -> bool {
+        self.ignore_sets
             .as_ref()
             .map(|set| set.is_match(path))
             .unwrap_or_default()
     }
 }
 
-fn get_glob_set<P: AsRef<Path>>(path: P) -> Option<GlobSet> {
-    let patterns = get_ignore_patterns(path.as_ref())?;
+async fn get_glob_set<P: AsRef<Path>>(path: P) -> Option<GlobSet> {
+    let patterns = get_ignore_patterns(path.as_ref()).await?;
 
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
@@ -64,13 +52,13 @@ fn get_glob_set<P: AsRef<Path>>(path: P) -> Option<GlobSet> {
     }
 }
 
-fn get_ignore_patterns<P: AsRef<Path>>(path: P) -> Option<Vec<String>> {
+async fn get_ignore_patterns(path: impl AsRef<Path>) -> Option<Vec<String>> {
     let ignore_file_path = path.as_ref().join(IGNORE_FILE_NAME);
     if !ignore_file_path.exists() {
         return None;
     }
 
-    let content = match std::fs::read_to_string(ignore_file_path) {
+    let content = match tokio::fs::read_to_string(ignore_file_path).await {
         Ok(content) => content,
         Err(_) => {
             log::error!("Failed to read ignore file at {:?}", path.as_ref());
