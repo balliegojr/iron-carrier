@@ -2,11 +2,12 @@
 
 mod file_info;
 pub use file_info::FileInfo;
+use serde::{Deserialize, Serialize};
 
 use std::{
     collections::HashSet,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 
@@ -14,13 +15,38 @@ use std::{
 use std::os::unix::fs::PermissionsExt;
 
 use crate::{
-    config::Config,
+    config::{Config, PathConfig},
     constants::IGNORE_FILE_NAME,
     hash_helper::{self, HASHER},
     ignored_files::IgnoredFiles,
-    storage_hash_cache::StorageHashCache,
+    // storage_hash_cache::StorageHashCache,
     transaction_log::{get_log_reader, EventType},
 };
+
+#[derive(Debug)]
+pub struct Storage {
+    // pub name: &'a str,
+    pub hash: u64,
+    pub files: Vec<FileInfo>,
+    pub ignored_files: IgnoredFiles,
+}
+
+pub async fn get_storage(
+    name: &str,
+    storage_path_config: &PathConfig,
+    config: &Config,
+) -> crate::Result<Storage> {
+    let ignored_files = IgnoredFiles::new(&storage_path_config.path).await;
+    let files = walk_path(config, name, &storage_path_config.path, &ignored_files)?;
+    let hash = get_state_hash(files.iter());
+
+    Ok(Storage {
+        // name,
+        ignored_files,
+        files,
+        hash,
+    })
+}
 
 fn system_time_to_secs(time: SystemTime) -> Option<u64> {
     time.duration_since(SystemTime::UNIX_EPOCH)
@@ -34,17 +60,13 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 /// files with name or extension `.ironcarrier` will be ignored
 pub fn walk_path(
     config: &Config,
-    storage: &str,
+    storage_name: &str,
+    root_path: &Path,
     ignored_files: &IgnoredFiles,
 ) -> crate::Result<Vec<FileInfo>> {
-    let root_path = config
-        .storages
-        .get(storage)
-        .map(|p| p.path.as_path())
-        .expect("Unexpected storage");
     let mut paths = vec![root_path.to_owned()];
 
-    let mut files = get_deleted_files(config, storage)?;
+    let mut files = get_deleted_files(config, storage_name)?;
 
     while let Some(path) = paths.pop() {
         for entry in fs::read_dir(path)? {
@@ -62,15 +84,15 @@ pub fn walk_path(
 
             let metadata = path.metadata()?;
             let path = path.strip_prefix(root_path)?.to_owned();
-            if ignored_files.is_ignored(storage, &path) {
+            if ignored_files.is_ignored(&path) {
                 continue;
             }
 
-            files.replace(FileInfo::new(storage.to_owned(), path, metadata));
+            files.replace(FileInfo::new(storage_name.to_owned(), path, metadata));
         }
     }
 
-    let failed_writes = get_failed_writes(config, storage)?;
+    let failed_writes = get_failed_writes(config, storage_name)?;
     files.retain(|file| !failed_writes.contains(file));
     let mut files: Vec<FileInfo> = files.into_iter().collect();
     files.sort();
@@ -135,7 +157,7 @@ fn get_failed_writes(config: &Config, storage: &str) -> crate::Result<HashSet<Fi
 pub fn delete_file(
     file_info: &FileInfo,
     config: &Config,
-    storage_state: &StorageHashCache,
+    // storage_state: &StorageHashCache,
 ) -> crate::Result<()> {
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
@@ -151,7 +173,7 @@ pub fn delete_file(
 
     log::debug!("{:?} removed", path);
 
-    storage_state.invalidate_cache(&file_info.storage);
+    // storage_state.invalidate_cache(&file_info.storage);
 
     Ok(())
 }
@@ -160,7 +182,7 @@ pub fn move_file<'b>(
     src_file: &'b FileInfo,
     dest_file: &'b FileInfo,
     config: &Config,
-    storage_state: &StorageHashCache,
+    // storage_state: &StorageHashCache,
 ) -> crate::Result<()> {
     let src_path = src_file.get_absolute_path(config)?;
     let dest_path = dest_file.get_absolute_path(config)?;
@@ -168,7 +190,7 @@ pub fn move_file<'b>(
     log::debug!("moving file {:?} to {:?}", src_path, dest_path);
 
     std::fs::rename(src_path, dest_path)?;
-    storage_state.invalidate_cache(&src_file.storage);
+    // storage_state.invalidate_cache(&src_file.storage);
 
     Ok(())
 }
@@ -226,8 +248,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn can_read_local_files() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn can_read_local_files() -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all("./tmp/fs/read_local_files")?;
         File::create("./tmp/fs/read_local_files/file_1")?;
         File::create("./tmp/fs/read_local_files/file_2")?;
@@ -240,10 +262,17 @@ a = "./tmp/fs/read_local_files"
         .parse::<Unverified<Config>>()?
         .leak();
 
-        let mut files: Vec<FileInfo> = walk_path(config, "a", &IgnoredFiles::new(config))
-            .unwrap()
-            .into_iter()
-            .collect();
+        let storage = config.storages.get("a").unwrap();
+
+        let mut files: Vec<FileInfo> = walk_path(
+            config,
+            "a",
+            &storage.path,
+            &IgnoredFiles::new(&storage.path).await,
+        )
+        .unwrap()
+        .into_iter()
+        .collect();
         files.sort();
 
         assert_eq!(files[0].path.to_str(), Some("file_1"));

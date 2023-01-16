@@ -15,23 +15,20 @@ use validation::Verified;
 pub mod config;
 use config::Config;
 
-mod connection;
+// mod connection;
 
-mod events;
-use events::{CommandDispatcher, CommandHandler, Commands};
+// mod events;
+// use events::{CommandDispatcher, CommandHandler, Commands};
 
 pub mod constants;
 mod debouncer;
 mod hash_helper;
 
 mod ignored_files;
-use ignored_files::IgnoredFiles;
+// use ignored_files::IgnoredFiles;
 
 pub mod leak;
 use leak::Leak;
-
-mod negotiator;
-use negotiator::Negotiator;
 
 mod network;
 mod storage;
@@ -39,19 +36,19 @@ mod storage;
 mod state_machine;
 mod states;
 
-mod storage_hash_cache;
-use storage_hash_cache::StorageHashCache;
+// mod storage_hash_cache;
+// use storage_hash_cache::StorageHashCache;
 
-mod sync;
-use sync::{FileTransferMan, FileWatcher, Synchronizer};
+// mod sync;
+// use sync::{FileTransferMan, FileWatcher, Synchronizer};
 
 mod transaction_log;
-use transaction_log::TransactionLogWriter;
+// use transaction_log::TransactionLogWriter;
 
 pub mod validation;
 
 /// Result<T, IronCarrierError> alias
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Error types
 #[derive(Debug, Error, Serialize, Deserialize)]
@@ -115,14 +112,27 @@ impl From<bincode::Error> for IronCarrierError {
 enum NetworkEvents {
     ConsensusElection(ElectionEvents),
     RequestTransition(Transition),
+    Synchronization(Synchronization),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 enum Transition {
     Consensus,
     FullSync,
+    Done,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+enum Synchronization {
+    QueryStorageIndex {
+        name: String,
+        hash: u64,
+    },
+    ReplyStorageIndex {
+        name: String,
+        files: Option<Vec<storage::FileInfo>>,
+    },
+}
 struct SharedState {
     daemon: bool,
     config: &'static Verified<Config>,
@@ -243,29 +253,29 @@ pub async fn start_daemon(
     //     }
     // })
 }
+//
+// fn get_file_watcher(
+//     config: &'static Config,
+//     dispatcher: CommandDispatcher,
+//     log_writer: TransactionLogWriter<File>,
+//     ignored_files: &'static IgnoredFiles,
+// ) -> Option<FileWatcher> {
+//     if config.enable_file_watcher {
+//         FileWatcher::new(dispatcher, config, log_writer, ignored_files).ok()
+//     } else {
+//         None
+//     }
+// }
 
-fn get_file_watcher(
-    config: &'static Config,
-    dispatcher: CommandDispatcher,
-    log_writer: TransactionLogWriter<File>,
-    ignored_files: &'static IgnoredFiles,
-) -> Option<FileWatcher> {
-    if config.enable_file_watcher {
-        FileWatcher::new(dispatcher, config, log_writer, ignored_files).ok()
-    } else {
-        None
-    }
-}
-
-fn get_command_handler_when_ready(config: &'static Config) -> CommandHandler {
-    loop {
-        let connection_manager = CommandHandler::new(config);
-        match connection_manager {
-            Ok(connection_manager) => return connection_manager,
-            Err(err) => {
-                log::error!("Error initializing connection {err}");
-                std::thread::sleep(Duration::from_secs(1));
-            }
-        }
-    }
-}
+// fn get_command_handler_when_ready(config: &'static Config) -> CommandHandler {
+//     loop {
+//         let connection_manager = CommandHandler::new(config);
+//         match connection_manager {
+//             Ok(connection_manager) => return connection_manager,
+//             Err(err) => {
+//                 log::error!("Error initializing connection {err}");
+//                 std::thread::sleep(Duration::from_secs(1));
+//             }
+//         }
+//     }
+// }

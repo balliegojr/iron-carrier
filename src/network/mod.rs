@@ -115,8 +115,9 @@ impl ConnectionHandler<NetworkEvents> {
         Ok(())
     }
 
-    pub async fn next_event(&self) -> Option<(u64, NetworkEvents)> {
-        self.inbound_receiver.lock().await.recv().await
+    pub async fn events_stream(&self) -> EventsIter {
+        let receiver = self.inbound_receiver.lock().await;
+        EventsIter { receiver }
     }
 
     pub async fn connected_peers(&self) -> Vec<u64> {
@@ -132,6 +133,21 @@ impl ConnectionHandler<NetworkEvents> {
         }
 
         Ok(connections.len())
+    }
+}
+
+pub(crate) struct EventsIter<'a> {
+    receiver: tokio::sync::MutexGuard<'a, Receiver<(u64, NetworkEvents)>>,
+}
+
+impl<'a> tokio_stream::Stream for EventsIter<'a> {
+    type Item = (u64, NetworkEvents);
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.receiver.poll_recv(cx)
     }
 }
 
