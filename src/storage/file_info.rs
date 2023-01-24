@@ -101,6 +101,13 @@ impl FileInfo {
 
         self_date.cmp(&other_date)
     }
+
+    pub fn get_local_file_info(&self, config: &Config) -> crate::Result<Self> {
+        self.get_absolute_path(config)?
+            .metadata()
+            .map(|metadata| Self::new(self.storage.clone(), self.path.clone(), metadata))
+            .map_err(Box::from)
+    }
 }
 
 impl Hash for FileInfo {

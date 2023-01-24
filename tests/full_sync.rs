@@ -6,8 +6,8 @@ use iron_carrier::validation::Unverified;
 
 mod common;
 
-#[test]
-fn test_full_sync() {
+#[tokio::test]
+async fn test_full_sync() {
     // common::enable_logs(5);
     let mut port = 8090;
     let peers = ["a", "b", "c"];
@@ -49,8 +49,10 @@ store_two = {store_two_path:?}
     }
 
     for config in configs {
-        thread::spawn(move || {
-            iron_carrier::run(config).expect("Iron carrier failed");
+        tokio::spawn(async move {
+            iron_carrier::start_daemon(config)
+                .await
+                .expect("Iron carrier failed");
         });
     }
 

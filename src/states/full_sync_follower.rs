@@ -1,8 +1,13 @@
-use std::{fmt::Display, time::Duration};
+use std::fmt::Display;
 
 use tokio_stream::StreamExt;
 
-use crate::{state_machine::StateStep, NetworkEvents, SharedState, Synchronization};
+use crate::{
+    file_transfer::process_transfer_events,
+    network_events::{NetworkEvents, Synchronization, Transition},
+    state_machine::StateStep,
+    SharedState,
+};
 
 #[derive(Debug)]
 pub struct FullSyncFollower {
@@ -38,55 +43,54 @@ impl StateStep<SharedState> for FullSyncFollower {
                 }
             });
 
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(process_transfer_events(
+            shared_state.connection_handler,
+            shared_state.config,
+            rx,
+        ));
+
         while let Some(ev) = event_stream.next().await {
             match ev {
-                NetworkEvents::Synchronization(crate::Synchronization::QueryStorageIndex {
+                NetworkEvents::Synchronization(Synchronization::QueryStorageIndex {
                     name,
                     hash,
                 }) => {
-                    if let Some(storage_config) = shared_state.config.storages.get(&name) {
-                        match crate::storage::get_storage(
-                            &name,
-                            storage_config,
-                            shared_state.config,
-                        )
-                        .await
-                        {
-                            Ok(storage) => {
-                                if storage.hash != hash {
-                                    shared_state
-                                        .connection_handler
-                                        .send_to(
-                                            self.sync_leader,
-                                            NetworkEvents::Synchronization(
-                                                Synchronization::ReplyStorageIndex {
-                                                    name,
-                                                    files: Some(storage.files),
-                                                },
-                                            ),
-                                        )
-                                        .await;
+                    let files = match shared_state.config.storages.get(&name) {
+                        Some(storage_config) => {
+                            match crate::storage::get_storage(
+                                &name,
+                                storage_config,
+                                shared_state.config,
+                            )
+                            .await
+                            {
+                                Ok(storage) if storage.hash != hash => Some(storage.files),
+                                Err(err) => {
+                                    log::error!("There was an error reading the storage: {err}");
+                                    None
                                 }
+                                _ => None,
                             }
-                            Err(err) => {
-                                log::error!("There was an error reading the storage: {err}");
-                                shared_state
-                                    .connection_handler
-                                    .send_to(
-                                        self.sync_leader,
-                                        NetworkEvents::Synchronization(
-                                            Synchronization::ReplyStorageIndex {
-                                                name,
-                                                files: None,
-                                            },
-                                        ),
-                                    )
-                                    .await;
-                            }
-                        };
-                    }
+                        }
+                        None => None,
+                    };
+
+                    shared_state
+                        .connection_handler
+                        .send_to(
+                            Synchronization::ReplyStorageIndex { name, files }.into(),
+                            self.sync_leader,
+                        )
+                        .await?;
                 }
-                NetworkEvents::RequestTransition(crate::Transition::Done) => break,
+                NetworkEvents::Synchronization(Synchronization::SendFileTo { file, nodes }) => {
+                    tx.send((file, nodes)).await?;
+                }
+                NetworkEvents::Synchronization(Synchronization::DeleteFile { file }) => {
+                    crate::storage::delete_file(&file, shared_state.config).await?;
+                }
+                NetworkEvents::RequestTransition(Transition::Done) => break,
                 _ => continue,
             }
         }

@@ -361,7 +361,7 @@ mod tests {
 
             Cursor::new(bytes)
         });
-        let mut events = log.get_log_events().filter_map(|ev| dbg!(ev).ok());
+        let mut events = log.get_log_events().filter_map(|ev| ev.ok());
 
         assert_eq!(
             LogEvent {

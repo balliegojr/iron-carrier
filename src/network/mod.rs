@@ -6,12 +6,14 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{
+        broadcast,
         mpsc::{Receiver, Sender},
         Mutex,
     },
 };
+use tokio_stream::{Stream, StreamExt};
 
-use crate::{config::Config, hash_helper, NetworkEvents};
+use crate::{config::Config, hash_helper, network_events::NetworkEvents};
 
 pub mod service_discovery;
 
@@ -26,15 +28,14 @@ where
     connections: Connections,
     peer_connection: PeerConnections,
 
-    inbound_sender: Sender<(u64, T)>,
-    inbound_receiver: Mutex<Receiver<(u64, T)>>,
-
+    inbound_sender: broadcast::Sender<(u64, T)>,
     disconnected: Sender<ConnectionId>,
 }
 
 impl ConnectionHandler<NetworkEvents> {
     pub async fn new(config: &'static Config) -> crate::Result<ConnectionHandler<NetworkEvents>> {
-        let (inbound_sender, inbound_receiver) = tokio::sync::mpsc::channel(100);
+        let (inbound_sender, _inbound_receiver) = tokio::sync::broadcast::channel(100);
+        // let (inbound_sender, inbound_receiver) = tokio::sync::mpsc::channel(100);
         let connections: Connections = Default::default();
         let peer_connection: PeerConnections = Default::default();
 
@@ -60,7 +61,6 @@ impl ConnectionHandler<NetworkEvents> {
             connections,
             peer_connection,
             inbound_sender,
-            inbound_receiver: inbound_receiver.into(),
             disconnected,
         })
     }
@@ -103,7 +103,7 @@ impl ConnectionHandler<NetworkEvents> {
         }
     }
 
-    pub async fn send_to(&self, peer_id: u64, event: NetworkEvents) -> crate::Result<()> {
+    pub async fn send_to(&self, event: NetworkEvents, peer_id: u64) -> crate::Result<()> {
         if let Some(connection_id) = self.peer_connection.lock().await.get(&peer_id) {
             if let Some(connection) = self.connections.lock().await.get_mut(connection_id) {
                 let bytes = bincode::serialize(&event)?;
@@ -115,9 +115,11 @@ impl ConnectionHandler<NetworkEvents> {
         Ok(())
     }
 
-    pub async fn events_stream(&self) -> EventsIter {
-        let receiver = self.inbound_receiver.lock().await;
-        EventsIter { receiver }
+    pub async fn events_stream(&self) -> impl Stream<Item = (u64, NetworkEvents)> {
+        let receiver = self.inbound_sender.subscribe();
+
+        let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
+        stream.filter_map(|ev| ev.ok())
     }
 
     pub async fn connected_peers(&self) -> Vec<u64> {
@@ -134,26 +136,31 @@ impl ConnectionHandler<NetworkEvents> {
 
         Ok(connections.len())
     }
-}
 
-pub(crate) struct EventsIter<'a> {
-    receiver: tokio::sync::MutexGuard<'a, Receiver<(u64, NetworkEvents)>>,
-}
+    pub async fn broadcast_to(&self, event: NetworkEvents, nodes: &[u64]) -> crate::Result<()> {
+        if nodes.is_empty() {
+            return Ok(());
+        }
 
-impl<'a> tokio_stream::Stream for EventsIter<'a> {
-    type Item = (u64, NetworkEvents);
+        let bytes = bincode::serialize(&event)?;
+        let peer_connections = self.peer_connection.lock().await;
+        let mut connections = self.connections.lock().await;
+        for node in nodes {
+            if let Some(connection_id) = peer_connections.get(node) {
+                if let Some(connection) = connections.get_mut(connection_id) {
+                    connection.write_u64(bytes.len() as u64).await?;
+                    connection.write_all(&bytes).await?;
+                }
+            }
+        }
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.receiver.poll_recv(cx)
+        Ok(())
     }
 }
 
 async fn connection_handler_inbound(
     config: &Config,
-    inbound_sender: Sender<(u64, NetworkEvents)>,
+    event_stream: broadcast::Sender<(u64, NetworkEvents)>,
     connections: Connections,
     peer_connection: PeerConnections,
     mut on_disconnected: Receiver<ConnectionId>,
@@ -183,7 +190,7 @@ async fn connection_handler_inbound(
                             connections.lock().await.borrow_mut(),
                             peer_connection.lock().await.borrow_mut(),
                             connection,
-                            inbound_sender.clone(),
+                            event_stream.clone(),
                             disconnected.clone()
                         );
                     }
@@ -204,7 +211,7 @@ fn append_connection(
     connections: &mut HashMap<ConnectionId, Pin<Box<dyn AsyncWrite + Send>>>,
     peer_connection: &mut HashMap<u64, ConnectionId>,
     connection: IdenfiedConnection,
-    inbound_sender: Sender<(u64, NetworkEvents)>,
+    event_stream: broadcast::Sender<(u64, NetworkEvents)>,
     disconnected: Sender<ConnectionId>,
 ) {
     if peer_connection.contains_key(&connection.peer_id) {
@@ -214,7 +221,7 @@ fn append_connection(
     peer_connection.insert(connection.peer_id, connection.connection_id);
     connections.insert(
         connection.connection_id,
-        connection.listen_events(inbound_sender, disconnected),
+        connection.listen_events(event_stream, disconnected),
     );
 }
 
@@ -271,7 +278,7 @@ struct IdenfiedConnection {
 impl IdenfiedConnection {
     pub fn listen_events(
         self,
-        inbound_sender: Sender<(u64, NetworkEvents)>,
+        event_stream: broadcast::Sender<(u64, NetworkEvents)>,
         disconnected: Sender<ConnectionId>,
     ) -> Pin<Box<dyn AsyncWrite + Send>> {
         let mut read = self.inner.read;
@@ -292,7 +299,14 @@ impl IdenfiedConnection {
                         }
 
                         if let Ok(event) = bincode::deserialize(&read_buf[..to_read as usize]) {
-                            inbound_sender.send((self.peer_id, event)).await;
+                            match event_stream.send((self.peer_id, event)) {
+                                Ok(sent_to) => {
+                                    // log::debug!("Sent event to {sent_to} listeners");
+                                }
+                                Err(err) => {
+                                    log::error!("Failed to broadcast internal event {err}");
+                                }
+                            }
                         }
                     }
                     Err(err) => {
@@ -311,3 +325,22 @@ impl IdenfiedConnection {
         self.inner.write
     }
 }
+
+// struct ReceiverStream<T> {
+//     receiver: broadcast::Receiver<T>,
+// }
+//
+// impl<T> Stream for ReceiverStream<T>
+// where
+//     T: Clone + std::fmt::Debug,
+// {
+//     type Item = T;
+//
+//     fn poll_next(
+//         mut self: Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<Option<Self::Item>> {
+//         let mut fut = Box::pin(self.receiver.recv());
+//         fut.as_mut().poll(cx).map(|value| dbg!(value).ok())
+//     }
+// }

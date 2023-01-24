@@ -2,7 +2,7 @@ use message_io::{
     network::{Endpoint, NetEvent, Transport},
     node::{self, NodeHandler, NodeListener},
 };
-use rand::Rng;
+// use rand::Rng;
 use std::{
     collections::LinkedList,
     net::{Ipv4Addr, SocketAddrV4},
@@ -14,11 +14,13 @@ use crate::{
     config::Config,
     connection::ConnectionHandler,
     constants::{
-        CLEAR_TIMEOUT, PING_CONNECTIONS, START_CONNECTIONS_RETRIES, START_CONNECTIONS_RETRY_WAIT,
-        START_NEGOTIATION_MAX, START_NEGOTIATION_MIN,
+        CLEAR_TIMEOUT,
+        PING_CONNECTIONS,
+        START_CONNECTIONS_RETRIES,
+        START_CONNECTIONS_RETRY_WAIT,
+        // START_NEGOTIATION_MAX, START_NEGOTIATION_MIN,
     },
     debouncer::{debounce_action, Debouncer},
-    negotiator::Negotiation,
 };
 
 use super::{CommandDispatcher, Commands, HandlerEvent, RawMessageType};
@@ -191,26 +193,26 @@ impl CommandHandler {
         );
     }
 
-    fn start_negotiations(&mut self) {
-        if !self.can_start_negotiations
-            || self
-                .connection_handler
-                .lock()
-                .unwrap()
-                .has_waiting_identification()
-        {
-            return;
-        }
-
-        self.can_start_negotiations = false;
-
-        let mut rng = rand::thread_rng();
-        let timeout = rng.gen_range(START_NEGOTIATION_MIN..START_NEGOTIATION_MAX);
-
-        self.handler
-            .signals()
-            .send_with_timer(Negotiation::Start.into(), Duration::from_secs_f64(timeout));
-    }
+    // fn start_negotiations(&mut self) {
+    //     if !self.can_start_negotiations
+    //         || self
+    //             .connection_handler
+    //             .lock()
+    //             .unwrap()
+    //             .has_waiting_identification()
+    //     {
+    //         return;
+    //     }
+    //
+    //     self.can_start_negotiations = false;
+    //
+    //     let mut rng = rand::thread_rng();
+    //     let timeout = rng.gen_range(START_NEGOTIATION_MIN..START_NEGOTIATION_MAX);
+    //
+    //     self.handler
+    //         .signals()
+    //         .send_with_timer(Negotiation::Start.into(), Duration::from_secs_f64(timeout));
+    // }
 
     fn handle_network_message(
         &mut self,
@@ -238,7 +240,7 @@ impl CommandHandler {
                     .unwrap()
                     .set_node_id(node_id, endpoint, group);
 
-                self.start_negotiations();
+                // self.start_negotiations();
             }
             RawMessageType::Command => {
                 let message = bincode::deserialize(&data[1..])?;
@@ -310,7 +312,7 @@ impl CommandHandler {
                 };
 
                 if should_start_negotiations {
-                    self.start_negotiations();
+                    // self.start_negotiations();
                 }
             }
             ConnectionFlow::PingConnections => {
