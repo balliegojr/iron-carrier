@@ -6,8 +6,8 @@ use iron_carrier::config::Config;
 use iron_carrier::leak::Leak;
 use iron_carrier::validation::Unverified;
 
-#[test]
-fn test_truncate() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn test_truncate() -> Result<(), Box<dyn std::error::Error>> {
     // common::enable_logs(5);
     let [peer_1, peer_2] = ["g", "h"];
 
@@ -29,8 +29,10 @@ store_one = "/tmp/truncate/peer_{peer_name}/store_one"
             .and_then(|config| config.validate())
             .unwrap()
             .leak();
-        thread::spawn(move || {
-            iron_carrier::run(config).expect("Carrier failed");
+        tokio::spawn(async move {
+            iron_carrier::start_daemon(config)
+                .await
+                .expect("Carrier failed");
         });
     };
 

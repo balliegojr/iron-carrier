@@ -2,7 +2,11 @@ use std::fmt::Display;
 
 use tokio_stream::StreamExt;
 
-use crate::{state_machine::StateStep, NetworkEvents, SharedState, Transition};
+use crate::{
+    network_events::{NetworkEvents, Transition},
+    state_machine::StateStep,
+    SharedState,
+};
 
 use super::Consensus;
 
@@ -35,8 +39,8 @@ impl StateStep<SharedState> for Daemon {
         let _service_discovery =
             crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
 
-        let events_stream = shared_state.connection_handler.events_stream().await;
-        tokio::pin!(events_stream);
+        let mut events_stream = shared_state.connection_handler.events_stream().await;
+        // tokio::pin!(events_stream);
 
         loop {
             match events_stream.next().await {
@@ -47,7 +51,9 @@ impl StateStep<SharedState> for Daemon {
                 Some((_, NetworkEvents::ConsensusElection(_))) => {
                     return Ok(Some(Box::new(Consensus::new())));
                 }
-                Some(_) => {}
+                Some(_) => {
+                    log::info!("received random event");
+                }
                 None => break Ok(None),
             }
         }

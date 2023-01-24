@@ -3,11 +3,11 @@
 //! Synchronize your files in differents machines on the same network
 
 #![feature(hash_drain_filter)]
+#![feature(drain_filter)]
 #![feature(let_chains)]
 
 use network::ConnectionHandler;
 use serde::{Deserialize, Serialize};
-use states::consensus::ElectionEvents;
 use std::{fs::File, net::SocketAddr, time::Duration};
 use thiserror::Error;
 use validation::Verified;
@@ -15,6 +15,8 @@ use validation::Verified;
 pub mod config;
 use config::Config;
 
+mod network_events;
+mod stream;
 // mod connection;
 
 // mod events;
@@ -33,6 +35,7 @@ use leak::Leak;
 mod network;
 mod storage;
 
+mod file_transfer;
 mod state_machine;
 mod states;
 
@@ -108,35 +111,10 @@ impl From<bincode::Error> for IronCarrierError {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-enum NetworkEvents {
-    ConsensusElection(ElectionEvents),
-    RequestTransition(Transition),
-    Synchronization(Synchronization),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum Transition {
-    Consensus,
-    FullSync,
-    Done,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum Synchronization {
-    QueryStorageIndex {
-        name: String,
-        hash: u64,
-    },
-    ReplyStorageIndex {
-        name: String,
-        files: Option<Vec<storage::FileInfo>>,
-    },
-}
-struct SharedState {
+pub struct SharedState {
     daemon: bool,
     config: &'static Verified<Config>,
-    connection_handler: &'static ConnectionHandler<NetworkEvents>,
+    connection_handler: &'static ConnectionHandler<network_events::NetworkEvents>,
 }
 
 // TODO: move the default state to a trait, so the state machine can handle this

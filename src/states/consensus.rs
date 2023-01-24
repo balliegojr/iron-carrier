@@ -9,7 +9,11 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
-use crate::{state_machine::StateStep, NetworkEvents, SharedState};
+use crate::{
+    network_events::{self, NetworkEvents},
+    state_machine::StateStep,
+    SharedState,
+};
 
 /// Possible states that a node can be
 ///
@@ -23,7 +27,7 @@ enum NodeState {
 }
 
 /// Possible election events
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub enum ElectionEvents {
     RequestVoteForTerm(u32),
     VoteOnTerm(u32, bool),
@@ -72,9 +76,7 @@ impl StateStep<SharedState> for Consensus {
 
         shared_state
             .connection_handler
-            .broadcast(NetworkEvents::RequestTransition(
-                crate::Transition::Consensus,
-            ))
+            .broadcast(network_events::Transition::Consensus.into())
             .await?;
 
         let events = shared_state.connection_handler.events_stream().await;
@@ -86,9 +88,9 @@ impl StateStep<SharedState> for Consensus {
                     term = term.next();
                     term.participants = shared_state
                         .connection_handler
-                        .broadcast(NetworkEvents::ConsensusElection(
-                            ElectionEvents::RequestVoteForTerm(term.term),
-                        ))
+                        .broadcast(
+                            ElectionEvents::RequestVoteForTerm(term.term).into(),
+                        )
                         .await?;
 
 
@@ -106,10 +108,10 @@ impl StateStep<SharedState> for Consensus {
                                     term.term = vote_term;
                                     self.election_state = NodeState::Follower;
 
-                                    shared_state.connection_handler.send_to(peer_id, NetworkEvents::ConsensusElection(ElectionEvents::VoteOnTerm(vote_term, true))).await?;
+                                    shared_state.connection_handler.send_to(ElectionEvents::VoteOnTerm(vote_term, true).into(), peer_id).await?;
                                 }
                                 ElectionEvents::RequestVoteForTerm(vote_term) => {
-                                    shared_state.connection_handler.send_to(peer_id, NetworkEvents::ConsensusElection(ElectionEvents::VoteOnTerm(vote_term, false))).await?;
+                                    shared_state.connection_handler.send_to(ElectionEvents::VoteOnTerm(vote_term, false).into(), peer_id).await?;
                                 }
                                 ElectionEvents::VoteOnTerm(vote_term, vote) if self.election_state == NodeState::Candidate && term.term == vote_term => {
                                     term.compute_vote(vote);
@@ -117,13 +119,15 @@ impl StateStep<SharedState> for Consensus {
                                     if term.absolute_win() {
                                         log::debug!("Node wins election");
                                         self.election_state = NodeState::Leader;
-                                        return Ok(Some(Box::new(crate::states::FullSyncLeader::new())))
+
+                                        let full_sync = crate::states::FullSyncLeader::default();
+                                        return Ok(Some(Box::new(full_sync)))
                                     }
                                 }
                                 _ => {}
                             }
                         }
-                        NetworkEvents::RequestTransition(crate::Transition::FullSync) => if self.election_state == NodeState::Follower {
+                        NetworkEvents::RequestTransition(network_events::Transition::FullSync) => if self.election_state == NodeState::Follower {
                             return Ok(Some(Box::new(crate::states::FullSyncFollower::new(peer_id))))
                         }
                         _ => {}

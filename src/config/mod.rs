@@ -69,6 +69,9 @@ pub struct Config {
 
     #[serde(default = "defaults::transport_encryption")]
     pub transport_encryption: bool,
+
+    #[serde(default = "defaults::max_parallel_transfers")]
+    pub max_parallel_transfers: u8,
 }
 
 impl Config {
@@ -190,6 +193,10 @@ mod defaults {
         let mut log_path = dirs::config_dir().expect("Can't access home folder");
         log_path.push("iron-carrier/iron-carrier.log");
         log_path
+    }
+
+    pub fn max_parallel_transfers() -> u8 {
+        4
     }
 }
 

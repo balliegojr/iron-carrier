@@ -2,7 +2,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use std::thread;
 use std::{fs, time::SystemTime};
 
 use iron_carrier::config::Config;
@@ -12,8 +11,8 @@ use iron_carrier::validation::Unverified;
 
 mod common;
 
-#[test]
-fn test_sync_deleted_files() {
+#[tokio::test]
+async fn test_sync_deleted_files() {
     // common::enable_logs(5);
     let mut port = 8100;
     let peers = ["g", "h"];
@@ -80,8 +79,10 @@ store_one = {store_path:?}
     }
 
     for config in configs {
-        thread::spawn(move || {
-            iron_carrier::run(config).expect("Iron carrier failed");
+        tokio::spawn(async move {
+            iron_carrier::start_daemon(config)
+                .await
+                .expect("Iron carrier failed");
         });
     }
 

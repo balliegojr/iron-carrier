@@ -2,12 +2,11 @@
 
 mod file_info;
 pub use file_info::FileInfo;
-use serde::{Deserialize, Serialize};
 
 use std::{
     collections::HashSet,
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, SystemTime},
 };
 
@@ -36,7 +35,8 @@ pub async fn get_storage(
     storage_path_config: &PathConfig,
     config: &Config,
 ) -> crate::Result<Storage> {
-    let ignored_files = IgnoredFiles::new(&storage_path_config.path).await;
+    let ignored_files =
+        crate::ignored_files::load_ignored_file_pattern(&storage_path_config.path).await;
     let files = walk_path(config, name, &storage_path_config.path, &ignored_files)?;
     let hash = get_state_hash(files.iter());
 
@@ -154,26 +154,20 @@ fn get_failed_writes(config: &Config, storage: &str) -> crate::Result<HashSet<Fi
     }
 }
 
-pub fn delete_file(
-    file_info: &FileInfo,
-    config: &Config,
-    // storage_state: &StorageHashCache,
-) -> crate::Result<()> {
+pub async fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
         log::debug!("delete_file: given path doesn't exist ({:?})", path);
         return Err(Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)));
     } else if path.is_dir() {
         log::debug!("delete_file: {:?} is dir, removing whole dir", path);
-        std::fs::remove_dir_all(&path)?;
+        tokio::fs::remove_dir_all(&path).await?;
     } else {
         log::debug!("delete_file: removing file {:?}", path);
-        std::fs::remove_file(&path)?;
+        tokio::fs::remove_file(&path).await?;
     }
 
     log::debug!("{:?} removed", path);
-
-    // storage_state.invalidate_cache(&file_info.storage);
 
     Ok(())
 }
@@ -249,7 +243,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn can_read_local_files() -> Result<(), Box<dyn std::error::Error>> {
+    async fn can_read_local_files() -> crate::Result<()> {
         fs::create_dir_all("./tmp/fs/read_local_files")?;
         File::create("./tmp/fs/read_local_files/file_1")?;
         File::create("./tmp/fs/read_local_files/file_2")?;
@@ -268,7 +262,7 @@ a = "./tmp/fs/read_local_files"
             config,
             "a",
             &storage.path,
-            &IgnoredFiles::new(&storage.path).await,
+            &crate::ignored_files::empty_ignored_files(),
         )
         .unwrap()
         .into_iter()

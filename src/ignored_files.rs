@@ -9,18 +9,22 @@ pub struct IgnoredFiles {
 }
 
 impl IgnoredFiles {
-    pub async fn new(path: impl AsRef<Path>) -> Self {
-        Self {
-            ignore_sets: get_glob_set(path.as_ref()).await,
-        }
-    }
-
     pub fn is_ignored(&self, path: impl AsRef<Path>) -> bool {
         self.ignore_sets
             .as_ref()
             .map(|set| set.is_match(path))
             .unwrap_or_default()
     }
+}
+
+pub async fn load_ignored_file_pattern(path: impl AsRef<Path>) -> IgnoredFiles {
+    IgnoredFiles {
+        ignore_sets: get_glob_set(path.as_ref()).await,
+    }
+}
+
+pub fn empty_ignored_files() -> IgnoredFiles {
+    IgnoredFiles { ignore_sets: None }
 }
 
 async fn get_glob_set<P: AsRef<Path>>(path: P) -> Option<GlobSet> {
