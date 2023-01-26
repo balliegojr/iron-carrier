@@ -42,17 +42,14 @@ impl FileReceiver {
         //     EventStatus::Started,
         // )?;
 
+        let expected_blocks = (file_size / block_size) + 1;
         Ok(Self {
             remote_file,
             block_size,
-            expected_blocks: 0,
+            expected_blocks,
             received_blocks: 0,
             file_handle,
         })
-    }
-
-    pub fn set_full_transfer(&mut self) {
-        self.expected_blocks = (self.remote_file.size.unwrap() / self.block_size) + 1;
     }
 
     pub async fn get_required_block_index(
