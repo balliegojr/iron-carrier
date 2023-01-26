@@ -1,4 +1,4 @@
-use simple_mdns::async_discovery::ServiceDiscovery;
+use simple_mdns::{async_discovery::ServiceDiscovery, InstanceInformation};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
@@ -25,16 +25,12 @@ pub async fn get_service_discovery(config: &Config) -> crate::Result<Option<Serv
     if config.group.is_some() {
         service_info
             .attributes
-            .insert("g".into(), hashed_group(config.group.as_ref()));
+            .insert("g".into(), config.group.as_ref().map(hashed_group));
     }
 
     sd.add_service_info(service_info).await?;
 
     Ok(Some(sd))
-}
-
-fn hashed_group(group: Option<&String>) -> Option<String> {
-    group.map(|g| hash_helper::calculate_checksum(g.as_bytes()).to_string())
 }
 
 fn get_my_ips() -> crate::Result<Vec<IpAddr>> {
@@ -57,20 +53,13 @@ pub async fn get_peers(
     group: Option<&String>,
 ) -> HashMap<SocketAddr, Option<String>> {
     let mut addresses = HashMap::new();
-    let h_group = hashed_group(group);
+    let h_group = group.map(hashed_group);
 
     let services = service_discovery
         .get_known_services()
         .await
         .into_iter()
-        .filter(|service| match group {
-            group @ Some(_) => service
-                .attributes
-                .get("g")
-                .map(|g| g.eq(&h_group))
-                .unwrap_or_default(),
-            None => !service.attributes.contains_key("g"),
-        });
+        .filter(|service| same_version(service) && same_group(service, &h_group));
 
     for instance_info in services {
         let id = &instance_info.attributes["id"];
@@ -80,4 +69,27 @@ pub async fn get_peers(
     }
 
     addresses
+}
+
+fn hashed_group(group: &String) -> String {
+    hash_helper::hashed_str(group).to_string()
+}
+
+fn same_version(service: &InstanceInformation) -> bool {
+    service
+        .attributes
+        .get("v")
+        .and_then(|v| v.as_ref().map(|v| v == VERSION))
+        .unwrap_or_default()
+}
+
+fn same_group(service: &InstanceInformation, h_group: &Option<String>) -> bool {
+    match h_group {
+        Some(_) => service
+            .attributes
+            .get("g")
+            .map(|g| g.eq(h_group))
+            .unwrap_or_default(),
+        None => !service.attributes.contains_key("g"),
+    }
 }

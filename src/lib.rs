@@ -103,6 +103,15 @@ pub enum IronCarrierError {
 
     #[error("Failed to find file")]
     FileNotFound,
+
+    #[error("Attempt to connect with a node that has a different version")]
+    VersionMismatch,
+
+    #[error("Attempt to connect with a node of a different group")]
+    GroupMismatch,
+
+    #[error("Node Connection Timeout")]
+    ConnectionTimeout,
 }
 
 impl From<bincode::Error> for IronCarrierError {
