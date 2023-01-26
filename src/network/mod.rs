@@ -1,8 +1,8 @@
-use std::{io::ErrorKind, net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     sync::{
         broadcast,
         mpsc::{Receiver, Sender},
@@ -17,10 +17,11 @@ use crate::{
 };
 use connection::{Connection, ConnectionId, ReadHalf};
 
-use self::connection_storage::ConnectionStorage;
+use self::{connection_storage::ConnectionStorage, network_event_decoder::NetWorkEventDecoder};
 
 mod connection;
 mod connection_storage;
+mod network_event_decoder;
 pub mod service_discovery;
 
 #[derive(Debug)]
@@ -98,7 +99,7 @@ impl ConnectionHandler<NetworkEvents> {
     pub async fn send_to(&self, event: NetworkEvents, peer_id: u64) -> crate::Result<()> {
         if let Some(connection) = self.connections.lock().await.get_mut(&peer_id) {
             let bytes = bincode::serialize(&event)?;
-            connection.write_u64(bytes.len() as u64).await?;
+            connection.write_u32(bytes.len() as u32).await?;
             connection.write_all(&bytes).await?;
         }
 
@@ -116,7 +117,7 @@ impl ConnectionHandler<NetworkEvents> {
         let bytes = bincode::serialize(&event)?;
         let mut connections = self.connections.lock().await;
         for connection in connections.connections_mut() {
-            connection.write_u64(bytes.len() as u64).await?;
+            connection.write_u32(bytes.len() as u32).await?;
             connection.write_all(&bytes).await?;
         }
 
@@ -132,7 +133,7 @@ impl ConnectionHandler<NetworkEvents> {
         let mut connections = self.connections.lock().await;
         for node in nodes {
             if let Some(connection) = connections.get_mut(node) {
-                connection.write_u64(bytes.len() as u64).await?;
+                connection.write_u32(bytes.len() as u32).await?;
                 connection.write_all(&bytes).await?;
             }
         }
@@ -209,50 +210,28 @@ async fn listen_connections(
 }
 
 async fn read_network_data(
-    mut read_connection: ReadHalf,
+    read_connection: ReadHalf,
     event_stream: broadcast::Sender<(u64, NetworkEvents)>,
     connection_events: Sender<ConnectionEvent>,
 ) {
-    let mut read_buf = [0u8; 1024];
-    loop {
-        match read_connection.read_u64().await {
-            Ok(to_read) => {
-                // TODO: handle reading properly
-                if let Err(err) = read_connection
-                    .read_exact(&mut read_buf[..to_read as usize])
-                    .await
-                {
-                    if err.kind() == ErrorKind::UnexpectedEof {
-                        log::debug!("Peer {} disconnected", read_connection.peer_id);
-                        break;
-                    } else {
-                        log::error!("{err}");
-                    }
-                }
+    let peer_id = read_connection.peer_id;
+    let connection_id = read_connection.connection_id;
 
-                if let Ok(event) = bincode::deserialize(&read_buf[..to_read as usize]) {
-                    match event_stream.send((read_connection.peer_id, event)) {
-                        Ok(_sent_to) => {
-                            // log::debug!("Sent event to {sent_to} listeners");
-                        }
-                        Err(err) => {
-                            log::error!("Failed to broadcast internal event {err}");
-                        }
-                    }
+    let mut stream = tokio_util::codec::FramedRead::new(read_connection, NetWorkEventDecoder {});
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(event) => {
+                if event_stream.send((peer_id, event)).is_err() {
+                    break;
                 }
             }
             Err(err) => {
-                if err.kind() == ErrorKind::UnexpectedEof {
-                    log::debug!("Peer {} disconnected", read_connection.peer_id);
-                    break;
-                } else {
-                    log::error!("{err}");
-                }
+                log::error!("error reading from peer {err}");
             }
         }
     }
 
     let _ = connection_events
-        .send(ConnectionEvent::Disconnected(read_connection.connection_id))
+        .send(ConnectionEvent::Disconnected(connection_id))
         .await;
 }

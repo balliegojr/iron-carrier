@@ -46,7 +46,6 @@ pub enum FileTransfer {
     },
 }
 
-// TODO: get rid of this part of the flow, it is causing more problems than solving
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
 pub enum TransferType {
     Everything,
@@ -123,13 +122,8 @@ async fn process_file_transfer_event(
                 )
                 .await?;
 
-            if let Some(transfer_type) = transfer_type {
-                let mut receiver = FileReceiver::new(file, block_size, config).await?;
-
-                if transfer_type == TransferType::Everything {
-                    receiver.set_full_transfer();
-                }
-
+            if transfer_type.is_some() {
+                let receiver = FileReceiver::new(file, block_size, config).await?;
                 receiving.insert(transfer_id, receiver);
             }
         }
