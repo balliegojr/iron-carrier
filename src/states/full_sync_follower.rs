@@ -44,7 +44,7 @@ impl StateStep<SharedState> for FullSyncFollower {
             });
 
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tokio::spawn(process_transfer_events(
+        let event_processing_handler = tokio::spawn(process_transfer_events(
             shared_state.connection_handler,
             shared_state.config,
             rx,
@@ -94,6 +94,8 @@ impl StateStep<SharedState> for FullSyncFollower {
                 _ => continue,
             }
         }
+
+        event_processing_handler.await??;
 
         Ok(shared_state.default_state())
     }

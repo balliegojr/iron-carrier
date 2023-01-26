@@ -7,6 +7,10 @@ use crate::storage::FileInfo;
 
 pub const HASHER: Crc<u64> = Crc::<u64>::new(&CRC_64_GO_ISO);
 
+pub fn hashed_str<T: AsRef<str>>(value: T) -> u64 {
+    calculate_checksum(value.as_ref().as_bytes())
+}
+
 /// Calculate checksum of `t`
 pub fn calculate_checksum(t: &[u8]) -> u64 {
     HASHER.checksum(t)

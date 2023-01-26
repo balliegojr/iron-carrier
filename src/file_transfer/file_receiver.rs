@@ -9,13 +9,10 @@ use crate::{
     config::Config,
     file_transfer::get_file_block_index,
     hash_helper,
-    network::ConnectionHandler,
-    network_events::NetworkEvents,
     storage::{self, FileInfo},
-    transaction_log::{EventStatus, EventType},
 };
 
-use super::{BlockHash, BlockIndex, FileTransfer, TransferType};
+use super::{BlockHash, BlockIndex, TransferType};
 
 pub struct FileReceiver {
     remote_file: FileInfo,
@@ -98,7 +95,6 @@ impl FileReceiver {
         }
 
         self.received_blocks += 1;
-        dbg!(self.received_blocks, self.expected_blocks);
         Ok(self.received_blocks == self.expected_blocks)
     }
 

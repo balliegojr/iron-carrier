@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::AsyncReadExt, sync::mpsc::Receiver};
@@ -74,25 +74,22 @@ pub async fn process_transfer_events(
     let mut receiving = HashMap::new();
     let mut sending: Option<FileSender> = None;
 
-    let mut channel_closed = false;
-
-    while !channel_closed || !receiving.is_empty() || sending.is_some() {
+    loop {
         tokio::select! {
-            event = send_file_events.recv(), if sending.is_none() => {
-                match event {
-                    Some(( file, nodes)) => {
-                        log::trace!("Will send {:?} to {nodes:?}", &file.path);
-                        let file_send = FileSender::new(file, nodes, config).await?;
-                        file_send.query_transfer_type(connection_handler).await?;
-                        sending = Some(file_send);
-                    }
-                    None => channel_closed = true
-                }
+            Some((file, nodes)) = send_file_events.recv(), if sending.is_none() => {
+                log::trace!("Will send {:?} to {nodes:?}", &file.path);
+                let file_send = FileSender::new(file, nodes, config).await?;
+                file_send.query_transfer_type(connection_handler).await?;
+                sending = Some(file_send);
             }
             Some((node_id, event)) = events.next() => {
                 if let Err(err) = process_file_transfer_event(connection_handler, config, node_id, event, &mut sending, &mut receiving).await {
                     log::error!("Error processing file transfer {err}");
                 }
+            }
+            // FIXME: hackish way to break the loop
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                break;
             }
         }
     }
