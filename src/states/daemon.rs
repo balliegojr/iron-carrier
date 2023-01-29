@@ -10,6 +10,7 @@ use crate::{
 
 use super::Consensus;
 
+#[derive(Default)]
 pub struct Daemon {}
 
 impl Display for Daemon {
@@ -24,18 +25,13 @@ impl std::fmt::Debug for Daemon {
     }
 }
 
-impl Daemon {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
 #[async_trait::async_trait]
-impl StateStep<SharedState> for Daemon {
+impl StateStep for Daemon {
+    type GlobalState = SharedState;
     async fn execute(
         mut self: Box<Self>,
         shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<SharedState>>>> {
+    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
         let _service_discovery =
             crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
 

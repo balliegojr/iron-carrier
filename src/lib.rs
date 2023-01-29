@@ -8,7 +8,8 @@
 
 use network::ConnectionHandler;
 use serde::{Deserialize, Serialize};
-use std::{fs::File, net::SocketAddr, time::Duration};
+use state_machine::StateStep;
+use std::net::SocketAddr;
 use thiserror::Error;
 use validation::Verified;
 
@@ -121,20 +122,8 @@ impl From<bincode::Error> for IronCarrierError {
 }
 
 pub struct SharedState {
-    daemon: bool,
     config: &'static Verified<Config>,
     connection_handler: &'static ConnectionHandler<network_events::NetworkEvents>,
-}
-
-// TODO: move the default state to a trait, so the state machine can handle this
-impl SharedState {
-    pub fn default_state(&self) -> Option<Box<dyn state_machine::StateStep<SharedState>>> {
-        if self.daemon {
-            Some(Box::new(states::Daemon::new()))
-        } else {
-            None
-        }
-    }
 }
 
 pub async fn run_full_sync(
@@ -143,11 +132,10 @@ pub async fn run_full_sync(
     let connection_handler = network::ConnectionHandler::new(config).await?.leak();
 
     let shared_state = SharedState {
-        daemon: false,
         config,
         connection_handler,
     };
-    let state_machine = state_machine::StateStepper::new(shared_state);
+    let state_machine = state_machine::StateStepper::new(shared_state, None);
     state_machine
         .execute(Box::<states::DiscoverPeers>::default())
         .await;
@@ -163,19 +151,18 @@ pub async fn start_daemon(
     let connection_handler = network::ConnectionHandler::new(config).await?.leak();
 
     let shared_state = SharedState {
-        daemon: true,
         config,
         connection_handler,
     };
-    let state_machine = state_machine::StateStepper::new(shared_state);
+    let state_machine = state_machine::StateStepper::new(
+        shared_state,
+        Some(|| Box::new(states::Daemon::default())),
+    );
     state_machine
         .execute(Box::<states::DiscoverPeers>::default())
         .await;
 
     Ok(())
-    // let ignored_files = IgnoredFiles::new(config).leak();
-    // let storage_state = storage_hash_cache::StorageHashCache::new(config, ignored_files).leak();
-    //
     // let mut log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
     // let connection_man = get_command_handler_when_ready(config);
     // let file_watcher = get_file_watcher(
@@ -251,18 +238,5 @@ pub async fn start_daemon(
 //         FileWatcher::new(dispatcher, config, log_writer, ignored_files).ok()
 //     } else {
 //         None
-//     }
-// }
-
-// fn get_command_handler_when_ready(config: &'static Config) -> CommandHandler {
-//     loop {
-//         let connection_manager = CommandHandler::new(config);
-//         match connection_manager {
-//             Ok(connection_manager) => return connection_manager,
-//             Err(err) => {
-//                 log::error!("Error initializing connection {err}");
-//                 std::thread::sleep(Duration::from_secs(1));
-//             }
-//         }
 //     }
 // }

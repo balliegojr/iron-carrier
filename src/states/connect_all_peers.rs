@@ -24,11 +24,13 @@ impl Display for ConnectAllPeers {
 }
 
 #[async_trait::async_trait]
-impl StateStep<SharedState> for ConnectAllPeers {
+impl StateStep for ConnectAllPeers {
+    type GlobalState = SharedState;
+
     async fn execute(
         self: Box<Self>,
         shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<SharedState>>>> {
+    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
         let mut successful = 0;
         for addr in self.addresses_to_connect.keys() {
             if let Err(err) = shared_state.connection_handler.connect(addr).await {
@@ -41,7 +43,7 @@ impl StateStep<SharedState> for ConnectAllPeers {
         if successful > 0 {
             Ok(Some(Box::new(Consensus::new())))
         } else {
-            Ok(shared_state.default_state())
+            Ok(None)
         }
     }
 }
