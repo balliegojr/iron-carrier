@@ -213,7 +213,7 @@ mod tests {
         ]
 
         group = ""
-        log_path "./tmp"
+        log_path = "./tmp"
 
         [storages]
         str_path = "./tmp"
