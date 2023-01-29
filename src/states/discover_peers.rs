@@ -14,13 +14,17 @@ impl Display for DiscoverPeers {
 }
 
 #[async_trait::async_trait]
-impl StateStep<SharedState> for DiscoverPeers {
+impl StateStep for DiscoverPeers {
+    type GlobalState = SharedState;
+
     async fn execute(
         self: Box<Self>,
         shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<SharedState>>>> {
-        let discovery =
-            crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
+    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
+        let discovery = async_retry(10, || {
+            crate::network::service_discovery::get_service_discovery(shared_state.config)
+        })
+        .await?;
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -46,9 +50,33 @@ impl StateStep<SharedState> for DiscoverPeers {
         }
 
         if addresses.is_empty() {
-            Ok(shared_state.default_state())
+            Ok(None)
         } else {
             Ok(Some(Box::new(ConnectAllPeers::new(addresses))))
+        }
+    }
+}
+
+// NOTE: move this to a utils file?
+async fn async_retry<T, F, Fut>(tries: u64, retriable: F) -> crate::Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = crate::Result<T>>,
+{
+    let mut current_try = 0u64;
+    loop {
+        match (retriable)().await {
+            Err(err) => {
+                current_try += 1;
+                if current_try == tries {
+                    return Err(err)?;
+                }
+
+                log::error!("{err}");
+                tokio::time::sleep(Duration::from_secs(current_try)).await;
+                continue;
+            }
+            Ok(ok) => return Ok(ok),
         }
     }
 }

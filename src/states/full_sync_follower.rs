@@ -27,11 +27,12 @@ impl FullSyncFollower {
 }
 
 #[async_trait::async_trait]
-impl StateStep<SharedState> for FullSyncFollower {
+impl StateStep for FullSyncFollower {
+    type GlobalState = SharedState;
     async fn execute(
         mut self: Box<Self>,
         shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<SharedState>>>> {
+    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
         log::info!("full sync starting....");
 
         let mut event_stream =
@@ -97,6 +98,6 @@ impl StateStep<SharedState> for FullSyncFollower {
 
         event_processing_handler.await??;
 
-        Ok(shared_state.default_state())
+        Ok(None)
     }
 }

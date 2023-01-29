@@ -53,11 +53,12 @@ impl Display for Consensus {
 }
 
 #[async_trait::async_trait]
-impl StateStep<SharedState> for Consensus {
+impl StateStep for Consensus {
+    type GlobalState = SharedState;
     async fn execute(
         mut self: Box<Self>,
         shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<SharedState>>>> {
+    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
         // This election process repeats until a candidate becomes the leader
         //
         // After a timeout of 100-250ms, if the node is a candidate, it advances the current term
@@ -95,7 +96,7 @@ impl StateStep<SharedState> for Consensus {
 
 
                     if term.participants == 0 {
-                        return Ok(shared_state.default_state());
+                        return Ok(None);
                     }
 
                     deadline = tokio::time::Instant::now() + Duration::from_millis(get_timeout());

@@ -24,11 +24,12 @@ impl Display for FullSyncLeader {
 }
 
 #[async_trait::async_trait]
-impl StateStep<SharedState> for FullSyncLeader {
+impl StateStep for FullSyncLeader {
+    type GlobalState = SharedState;
     async fn execute(
         mut self: Box<Self>,
         shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<SharedState>>>> {
+    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
         shared_state
             .connection_handler
             .broadcast(Transition::FullSync.into())
@@ -61,7 +62,7 @@ impl StateStep<SharedState> for FullSyncLeader {
             .broadcast(Transition::Done.into())
             .await?;
 
-        Ok(shared_state.default_state())
+        Ok(None)
     }
 }
 
