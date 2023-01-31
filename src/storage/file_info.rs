@@ -1,15 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use std::{cmp::Ord, hash::Hash, path::PathBuf, time::SystemTime};
+use std::{cmp::Ord, hash::Hash, path::PathBuf};
 
 use crate::{config::Config, IronCarrierError};
 
 use super::{get_permissions, system_time_to_secs};
 
 /// Holds the information for a file inside a mapped folder  
-///
-/// If the file exists, `modified_at`, `created_at` and `size` will be [Some]  
-/// Otherwise, only `deleted_at` will be [Some]
 ///
 /// The `path` will always be relative to the alias root folder
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -19,70 +16,93 @@ pub struct FileInfo {
     /// The relative path will always be the same, no matter the machine
     pub path: PathBuf,
 
-    pub modified_at: Option<u64>,
-    // pub created_at: Option<u64>,
-    pub deleted_at: Option<u64>,
-    pub size: Option<u64>,
+    pub info_type: FileInfoType,
     pub permissions: u32,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum FileInfoType {
+    Existent { modified_at: u64, size: u64 },
+    Deleted { deleted_at: u64 },
+    Moved { old_path: PathBuf, moved_at: u64 },
+}
+
 impl FileInfo {
-    pub fn new(storage: String, relative_path: PathBuf, metadata: std::fs::Metadata) -> Self {
+    pub fn existent(
+        storage: String,
+        path: PathBuf,
+        modified_at: u64,
+        size: u64,
+        permissions: u32,
+    ) -> Self {
         FileInfo {
             storage,
-            path: relative_path,
-            // created_at: metadata.created().ok().and_then(system_time_to_secs),
-            modified_at: metadata.modified().ok().and_then(system_time_to_secs),
-            size: Some(metadata.len()),
-            deleted_at: None,
-            permissions: get_permissions(&metadata),
+            path,
+            info_type: FileInfoType::Existent { modified_at, size },
+            permissions,
         }
     }
-
-    pub fn is_deleted(&self) -> bool {
-        self.deleted_at.is_some()
-    }
-
-    pub fn new_deleted(alias: String, relative_path: PathBuf, deleted_at: Option<u64>) -> Self {
+    pub fn deleted(storage: String, path: PathBuf, deleted_at: u64) -> Self {
         FileInfo {
-            storage: alias,
-            path: relative_path,
-            // created_at: None,
-            modified_at: None,
-            size: None,
-            deleted_at: deleted_at
-                .or_else(|| Some(SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs())),
+            storage,
+            path,
+            info_type: FileInfoType::Deleted { deleted_at },
             permissions: 0,
         }
     }
 
-    pub fn is_out_of_sync(&self, other: &FileInfo) -> bool {
-        if self.deleted_at.is_some() && other.deleted_at.is_some() {
-            return false;
+    pub fn moved(storage: String, path: PathBuf, old_path: PathBuf, moved_at: u64) -> Self {
+        Self {
+            storage,
+            path,
+            info_type: FileInfoType::Moved { old_path, moved_at },
+            permissions: 0,
         }
+    }
 
-        self.modified_at != other.modified_at
-            || self.deleted_at.is_some() != other.deleted_at.is_some()
-            || self.size != other.size
+    /// matches existent and moved files
+    pub fn is_existent(&self) -> bool {
+        !matches!(self.info_type, FileInfoType::Deleted { .. })
+    }
+
+    pub fn is_out_of_sync(&self, other: &FileInfo) -> bool {
+        match (&self.info_type, &other.info_type) {
+            (
+                FileInfoType::Existent { modified_at, size },
+                FileInfoType::Existent {
+                    modified_at: other_modified_at,
+                    size: other_size,
+                },
+            ) => modified_at != other_modified_at || size != other_size,
+            (FileInfoType::Deleted { .. }, FileInfoType::Deleted { .. }) => false,
+            (
+                FileInfoType::Moved { old_path, .. },
+                FileInfoType::Moved {
+                    old_path: other_old_path,
+                    ..
+                },
+            ) => old_path != other_old_path,
+            _ => true,
+        }
+    }
+
+    pub fn file_size(&self) -> crate::Result<u64> {
+        if let FileInfoType::Existent { size, .. } = self.info_type {
+            Ok(size)
+        } else {
+            Err(Box::new(IronCarrierError::InvalidOperation))
+        }
     }
 
     /// Returns the absolute path of the file for this file system  
     /// Using the provided root path for the alias in [Config]
     pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
         match config.storages.get(&self.storage) {
-            Some(path) => match path.path.canonicalize() {
-                Ok(mut root_path) => {
-                    root_path.extend(self.path.components());
-                    Ok(root_path)
-                }
-                Err(_) => {
-                    log::error!(
-                        "cannot get absolute path for storage {}, check if the path is valid",
-                        self.storage
-                    );
-                    Err(IronCarrierError::StorageNotAvailable(self.storage.to_owned()).into())
-                }
-            },
+            Some(path) => path
+                .path
+                .canonicalize()
+                .map(|root_path| root_path.join(&self.path))
+                .map_err(Box::from),
             None => {
                 log::error!(
                     "provided storage does not exist in this node: {}",
@@ -94,19 +114,34 @@ impl FileInfo {
     }
 
     pub fn date_cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let self_date = self.deleted_at.unwrap_or_else(|| self.modified_at.unwrap());
-        let other_date = other
-            .deleted_at
-            .unwrap_or_else(|| other.modified_at.unwrap());
+        let self_date = match self.info_type {
+            FileInfoType::Existent { modified_at, .. } => modified_at,
+            FileInfoType::Deleted { deleted_at } => deleted_at,
+            FileInfoType::Moved { moved_at, .. } => moved_at,
+        };
+
+        let other_date = match other.info_type {
+            FileInfoType::Existent { modified_at, .. } => modified_at,
+            FileInfoType::Deleted { deleted_at } => deleted_at,
+            FileInfoType::Moved { moved_at, .. } => moved_at,
+        };
 
         self_date.cmp(&other_date)
     }
 
     pub fn get_local_file_info(&self, config: &Config) -> crate::Result<Self> {
-        self.get_absolute_path(config)?
-            .metadata()
-            .map(|metadata| Self::new(self.storage.clone(), self.path.clone(), metadata))
-            .map_err(Box::from)
+        let metadata = self.get_absolute_path(config)?.metadata()?;
+
+        let modified_at = metadata.modified().map(system_time_to_secs)?;
+        let size = metadata.len();
+
+        Ok(Self::existent(
+            self.storage.clone(),
+            self.path.clone(),
+            modified_at,
+            size,
+            get_permissions(&metadata),
+        ))
     }
 }
 
@@ -150,10 +185,10 @@ mod tests {
         let mut file = FileInfo {
             storage: "a".to_owned(),
             path: Path::new("./some_file_path").to_owned(),
-            // created_at: None,
-            modified_at: Some(0),
-            size: Some(0),
-            deleted_at: None,
+            info_type: FileInfoType::Existent {
+                modified_at: 0,
+                size: 0,
+            },
             permissions: 0,
         };
 
@@ -167,33 +202,33 @@ mod tests {
     fn test_is_out_of_sync() {
         let mut file_info = FileInfo {
             storage: "a".to_owned(),
-            // created_at: Some(0),
-            modified_at: Some(0),
             path: Path::new("./some_file_path").to_owned(),
-            size: Some(100),
-            deleted_at: None,
             permissions: 0,
+            info_type: FileInfoType::Existent {
+                modified_at: 0,
+                size: 100,
+            },
         };
 
         let mut other_file = file_info.clone();
         assert!(!file_info.is_out_of_sync(&other_file));
 
-        other_file.modified_at = Some(1);
+        other_file.info_type = FileInfoType::Existent {
+            modified_at: 1,
+            size: 100,
+        };
         assert!(file_info.is_out_of_sync(&other_file));
 
-        let mut other_file = file_info.clone();
-        other_file.size = Some(101);
-
+        other_file.info_type = FileInfoType::Existent {
+            modified_at: 0,
+            size: 101,
+        };
         assert!(file_info.is_out_of_sync(&other_file));
 
-        let mut other_file = file_info.clone();
-        other_file.deleted_at = Some(1);
+        other_file.info_type = FileInfoType::Deleted { deleted_at: 1 };
         assert!(file_info.is_out_of_sync(&other_file));
 
-        let mut other_file = file_info.clone();
-        other_file.deleted_at = Some(10);
-        file_info.deleted_at = Some(1);
-
+        file_info.info_type = FileInfoType::Deleted { deleted_at: 1 };
         assert!(!file_info.is_out_of_sync(&other_file));
     }
 }

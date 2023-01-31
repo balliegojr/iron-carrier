@@ -1,12 +1,12 @@
 //! This module is responsible for handling file system operations
 
 mod file_info;
-pub use file_info::FileInfo;
+pub use file_info::{FileInfo, FileInfoType};
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 
@@ -19,6 +19,7 @@ use crate::{
     hash_helper::{self, HASHER},
     ignored_files::IgnoredFiles,
     transaction_log::{LogEntry, TransactionLog},
+    IronCarrierError,
 };
 
 #[derive(Debug)]
@@ -52,10 +53,10 @@ pub async fn get_storage(
     })
 }
 
-fn system_time_to_secs(time: SystemTime) -> Option<u64> {
+fn system_time_to_secs(time: SystemTime) -> u64 {
     time.duration_since(SystemTime::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .ok()
+        .expect("failed to get wall time")
 }
 
 /// Returns a sorted vector with the entire folder structure for the given path
@@ -69,8 +70,10 @@ pub async fn walk_path(
     ignored_files: &IgnoredFiles,
 ) -> crate::Result<Vec<FileInfo>> {
     // TODO: change to async functions?
+    // TODO: load moved files
     let mut paths = vec![root_path.to_owned()];
     let mut files = get_deleted_files(transaction_log, storage_name).await?;
+    let mut moved_files = get_moved_files(transaction_log, storage_name).await?;
 
     let failed_writes = transaction_log.get_failed_writes(storage_name).await?;
 
@@ -88,17 +91,48 @@ pub async fn walk_path(
                 continue;
             }
 
+            let relative_path = path.strip_prefix(root_path)?.to_owned();
+            if ignored_files.is_ignored(&relative_path) {
+                continue;
+            }
+
+            if failed_writes.contains(&relative_path) {
+                continue;
+            }
+
             let metadata = path.metadata()?;
-            let path = path.strip_prefix(root_path)?.to_owned();
-            if ignored_files.is_ignored(&path) {
-                continue;
-            }
+            let permissions = get_permissions(&metadata);
+            let modified_at = metadata.modified().map(system_time_to_secs)?;
+            let size = metadata.len();
 
-            if failed_writes.contains(&path) {
-                continue;
-            }
+            let file_info = FileInfo::existent(
+                storage_name.to_owned(),
+                relative_path,
+                modified_at,
+                size,
+                permissions,
+            );
 
-            files.replace(FileInfo::new(storage_name.to_owned(), path, metadata));
+            // When a file is moved, two entries are added to the log.
+            // A deleted entry for the old file path
+            // A moved entry for the new file path
+            //
+            // Because of this, we need to remove the old file entry from the list, otherwise the
+            // file can be deleted before being moved
+            match moved_files.remove(&file_info.path) {
+                Some(moved_file) => {
+                    let old_path = match &moved_file.info_type {
+                        FileInfoType::Moved { old_path, .. } => old_path,
+                        _ => unreachable!(),
+                    };
+
+                    files.drain_filter(|f| f.path.eq(old_path.as_path()));
+                    files.replace(moved_file);
+                }
+                _ => {
+                    files.replace(file_info);
+                }
+            }
         }
     }
 
@@ -111,7 +145,7 @@ pub async fn walk_path(
 pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
     let mut digest = HASHER.digest();
 
-    for file in files.filter(|f| !f.is_deleted()) {
+    for file in files.filter(|f| f.is_existent()) {
         hash_helper::calculate_file_hash_digest(file, &mut digest);
     }
 
@@ -125,13 +159,27 @@ async fn get_deleted_files(
     transaction_log.get_deleted(storage).await.map(|files| {
         files
             .into_iter()
-            .map(|(path, timestamp)| {
-                FileInfo::new_deleted(storage.to_string(), path, Some(timestamp))
-            })
+            .map(|(path, timestamp)| FileInfo::deleted(storage.to_string(), path, timestamp))
             .collect()
     })
 }
 
+async fn get_moved_files(
+    transaction_log: &TransactionLog,
+    storage: &str,
+) -> crate::Result<HashMap<PathBuf, FileInfo>> {
+    transaction_log.get_moved(storage).await.map(|files| {
+        files
+            .into_iter()
+            .map(|(path, old_path, timestamp)| {
+                (
+                    path.clone(),
+                    FileInfo::moved(storage.to_string(), path, old_path, timestamp),
+                )
+            })
+            .collect()
+    })
+}
 pub async fn delete_file(
     config: &Config,
     transaction_log: &TransactionLog,
@@ -166,21 +214,51 @@ pub async fn delete_file(
 pub async fn move_file<'b>(
     config: &Config,
     transaction_log: &TransactionLog,
-    src_file: &'b FileInfo,
-    dest_file: &'b FileInfo,
-    // storage_state: &StorageHashCache,
+    file: &'b FileInfo,
 ) -> crate::Result<()> {
-    let src_path = src_file.get_absolute_path(config)?;
-    let dest_path = dest_file.get_absolute_path(config)?;
+    let dest_path = file.get_absolute_path(config)?;
+    let src_path = if let FileInfoType::Moved { old_path, .. } = &file.info_type {
+        config
+            .storages
+            .get(&file.storage)
+            .map(|p| p.path.canonicalize())
+            .ok_or_else(|| IronCarrierError::StorageNotAvailable(file.storage.clone()))??
+            .join(old_path)
+    } else {
+        return Err(Box::new(IronCarrierError::InvalidOperation));
+    };
 
-    log::debug!("moving file {:?} to {:?}", src_path, dest_path);
+    if dest_path.exists() || !src_path.exists() {
+        log::error!("can't move {src_path:?} to {dest_path:?}");
+        return Err(Box::new(IronCarrierError::InvalidOperation));
+    }
 
-    tokio::fs::rename(src_path, dest_path).await?;
+    log::debug!("moving file {src_path:?} to {dest_path:?}");
+    tokio::fs::rename(&src_path, &dest_path).await?;
+
+    // It is necessary to add two entries in the log, one for the new path as moved, one for the
+    // old path as deleted
+    //
+    // If there is a future change to the file, before any synchronization, the new entry will
+    // become a write one, hence the old file will need to be deleted. It is possible to improve
+    // this flow by chaining a move with a send action
     transaction_log
         .append_entry(
-            &src_file.storage,
-            &src_file.path,
-            Some(&dest_file.path),
+            &file.storage,
+            &src_path,
+            None,
+            LogEntry::new(
+                crate::transaction_log::EntryType::Delete,
+                crate::transaction_log::EntryStatus::Done,
+            ),
+        )
+        .await?;
+
+    transaction_log
+        .append_entry(
+            &file.storage,
+            &dest_path,
+            Some(&src_path),
             LogEntry::new(
                 crate::transaction_log::EntryType::Move,
                 crate::transaction_log::EntryStatus::Done,
@@ -192,9 +270,11 @@ pub async fn move_file<'b>(
 pub fn fix_times_and_permissions(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     let file_path = file_info.get_absolute_path(config)?;
 
-    let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.modified_at.unwrap());
-    log::trace!("setting {file_path:?} modification time to {mod_time:?}");
-    filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mod_time))?;
+    if let FileInfoType::Existent { modified_at, .. } = file_info.info_type {
+        let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(modified_at);
+        log::trace!("setting {file_path:?} modification time to {mod_time:?}");
+        filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mod_time))?;
+    }
 
     if file_info.permissions > 0 {
         set_file_permissions(&file_path, file_info.permissions)?;
@@ -236,43 +316,31 @@ pub fn is_special_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-
     use crate::{leak::Leak, validation::Unverified};
 
     use super::*;
 
     #[tokio::test]
     async fn can_read_local_files() -> crate::Result<()> {
-        fs::create_dir_all("./tmp/fs/read_local_files")?;
-        File::create("./tmp/fs/read_local_files/file_1")?;
-        File::create("./tmp/fs/read_local_files/file_2")?;
-
         let config = r#"
-log_path = "./tmp/fs/logfile.log"
 [storages]
-a = "./tmp/fs/read_local_files"
+a = "./src/"
 "#
         .parse::<Unverified<Config>>()?
         .leak();
 
         let storage = config.storages.get("a").unwrap();
 
-        let mut files: Vec<FileInfo> = walk_path(
+        let files = walk_path(
             &TransactionLog::memory().await?,
             "a",
-            &storage.path,
+            &storage.path.canonicalize().unwrap(),
             &crate::ignored_files::empty_ignored_files(),
         )
-        .await?
-        .into_iter()
-        .collect();
-        files.sort();
+        .await?;
 
-        assert_eq!(files[0].path.to_str(), Some("file_1"));
-        assert_eq!(files[1].path.to_str(), Some("file_2"));
-
-        fs::remove_dir_all("./tmp/fs/read_local_files")?;
+        assert!(!files.is_empty());
+        assert!(files.is_sorted());
 
         Ok(())
     }

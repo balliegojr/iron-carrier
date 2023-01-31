@@ -3,7 +3,7 @@
 use crc::{Crc, Digest, CRC_64_GO_ISO};
 use rand::Rng;
 
-use crate::storage::FileInfo;
+use crate::storage::{FileInfo, FileInfoType};
 
 pub const HASHER: Crc<u64> = Crc::<u64>::new(&CRC_64_GO_ISO);
 
@@ -26,14 +26,25 @@ pub fn calculate_file_hash(file: &FileInfo) -> u64 {
 /// Calculate the hash of `file` by using the file attributes only, file content is NOT considered
 pub fn calculate_file_hash_digest(file: &FileInfo, digest: &mut Digest<u64>) {
     digest.update(file.storage.as_bytes());
-    if let Some(path) = file.path.to_str() {
+    file.path.to_str().inspect(|path| {
         digest.update(path.as_bytes());
-    }
-    if file.is_deleted() {
-        digest.update(&file.deleted_at.unwrap().to_le_bytes());
-    } else {
-        digest.update(&file.modified_at.unwrap().to_le_bytes());
-        digest.update(&file.size.unwrap().to_le_bytes());
+    });
+
+    // NOTE: add a different byte depending on the match value?
+    match &file.info_type {
+        FileInfoType::Existent { modified_at, size } => {
+            digest.update(&modified_at.to_le_bytes());
+            digest.update(&size.to_le_bytes());
+        }
+        FileInfoType::Deleted { deleted_at } => {
+            digest.update(&deleted_at.to_le_bytes());
+        }
+        FileInfoType::Moved { old_path, moved_at } => {
+            digest.update(&moved_at.to_le_bytes());
+            old_path.to_str().inspect(|path| {
+                digest.update(path.as_bytes());
+            });
+        }
     }
 }
 

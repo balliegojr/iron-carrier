@@ -51,9 +51,10 @@ mod tests {
             FileInfo {
                 storage: "".to_string(),
                 path: path.into(),
-                size: None,
-                deleted_at: None,
-                modified_at: None,
+                info_type: crate::storage::FileInfoType::Existent {
+                    modified_at: 0,
+                    size: 0,
+                },
                 permissions: 0,
             }
         }
