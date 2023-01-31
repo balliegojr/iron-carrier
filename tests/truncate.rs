@@ -29,11 +29,8 @@ store_one = "/tmp/truncate/peer_{peer_name}/store_one"
             .and_then(|config| config.validate())
             .unwrap()
             .leak();
-        tokio::spawn(async move {
-            iron_carrier::start_daemon(config)
-                .await
-                .expect("Carrier failed");
-        });
+
+        iron_carrier::run_full_sync(config)
     };
 
     let compare_all = || {
@@ -49,8 +46,8 @@ store_one = "/tmp/truncate/peer_{peer_name}/store_one"
         let _ = fs::create_dir_all(format!("/tmp/truncate/peer_{peer_name}/store_one"));
     }
 
-    init_peer(peer_1, 8098);
-    init_peer(peer_2, 8099);
+    tokio::spawn(init_peer(peer_1, 8098));
+    tokio::spawn(init_peer(peer_2, 8099));
 
     thread::sleep(Duration::from_secs(10));
 

@@ -191,7 +191,7 @@ mod defaults {
     }
     pub fn log_path() -> PathBuf {
         let mut log_path = dirs::config_dir().expect("Can't access home folder");
-        log_path.push("iron-carrier/iron-carrier.log");
+        log_path.push("iron-carrier/iron-carrier.db");
         log_path
     }
 

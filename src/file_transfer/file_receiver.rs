@@ -10,6 +10,7 @@ use crate::{
     file_transfer::get_file_block_index,
     hash_helper,
     storage::{self, FileInfo},
+    transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog},
 };
 
 use super::{BlockHash, BlockIndex, TransferType};
@@ -24,9 +25,10 @@ pub struct FileReceiver {
 
 impl FileReceiver {
     pub async fn new(
+        config: &'static Config,
+        transaction_log: &'static TransactionLog,
         remote_file: FileInfo,
         block_size: u64,
-        config: &'static Config,
     ) -> crate::Result<Self> {
         let file_handle = get_file_handle(&remote_file, config).await?;
         let file_size = remote_file.size.unwrap();
@@ -35,12 +37,14 @@ impl FileReceiver {
             log::trace!("set {:?} len to {file_size}", remote_file.path);
         }
 
-        // TODO: write event
-        // log_writer.append(
-        //     remote_file.storage.clone(),
-        //     EventType::Write(remote_file.path.clone()),
-        //     EventStatus::Started,
-        // )?;
+        transaction_log
+            .append_entry(
+                &remote_file.storage,
+                &remote_file.path,
+                None,
+                LogEntry::new(EntryType::Write, EntryStatus::Done),
+            )
+            .await?;
 
         let expected_blocks = (file_size / block_size) + 1;
         Ok(Self {
@@ -95,23 +99,32 @@ impl FileReceiver {
         Ok(self.received_blocks == self.expected_blocks)
     }
 
-    pub async fn finish(mut self, config: &'static Config) -> crate::Result<()> {
+    pub async fn finish(
+        mut self,
+        config: &'static Config,
+        transaction_log: &'static TransactionLog,
+    ) -> crate::Result<()> {
         self.file_handle.flush().await?;
         log::trace!("finishing {:?} transfer", self.remote_file.path);
 
         storage::fix_times_and_permissions(&self.remote_file, config)?;
 
         let successful_transfer = self.received_blocks == self.expected_blocks;
-        // TODO: write event
-        // log_writer.append(
-        //     self.remote_file.storage.clone(),
-        //     EventType::Write(self.remote_file.path.clone()),
-        //     if successful_transfer {
-        //         EventStatus::Finished
-        //     } else {
-        //         EventStatus::Failed
-        //     },
-        // )?;
+        transaction_log
+            .append_entry(
+                &self.remote_file.storage,
+                &self.remote_file.path,
+                None,
+                LogEntry::new(
+                    EntryType::Write,
+                    if successful_transfer {
+                        EntryStatus::Done
+                    } else {
+                        EntryStatus::Fail
+                    },
+                ),
+            )
+            .await?;
 
         Ok(())
     }
