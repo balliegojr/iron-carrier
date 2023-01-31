@@ -8,9 +8,9 @@
 
 use network::ConnectionHandler;
 use serde::{Deserialize, Serialize};
-use state_machine::StateStep;
 use std::net::SocketAddr;
 use thiserror::Error;
+use transaction_log::TransactionLog;
 use validation::Verified;
 
 pub mod config;
@@ -124,17 +124,23 @@ impl From<bincode::Error> for IronCarrierError {
 pub struct SharedState {
     config: &'static Verified<Config>,
     connection_handler: &'static ConnectionHandler<network_events::NetworkEvents>,
+    transaction_log: &'static TransactionLog,
 }
 
 pub async fn run_full_sync(
     config: &'static validation::Verified<config::Config>,
 ) -> crate::Result<()> {
     let connection_handler = network::ConnectionHandler::new(config).await?.leak();
+    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)
+        .await?
+        .leak();
 
     let shared_state = SharedState {
         config,
         connection_handler,
+        transaction_log,
     };
+
     let state_machine = state_machine::StateStepper::new(shared_state, None);
     state_machine
         .execute(Box::<states::DiscoverPeers>::default())
@@ -149,15 +155,18 @@ pub async fn start_daemon(
     log::trace!("My id is {}", config.node_id);
 
     let connection_handler = network::ConnectionHandler::new(config).await?.leak();
+    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)
+        .await?
+        .leak();
 
     let shared_state = SharedState {
         config,
         connection_handler,
+        transaction_log,
     };
-    let state_machine = state_machine::StateStepper::new(
-        shared_state,
-        Some(|| Box::new(states::Daemon::default())),
-    );
+
+    let state_machine =
+        state_machine::StateStepper::new(shared_state, Some(|| Box::<states::Daemon>::default()));
     state_machine
         .execute(Box::<states::DiscoverPeers>::default())
         .await;

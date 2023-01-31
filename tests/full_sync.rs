@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, str::FromStr, thread, time::Duration};
+use std::{fs, path::PathBuf, str::FromStr};
 
 use iron_carrier::config::Config;
 use iron_carrier::leak::Leak;
@@ -48,15 +48,18 @@ store_two = {store_two_path:?}
         port += 1;
     }
 
+    let mut handles = Vec::new();
     for config in configs {
-        tokio::spawn(async move {
-            iron_carrier::start_daemon(config)
+        handles.push(tokio::spawn(async move {
+            iron_carrier::run_full_sync(config)
                 .await
                 .expect("Iron carrier failed");
-        });
+        }));
     }
 
-    thread::sleep(Duration::from_secs(15));
+    for handle in handles {
+        handle.await.expect("Iron carrier failed");
+    }
 
     common::tree_compare(
         PathBuf::from_str(&format!("/tmp/full_sync/peer_{}", peers[0])).unwrap(),

@@ -78,12 +78,17 @@ store_one = {store_path:?}
         log.write_all(log_line.as_bytes()).unwrap();
     }
 
+    let mut handles = Vec::new();
     for config in configs {
-        tokio::spawn(async move {
-            iron_carrier::start_daemon(config)
+        handles.push(tokio::spawn(async move {
+            iron_carrier::run_full_sync(config)
                 .await
                 .expect("Iron carrier failed");
-        });
+        }));
+    }
+
+    for handle in handles {
+        handle.await.expect("Iron carrier failed");
     }
 
     for file in files {

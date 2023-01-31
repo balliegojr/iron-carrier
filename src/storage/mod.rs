@@ -18,13 +18,11 @@ use crate::{
     constants::IGNORE_FILE_NAME,
     hash_helper::{self, HASHER},
     ignored_files::IgnoredFiles,
-    // storage_hash_cache::StorageHashCache,
-    transaction_log::{get_log_reader, EventType},
+    transaction_log::{LogEntry, TransactionLog},
 };
 
 #[derive(Debug)]
 pub struct Storage {
-    // pub name: &'a str,
     pub hash: u64,
     pub files: Vec<FileInfo>,
     pub ignored_files: IgnoredFiles,
@@ -33,11 +31,17 @@ pub struct Storage {
 pub async fn get_storage(
     name: &str,
     storage_path_config: &PathConfig,
-    config: &Config,
+    transaction_log: &TransactionLog,
 ) -> crate::Result<Storage> {
     let ignored_files =
         crate::ignored_files::load_ignored_file_pattern(&storage_path_config.path).await;
-    let files = walk_path(config, name, &storage_path_config.path, &ignored_files)?;
+    let files = walk_path(
+        transaction_log,
+        name,
+        &storage_path_config.path,
+        &ignored_files,
+    )
+    .await?;
     let hash = get_state_hash(files.iter());
 
     Ok(Storage {
@@ -58,15 +62,17 @@ fn system_time_to_secs(time: SystemTime) -> Option<u64> {
 ///
 /// This function will look for deletes files in the [DeletionTracker] log and append all entries to the return list  
 /// files with name or extension `.ironcarrier` will be ignored
-pub fn walk_path(
-    config: &Config,
+pub async fn walk_path(
+    transaction_log: &TransactionLog,
     storage_name: &str,
     root_path: &Path,
     ignored_files: &IgnoredFiles,
 ) -> crate::Result<Vec<FileInfo>> {
+    // TODO: change to async functions?
     let mut paths = vec![root_path.to_owned()];
+    let mut files = get_deleted_files(transaction_log, storage_name).await?;
 
-    let mut files = get_deleted_files(config, storage_name)?;
+    let failed_writes = transaction_log.get_failed_writes(storage_name).await?;
 
     while let Some(path) = paths.pop() {
         for entry in fs::read_dir(path)? {
@@ -88,12 +94,14 @@ pub fn walk_path(
                 continue;
             }
 
+            if failed_writes.contains(&path) {
+                continue;
+            }
+
             files.replace(FileInfo::new(storage_name.to_owned(), path, metadata));
         }
     }
 
-    let failed_writes = get_failed_writes(config, storage_name)?;
-    files.retain(|file| !failed_writes.contains(file));
     let mut files: Vec<FileInfo> = files.into_iter().collect();
     files.sort();
 
@@ -110,51 +118,25 @@ pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
     digest.finalize()
 }
 
-fn get_deleted_files(config: &Config, storage: &str) -> crate::Result<HashSet<FileInfo>> {
-    match get_log_reader(&config.log_path) {
-        Ok(log_reader) => {
-            let files = log_reader
-                .get_log_events()
-                .filter_map(|event| match event {
-                    Ok(event) if event.storage == storage => match event.event_type {
-                        EventType::Delete(file_path) => Some(FileInfo::new_deleted(
-                            event.storage,
-                            file_path,
-                            Some(event.timestamp),
-                        )),
-                        _ => None,
-                    },
-                    _ => None,
-                })
-                .collect();
-            Ok(files)
-        }
-        Err(_) => Ok(HashSet::new()),
-    }
+async fn get_deleted_files(
+    transaction_log: &TransactionLog,
+    storage: &str,
+) -> crate::Result<HashSet<FileInfo>> {
+    transaction_log.get_deleted(storage).await.map(|files| {
+        files
+            .into_iter()
+            .map(|(path, timestamp)| {
+                FileInfo::new_deleted(storage.to_string(), path, Some(timestamp))
+            })
+            .collect()
+    })
 }
 
-fn get_failed_writes(config: &Config, storage: &str) -> crate::Result<HashSet<FileInfo>> {
-    match get_log_reader(&config.log_path) {
-        Ok(log_reader) => {
-            let files = log_reader
-                .get_failed_events(storage.to_string())
-                .map(|path| FileInfo {
-                    storage: storage.to_string(),
-                    path,
-                    modified_at: None,
-                    // created_at: None,
-                    deleted_at: None,
-                    size: None,
-                    permissions: 0,
-                })
-                .collect();
-            Ok(files)
-        }
-        Err(_) => Ok(HashSet::new()),
-    }
-}
-
-pub async fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
+pub async fn delete_file(
+    config: &Config,
+    transaction_log: &TransactionLog,
+    file_info: &FileInfo,
+) -> crate::Result<()> {
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
         log::debug!("delete_file: given path doesn't exist ({:?})", path);
@@ -168,14 +150,24 @@ pub async fn delete_file(file_info: &FileInfo, config: &Config) -> crate::Result
     }
 
     log::debug!("{:?} removed", path);
-
-    Ok(())
+    transaction_log
+        .append_entry(
+            &file_info.storage,
+            &file_info.path,
+            None,
+            LogEntry::new(
+                crate::transaction_log::EntryType::Delete,
+                crate::transaction_log::EntryStatus::Done,
+            ),
+        )
+        .await
 }
 
-pub fn move_file<'b>(
+pub async fn move_file<'b>(
+    config: &Config,
+    transaction_log: &TransactionLog,
     src_file: &'b FileInfo,
     dest_file: &'b FileInfo,
-    config: &Config,
     // storage_state: &StorageHashCache,
 ) -> crate::Result<()> {
     let src_path = src_file.get_absolute_path(config)?;
@@ -183,10 +175,18 @@ pub fn move_file<'b>(
 
     log::debug!("moving file {:?} to {:?}", src_path, dest_path);
 
-    std::fs::rename(src_path, dest_path)?;
-    // storage_state.invalidate_cache(&src_file.storage);
-
-    Ok(())
+    tokio::fs::rename(src_path, dest_path).await?;
+    transaction_log
+        .append_entry(
+            &src_file.storage,
+            &src_file.path,
+            Some(&dest_file.path),
+            LogEntry::new(
+                crate::transaction_log::EntryType::Move,
+                crate::transaction_log::EntryStatus::Done,
+            ),
+        )
+        .await
 }
 
 pub fn fix_times_and_permissions(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
@@ -259,12 +259,12 @@ a = "./tmp/fs/read_local_files"
         let storage = config.storages.get("a").unwrap();
 
         let mut files: Vec<FileInfo> = walk_path(
-            config,
+            &TransactionLog::memory().await?,
             "a",
             &storage.path,
             &crate::ignored_files::empty_ignored_files(),
         )
-        .unwrap()
+        .await?
         .into_iter()
         .collect();
         files.sort();

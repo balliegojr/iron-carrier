@@ -48,6 +48,7 @@ impl StateStep for FullSyncFollower {
         let event_processing_handler = tokio::spawn(process_transfer_events(
             shared_state.connection_handler,
             shared_state.config,
+            shared_state.transaction_log,
             rx,
         ));
 
@@ -62,7 +63,7 @@ impl StateStep for FullSyncFollower {
                             match crate::storage::get_storage(
                                 &name,
                                 storage_config,
-                                shared_state.config,
+                                shared_state.transaction_log,
                             )
                             .await
                             {
@@ -89,7 +90,12 @@ impl StateStep for FullSyncFollower {
                     tx.send((file, nodes)).await?;
                 }
                 NetworkEvents::Synchronization(Synchronization::DeleteFile { file }) => {
-                    crate::storage::delete_file(&file, shared_state.config).await?;
+                    crate::storage::delete_file(
+                        shared_state.config,
+                        shared_state.transaction_log,
+                        &file,
+                    )
+                    .await?;
                 }
                 NetworkEvents::RequestTransition(Transition::Done) => break,
                 _ => continue,
@@ -97,6 +103,7 @@ impl StateStep for FullSyncFollower {
         }
 
         event_processing_handler.await??;
+        shared_state.transaction_log.flush().await?;
 
         Ok(None)
     }

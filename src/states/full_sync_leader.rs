@@ -45,6 +45,7 @@ impl StateStep for FullSyncLeader {
         let transfer_events_handle = tokio::spawn(process_transfer_events(
             shared_state.connection_handler,
             shared_state.config,
+            shared_state.transaction_log,
             rx,
         ));
 
@@ -54,6 +55,7 @@ impl StateStep for FullSyncLeader {
 
         drop(tx);
         transfer_events_handle.await??;
+        shared_state.transaction_log.flush().await?;
 
         log::info!("full sync end....");
 
@@ -74,7 +76,7 @@ async fn sync_storage(
 ) -> crate::Result<()> {
     log::trace!("Synchronization of storage {storage_name} started");
 
-    let storage = get_storage(storage_name, storage_config, shared_state.config).await?;
+    let storage = get_storage(storage_name, storage_config, shared_state.transaction_log).await?;
     let peers_storages = wait_storage_from_peers(shared_state, &storage, storage_name).await?;
 
     let peers: Vec<u64> = peers_storages.keys().copied().collect();
@@ -145,7 +147,12 @@ async fn execute_action(
     match action {
         sync_actions::SyncAction::Delete { file, nodes } => {
             if nodes.contains(&shared_state.config.node_id_hashed) {
-                crate::storage::delete_file(&file, shared_state.config).await?;
+                crate::storage::delete_file(
+                    shared_state.config,
+                    shared_state.transaction_log,
+                    &file,
+                )
+                .await?;
             }
 
             log::trace!("Requesting {nodes:?} to delete {:?} ", file.path);

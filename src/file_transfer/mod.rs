@@ -6,7 +6,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     config::Config, hash_helper, network::ConnectionHandler, network_events::NetworkEvents,
-    storage::FileInfo,
+    storage::FileInfo, transaction_log::TransactionLog,
 };
 
 mod file_receiver;
@@ -55,6 +55,7 @@ pub enum TransferType {
 pub async fn process_transfer_events(
     connection_handler: &'static ConnectionHandler<NetworkEvents>,
     config: &'static Config,
+    transaction_log: &'static TransactionLog,
     mut send_file_events: Receiver<(FileInfo, Vec<u64>)>,
 ) -> crate::Result<()> {
     let mut events =
@@ -82,7 +83,7 @@ pub async fn process_transfer_events(
                 sending = Some(file_send);
             }
             Some((node_id, event)) = events.next() => {
-                if let Err(err) = process_file_transfer_event(connection_handler, config, node_id, event, &mut sending, &mut receiving).await {
+                if let Err(err) = process_file_transfer_event(connection_handler, config, transaction_log, node_id, event, &mut sending, &mut receiving).await {
                     log::error!("Error processing file transfer {err}");
                 }
             }
@@ -99,6 +100,7 @@ pub async fn process_transfer_events(
 async fn process_file_transfer_event(
     connection_handler: &'static ConnectionHandler<NetworkEvents>,
     config: &'static Config,
+    transaction_log: &'static TransactionLog,
     node_id: u64,
     event: FileTransfer,
     sending: &mut Option<FileSender>,
@@ -123,7 +125,7 @@ async fn process_file_transfer_event(
                 .await?;
 
             if transfer_type.is_some() {
-                let receiver = FileReceiver::new(file, block_size, config).await?;
+                let receiver = FileReceiver::new(config, transaction_log, file, block_size).await?;
                 receiving.insert(transfer_id, receiver);
             }
         }
@@ -165,7 +167,7 @@ async fn process_file_transfer_event(
                         // Shrinking a file can result into a sync without blocks to
                         // transfer
                         if required_blocks.is_empty() {
-                            entry.remove().finish(config).await?;
+                            entry.remove().finish(config, transaction_log).await?;
                         }
 
                         connection_handler
@@ -218,7 +220,7 @@ async fn process_file_transfer_event(
                 let transfer = entry.get_mut();
                 match transfer.write_block(block_index, &block).await {
                     Ok(true) => {
-                        entry.remove().finish(config).await?;
+                        entry.remove().finish(config, transaction_log).await?;
                     }
                     Ok(false) => {}
                     Err(err) => {
