@@ -14,6 +14,7 @@ use sqlx::{
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    time::Duration,
 };
 use thiserror::Error;
 
@@ -37,13 +38,13 @@ impl TransactionLog {
         &self,
         storage: &str,
         path: &Path,
-        new_path: Option<&Path>,
+        old_path: Option<&Path>,
         entry: LogEntry,
     ) -> crate::Result<()> {
-        sqlx::query("INSERT OR REPLACE INTO LogEntry (storage, path, new_path, entry_type, status, timestamp) VALUES (?,?,?,?,?,?)")
+        sqlx::query("INSERT OR REPLACE INTO LogEntry (storage, path, old_path, entry_type, status, timestamp) VALUES (?,?,?,?,?,?)")
             .bind(storage)
             .bind(path.to_str())
-            .bind(new_path.map(|p| p.to_str()))
+            .bind(old_path.map(|p| p.to_str()))
             .bind(&entry.event_type.to_string())
             .bind(&entry.event_status.to_string())
             .bind(entry.timestamp as i64)
@@ -53,7 +54,16 @@ impl TransactionLog {
     }
 
     pub async fn flush(&self) -> crate::Result<()> {
-        // TODO: implement
+        let limit = (tokio::time::Instant::now()
+            - Duration::from_secs(TRANSACTION_KEEP_LIMIT_SECS))
+        .elapsed()
+        .as_secs();
+
+        sqlx::query("DELETE FROM LogEntry where timestamp < ?")
+            .bind(limit as i64)
+            .execute(&self.storage)
+            .await?;
+
         Ok(())
     }
 
@@ -72,9 +82,28 @@ impl TransactionLog {
             .map_err(Box::from)
     }
 
+    pub async fn get_moved(&self, storage: &str) -> crate::Result<Vec<(PathBuf, PathBuf, u64)>> {
+        sqlx::query(
+            "SELECT path, old_path, timestamp FROM LogEntry WHERE storage = ? and entry_type = ?",
+        )
+        .bind(storage)
+        .bind(EntryType::Move.to_string())
+        .map(|row| {
+            (
+                row.get::<&str, &str>("path").into(),
+                row.get::<&str, &str>("old_path").into(),
+                row.get::<i64, &str>("timestamp") as u64,
+            )
+        })
+        .fetch_all(&self.storage)
+        .await
+        .map_err(Box::from)
+    }
+
     pub async fn get_failed_writes(&self, storage: &str) -> crate::Result<HashSet<PathBuf>> {
-        sqlx::query("SELECT path FROM LogEntry WHERE storage = ? and entry_type = 'write' and status in ('fail', 'pending')")
+        sqlx::query("SELECT path FROM LogEntry WHERE storage = ? and entry_type = ? and status in ('fail', 'pending')")
             .bind(storage)
+            .bind(EntryType::Write.to_string())
             .map(|row| row.get::<&str, &str>("path").into())
             .fetch_all(&self.storage)
             .await

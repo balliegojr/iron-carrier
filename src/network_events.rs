@@ -54,6 +54,9 @@ pub enum Synchronization {
     DeleteFile {
         file: storage::FileInfo,
     },
+    MoveFile {
+        file: storage::FileInfo,
+    },
     SendFileTo {
         file: storage::FileInfo,
         nodes: Vec<u64>,

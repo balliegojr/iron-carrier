@@ -5,6 +5,8 @@
 #![feature(hash_drain_filter)]
 #![feature(drain_filter)]
 #![feature(let_chains)]
+#![feature(result_option_inspect)]
+#![feature(is_sorted)]
 
 use network::ConnectionHandler;
 use serde::{Deserialize, Serialize};
@@ -99,8 +101,10 @@ pub enum IronCarrierError {
     #[error("Invalid state change: {0}")]
     InvalidStateChange(String),
 
-    #[error("Received an invalid message")]
-    InvalidMessage,
+    // #[error("Received an invalid message")]
+    // InvalidMessage,
+    #[error("Received an invalid operation")]
+    InvalidOperation,
 
     #[error("Failed to find file")]
     FileNotFound,

@@ -31,7 +31,7 @@ impl FileReceiver {
         block_size: u64,
     ) -> crate::Result<Self> {
         let file_handle = get_file_handle(&remote_file, config).await?;
-        let file_size = remote_file.size.unwrap();
+        let file_size = remote_file.file_size()?;
         if file_size != file_handle.metadata().await?.len() {
             file_handle.set_len(file_size).await?;
             log::trace!("set {:?} len to {file_size}", remote_file.path);
@@ -60,12 +60,9 @@ impl FileReceiver {
         &mut self,
         remote_block_index: Vec<BlockHash>,
     ) -> crate::Result<Vec<BlockHash>> {
-        let local_block_index = get_file_block_index(
-            &mut self.file_handle,
-            self.block_size,
-            self.remote_file.size.unwrap(),
-        )
-        .await?;
+        let file_size = self.remote_file.file_size()?;
+        let local_block_index =
+            get_file_block_index(&mut self.file_handle, self.block_size, file_size).await?;
 
         let required: Vec<u64> = remote_block_index
             .into_iter()

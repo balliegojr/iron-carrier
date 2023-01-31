@@ -33,7 +33,8 @@ impl FileSender {
         nodes: Vec<u64>,
         config: &'static Config,
     ) -> crate::Result<Self> {
-        let block_size = get_block_size(file.size.unwrap());
+        let file_size = file.file_size()?;
+        let block_size = get_block_size(file_size);
         let transfer_id = hash_helper::calculate_file_hash(&file);
 
         // TODO: file block index should be built only if necessary
@@ -41,8 +42,7 @@ impl FileSender {
             let file_path = file.get_absolute_path(config)?;
             tokio::fs::File::open(file_path).await?
         };
-        let block_hashes =
-            get_file_block_index(&mut file_handle, block_size, file.size.unwrap()).await?;
+        let block_hashes = get_file_block_index(&mut file_handle, block_size, file_size).await?;
 
         Ok(Self {
             file,
@@ -137,10 +137,11 @@ impl FileSender {
             }
         }
 
+        let file_size = self.file.file_size()?;
         // FIXME: use a proper streaming for this, without bincode
         for (block_index, nodes) in block_nodes.into_iter() {
             let position = block_index * self.block_size;
-            let bytes_to_read = cmp::min(self.block_size, self.file.size.unwrap() - position);
+            let bytes_to_read = cmp::min(self.block_size, file_size - position);
 
             let mut block = vec![0u8; bytes_to_read as usize];
 

@@ -164,6 +164,20 @@ async fn execute_action(
                 )
                 .await?;
         }
+        sync_actions::SyncAction::Move { file, nodes } => {
+            if nodes.contains(&shared_state.config.node_id_hashed) {
+                crate::storage::move_file(shared_state.config, shared_state.transaction_log, &file)
+                    .await?;
+            }
+
+            shared_state
+                .connection_handler
+                .broadcast_to(
+                    Synchronization::MoveFile { file: file.clone() }.into(),
+                    &nodes,
+                )
+                .await?;
+        }
         sync_actions::SyncAction::Send { file, nodes } => {
             send_file_events.send((file, nodes)).await?;
         }
