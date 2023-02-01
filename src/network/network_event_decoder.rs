@@ -23,7 +23,7 @@ impl Decoder for NetWorkEventDecoder {
         let length = u32::from_be_bytes(length_bytes) as usize;
 
         if length > MAX {
-            return Err(Box::new(IronCarrierError::IOReadingError));
+            return Err(Box::new(IronCarrierError::ParseNetworkMessage));
         }
 
         if src.len() < 4 + length {
@@ -36,7 +36,7 @@ impl Decoder for NetWorkEventDecoder {
 
         match bincode::deserialize(&data) {
             Ok(event) => Ok(Some(event)),
-            Err(_) => Err(Box::new(IronCarrierError::ParseCommandError)),
+            Err(_) => Err(Box::new(IronCarrierError::ParseNetworkMessage)),
         }
     }
 }
