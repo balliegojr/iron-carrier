@@ -7,7 +7,7 @@ pub enum NetworkEvents {
     ConsensusElection(ElectionEvents),
     RequestTransition(Transition),
     Synchronization(Synchronization),
-    FileTransfer(FileTransfer),
+    FileTransfer(u64, FileTransfer),
 }
 
 impl From<Transition> for NetworkEvents {
@@ -25,12 +25,6 @@ impl From<Synchronization> for NetworkEvents {
 impl From<ElectionEvents> for NetworkEvents {
     fn from(value: ElectionEvents) -> Self {
         NetworkEvents::ConsensusElection(value)
-    }
-}
-
-impl From<FileTransfer> for NetworkEvents {
-    fn from(value: FileTransfer) -> Self {
-        NetworkEvents::FileTransfer(value)
     }
 }
 

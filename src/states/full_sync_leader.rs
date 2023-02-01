@@ -42,12 +42,7 @@ impl StateStep for FullSyncLeader {
         log::info!("full sync starting as initiator....");
 
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let transfer_events_handle = tokio::spawn(process_transfer_events(
-            shared_state.connection_handler,
-            shared_state.config,
-            shared_state.transaction_log,
-            rx,
-        ));
+        let transfer_events_handle = tokio::spawn(process_transfer_events(*shared_state, rx));
 
         for (storage_name, storage_config) in &shared_state.config.storages {
             sync_storage(storage_name, storage_config, shared_state, &tx).await?;

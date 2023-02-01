@@ -125,6 +125,7 @@ impl From<bincode::Error> for IronCarrierError {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct SharedState {
     config: &'static Verified<Config>,
     connection_handler: &'static ConnectionHandler<network_events::NetworkEvents>,
