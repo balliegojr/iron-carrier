@@ -45,12 +45,7 @@ impl StateStep for FullSyncFollower {
             });
 
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let event_processing_handler = tokio::spawn(process_transfer_events(
-            shared_state.connection_handler,
-            shared_state.config,
-            shared_state.transaction_log,
-            rx,
-        ));
+        let event_processing_handler = tokio::spawn(process_transfer_events(*shared_state, rx));
 
         while let Some(ev) = event_stream.next().await {
             match ev {
@@ -101,6 +96,10 @@ impl StateStep for FullSyncFollower {
                 _ => continue,
             }
         }
+
+        drop(tx);
+
+        log::debug!("Wait for file transfers to finish");
 
         event_processing_handler.await??;
         shared_state.transaction_log.flush().await?;

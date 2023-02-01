@@ -4,8 +4,8 @@ use std::{
     io::SeekFrom,
 };
 
-use tokio::io::AsyncSeekExt;
 use tokio::{fs::File, io::AsyncReadExt};
+use tokio::{io::AsyncSeekExt, sync::OwnedSemaphorePermit};
 
 use crate::{
     config::Config, hash_helper, network::ConnectionHandler, network_events::NetworkEvents,
@@ -25,6 +25,7 @@ pub struct FileSender {
     participant_nodes: Vec<u64>,
 
     nodes_required_blocks: HashMap<u64, Vec<BlockIndex>>,
+    _transfer_permit: OwnedSemaphorePermit,
 }
 
 impl FileSender {
@@ -32,6 +33,7 @@ impl FileSender {
         file: FileInfo,
         nodes: Vec<u64>,
         config: &'static Config,
+        transfer_permit: OwnedSemaphorePermit,
     ) -> crate::Result<Self> {
         let file_size = file.file_size()?;
         let block_size = get_block_size(file_size);
@@ -52,6 +54,7 @@ impl FileSender {
             nodes_required_blocks: HashMap::default(),
             block_hashes,
             file_handle,
+            _transfer_permit: transfer_permit,
         })
     }
 
@@ -76,12 +79,13 @@ impl FileSender {
     ) -> crate::Result<()> {
         connection_handler
             .broadcast_to(
-                FileTransfer::QueryTransferType {
-                    file: self.file.clone(),
-                    transfer_id: self.transfer_id(),
-                    block_size: self.block_size,
-                }
-                .into(),
+                NetworkEvents::FileTransfer(
+                    self.transfer_id(),
+                    FileTransfer::QueryTransferType {
+                        file: self.file.clone(),
+                        block_size: self.block_size,
+                    },
+                ),
                 &self.participant_nodes,
             )
             .await
@@ -102,11 +106,12 @@ impl FileSender {
                 TransferType::PartialTransfer => {
                     connection_handler
                         .send_to(
-                            FileTransfer::QueryRequiredBlocks {
-                                transfer_id: self.transfer_id,
-                                sender_block_index: self.block_hashes.clone(),
-                            }
-                            .into(),
+                            NetworkEvents::FileTransfer(
+                                self.transfer_id,
+                                FileTransfer::QueryRequiredBlocks {
+                                    sender_block_index: self.block_hashes.clone(),
+                                },
+                            ),
                             node_id,
                         )
                         .await?;
@@ -155,12 +160,13 @@ impl FileSender {
 
             connection_handler
                 .broadcast_to(
-                    FileTransfer::TransferBlock {
-                        transfer_id: self.transfer_id,
-                        block_index,
-                        block: block.into(),
-                    }
-                    .into(),
+                    NetworkEvents::FileTransfer(
+                        self.transfer_id,
+                        FileTransfer::TransferBlock {
+                            block_index,
+                            block: block.into(),
+                        },
+                    ),
                     &nodes,
                 )
                 .await?;

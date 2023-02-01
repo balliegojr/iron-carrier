@@ -1,13 +1,17 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
-use tokio::{fs::File, io::AsyncReadExt, sync::mpsc::Receiver};
+use tokio::{
+    fs::File,
+    io::AsyncReadExt,
+    sync::{
+        mpsc::{Receiver, Sender},
+        Semaphore,
+    },
+};
 use tokio_stream::StreamExt;
 
-use crate::{
-    config::Config, hash_helper, network::ConnectionHandler, network_events::NetworkEvents,
-    storage::FileInfo, transaction_log::TransactionLog,
-};
+use crate::{hash_helper, network_events::NetworkEvents, storage::FileInfo, SharedState};
 
 mod file_receiver;
 mod file_sender;
@@ -22,25 +26,20 @@ type BlockHash = u64;
 pub enum FileTransfer {
     QueryTransferType {
         file: FileInfo,
-        transfer_id: u64,
         block_size: u64,
     },
     ReplyTransferType {
-        transfer_id: u64,
         transfer_type: Option<TransferType>,
     },
 
     QueryRequiredBlocks {
-        transfer_id: u64,
         sender_block_index: Vec<BlockHash>,
     },
     ReplyRequiredBlocks {
-        transfer_id: u64,
         required_blocks: Vec<BlockIndex>,
     },
 
     TransferBlock {
-        transfer_id: u64,
         block_index: BlockIndex,
         block: Arc<Vec<u8>>,
     },
@@ -53,192 +52,239 @@ pub enum TransferType {
 }
 
 pub async fn process_transfer_events(
-    connection_handler: &'static ConnectionHandler<NetworkEvents>,
-    config: &'static Config,
-    transaction_log: &'static TransactionLog,
-    mut send_file_events: Receiver<(FileInfo, Vec<u64>)>,
+    shared_state: SharedState,
+    mut file_transfer_control_events: Receiver<(FileInfo, Vec<u64>)>,
 ) -> crate::Result<()> {
-    let mut events =
-        connection_handler
+    // TODO: handle peer disconnection events
+
+    // NOTE: there must be a better way of stopping this task other than a timeout...
+    let mut events = Box::pin(
+        shared_state
+            .connection_handler
             .events_stream()
             .await
             .filter_map(|(peer_id, ev)| match ev {
-                NetworkEvents::FileTransfer(file_transfer) => Some((peer_id, file_transfer)),
+                NetworkEvents::FileTransfer(transfer_id, file_transfer) => {
+                    Some((transfer_id, peer_id, file_transfer))
+                }
                 _ => None,
-            });
+            })
+            .timeout(Duration::from_secs(1)),
+    );
 
-    // TODO: implement multiple sending
-    // TODO: implement max parallel transfer control
-    // TODO: handle peer disconnection events
+    let max_transfer = Arc::new(tokio::sync::Semaphore::new(
+        shared_state.config.max_parallel_transfers as usize,
+    ));
 
-    let mut receiving = HashMap::new();
-    let mut sending: Option<FileSender> = None;
-
+    let mut active_transfers = HashMap::new();
     loop {
         tokio::select! {
-            Some((file, nodes)) = send_file_events.recv(), if sending.is_none() => {
-                log::trace!("Will send {:?} to {nodes:?}", &file.path);
-                let file_send = FileSender::new(file, nodes, config).await?;
-                file_send.query_transfer_type(connection_handler).await?;
-                sending = Some(file_send);
+            Some((file, nodes)) = file_transfer_control_events.recv()=> {
+                let (transfer_id, sender) = send_file(shared_state, file, nodes, max_transfer.clone()).await?;
+                active_transfers.insert(transfer_id, sender);
             }
-            Some((node_id, event)) = events.next() => {
-                if let Err(err) = process_file_transfer_event(connection_handler, config, transaction_log, node_id, event, &mut sending, &mut receiving).await {
-                    log::error!("Error processing file transfer {err}");
+            Some(Ok((transfer_id, node_id, event))) = events.next() => {
+                match event {
+                    FileTransfer::QueryTransferType { file, block_size } => {
+                        if let Some(transfer) = query_transfer_type(shared_state, file, block_size, transfer_id, node_id, max_transfer.clone()).await? {
+                            let sender = receive_file(
+                                shared_state,
+                                transfer,
+                                transfer_id,
+                            )
+                            .await?;
+
+                            active_transfers.insert(transfer_id, sender);
+                        }
+                    }
+                    event => {
+                        if let Some(sender) = active_transfers.get(&transfer_id) {
+                            sender.send((node_id, event)).await?;
+                        }
+                    }
                 }
             }
-            // FIXME: hackish way to break the loop
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+            else => {
                 break;
             }
         }
+
+        active_transfers.drain_filter(|_, channel| channel.is_closed());
     }
 
     Ok(())
 }
 
-async fn process_file_transfer_event(
-    connection_handler: &'static ConnectionHandler<NetworkEvents>,
-    config: &'static Config,
-    transaction_log: &'static TransactionLog,
+async fn query_transfer_type(
+    shared_state: SharedState,
+    file: FileInfo,
+    block_size: u64,
+    transfer_id: u64,
     node_id: u64,
-    event: FileTransfer,
-    sending: &mut Option<FileSender>,
-    receiving: &mut HashMap<u64, FileReceiver>,
-) -> crate::Result<()> {
-    match event {
-        FileTransfer::QueryTransferType {
-            file,
-            transfer_id,
-            block_size,
-        } => {
-            let transfer_type = file_receiver::get_transfer_type(&file, config).await?;
-            connection_handler
-                .send_to(
-                    FileTransfer::ReplyTransferType {
-                        transfer_id,
-                        transfer_type,
-                    }
-                    .into(),
-                    node_id,
-                )
-                .await?;
+    transfer_control: Arc<Semaphore>,
+) -> crate::Result<Option<FileReceiver>> {
+    let transfer_type = file_receiver::get_transfer_type(&file, shared_state.config).await?;
+    shared_state
+        .connection_handler
+        .send_to(
+            NetworkEvents::FileTransfer(
+                transfer_id,
+                FileTransfer::ReplyTransferType { transfer_type },
+            ),
+            node_id,
+        )
+        .await?;
 
-            if transfer_type.is_some() {
-                let receiver = FileReceiver::new(config, transaction_log, file, block_size).await?;
-                receiving.insert(transfer_id, receiver);
-            }
-        }
-        FileTransfer::ReplyTransferType {
-            transfer_id: _, // NOTE: will be necessary when supporting parallel sending
-            transfer_type,
-        } => {
-            if let Some(transfer) = sending.as_mut() {
-                transfer
-                    .set_transfer_type(connection_handler, node_id, transfer_type)
-                    .await?;
+    match transfer_type {
+        Some(_) => Ok(Some(
+            FileReceiver::new(
+                shared_state.config,
+                shared_state.transaction_log,
+                file,
+                block_size,
+                transfer_control.acquire_owned().await?,
+            )
+            .await?,
+        )),
+        None => Ok(None),
+    }
+}
 
-                if !transfer.has_participant_nodes() {
-                    *sending = None;
-                } else if !transfer.pending_information() {
-                    let transfer = sending.take().unwrap();
-                    transfer.transfer_blocks(connection_handler).await?;
+async fn receive_file(
+    shared_state: SharedState,
+    transfer: FileReceiver,
+    transfer_id: u64,
+) -> crate::Result<Sender<(u64, FileTransfer)>> {
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
 
-                    // NOTE: send on a different task?
-                    // tokio::spawn(async {
-                    //     if let Err(err) = transfer.transfer_blocks(connection_handler).await {
-                    //         log::error!("Failed to send file {err}");
-                    //     }
-                    // });
-                }
-            };
-        }
-        FileTransfer::QueryRequiredBlocks {
-            transfer_id,
-            sender_block_index,
-        } => match receiving.entry(transfer_id) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                match entry
-                    .get_mut()
-                    .get_required_block_index(sender_block_index)
-                    .await
-                {
-                    Ok(required_blocks) => {
-                        // Shrinking a file can result into a sync without blocks to
-                        // transfer
-                        if required_blocks.is_empty() {
-                            entry.remove().finish(config, transaction_log).await?;
+    async fn process_event(
+        shared_state: SharedState,
+        mut transfer: FileReceiver,
+        transfer_id: u64,
+        mut rx: Receiver<(u64, FileTransfer)>,
+    ) -> crate::Result<()> {
+        while let Some((node_id, event)) = rx.recv().await {
+            match event {
+                FileTransfer::QueryRequiredBlocks { sender_block_index } => {
+                    match transfer.get_required_block_index(sender_block_index).await {
+                        Ok(required_blocks) => {
+                            // Shrinking a file can result into a sync without blocks to
+                            // transfer
+                            if required_blocks.is_empty() {
+                                transfer
+                                    .finish(shared_state.config, shared_state.transaction_log)
+                                    .await?;
+                                break;
+                            }
+
+                            shared_state
+                                .connection_handler
+                                .send_to(
+                                    NetworkEvents::FileTransfer(
+                                        transfer_id,
+                                        FileTransfer::ReplyRequiredBlocks { required_blocks },
+                                    ),
+                                    node_id,
+                                )
+                                .await?
                         }
-
-                        connection_handler
-                            .send_to(
-                                FileTransfer::ReplyRequiredBlocks {
-                                    transfer_id,
-                                    required_blocks,
-                                }
-                                .into(),
-                                node_id,
-                            )
-                            .await?
-                    }
-                    Err(err) => {
-                        log::error!("Failed to get required blocks {err}");
-                        // TODO: send abort transfer event
+                        Err(err) => {
+                            log::error!("Failed to get required blocks {err}");
+                            // TODO: send abort transfer event
+                        }
                     }
                 }
-            }
-            std::collections::hash_map::Entry::Vacant(_) => {
-                log::error!("Received event for unknown transfer");
-                // TODO: send abort transfer event
-            }
-        },
-        FileTransfer::ReplyRequiredBlocks {
-            transfer_id: _,
-            required_blocks,
-        } => {
-            if let Some(transfer) = sending.as_mut() {
-                transfer.set_required_blocks(node_id, required_blocks);
-                if transfer.has_participant_nodes() && !transfer.pending_information() {
-                    let transfer = sending.take().unwrap();
-                    transfer.transfer_blocks(connection_handler).await?;
-
-                    // NOTE: send on a different task?
-                    // tokio::spawn(async {
-                    //     if let Err(err) = transfer.transfer_blocks(connection_handler).await {
-                    //         log::error!("Failed to send file {err}");
-                    //     }
-                    // });
+                FileTransfer::TransferBlock { block_index, block } => {
+                    match transfer.write_block(block_index, &block).await {
+                        Ok(true) => {
+                            transfer
+                                .finish(shared_state.config, shared_state.transaction_log)
+                                .await?;
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            log::error!("Failed to write file block {err}");
+                            // TODO: send abort transfer event
+                        }
+                    }
                 }
-            };
+                _ => {}
+            }
         }
-        FileTransfer::TransferBlock {
-            transfer_id,
-            block_index,
-            block,
-        } => match receiving.entry(transfer_id) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                let transfer = entry.get_mut();
-                match transfer.write_block(block_index, &block).await {
-                    Ok(true) => {
-                        entry.remove().finish(config, transaction_log).await?;
-                    }
-                    Ok(false) => {}
-                    Err(err) => {
-                        // NOTE: remove the entry?
-                        // entry.remove_entry();
-                        log::error!("Failed to write file block {err}");
-                        // TODO: send abort transfer event
-                    }
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(_) => {
-                log::error!("Received event for unknown transfer");
-                // TODO: send abort transfer event
-            }
-        },
+
+        Ok(())
     }
 
-    Ok(())
+    tokio::spawn(async move {
+        if let Err(err) = process_event(shared_state, transfer, transfer_id, rx).await {
+            log::error!("{err}");
+        }
+    });
+
+    Ok(tx)
+}
+
+async fn send_file(
+    shared_state: SharedState,
+    file: FileInfo,
+    nodes: Vec<u64>,
+    transfer_control: Arc<Semaphore>,
+) -> crate::Result<(u64, Sender<(u64, FileTransfer)>)> {
+    log::trace!("Will send {:?} to {nodes:?}", &file.path);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+    let mut transfer = FileSender::new(
+        file,
+        nodes,
+        shared_state.config,
+        transfer_control.acquire_owned().await?,
+    )
+    .await?;
+    let transfer_id = transfer.transfer_id();
+    transfer
+        .query_transfer_type(shared_state.connection_handler)
+        .await?;
+    tokio::spawn(async move {
+        while let Some((node_id, event)) = rx.recv().await {
+            match event {
+                FileTransfer::ReplyTransferType { transfer_type } => {
+                    transfer
+                        .set_transfer_type(shared_state.connection_handler, node_id, transfer_type)
+                        .await
+                        .expect("burrr");
+
+                    if !transfer.has_participant_nodes() {
+                        break;
+                    } else if !transfer.pending_information() {
+                        if let Err(err) = transfer
+                            .transfer_blocks(shared_state.connection_handler)
+                            .await
+                        {
+                            log::error!("Failed to send file {err}");
+                        }
+
+                        break;
+                    }
+                }
+                FileTransfer::ReplyRequiredBlocks { required_blocks } => {
+                    transfer.set_required_blocks(node_id, required_blocks);
+                    if transfer.has_participant_nodes() && !transfer.pending_information() {
+                        if let Err(err) = transfer
+                            .transfer_blocks(shared_state.connection_handler)
+                            .await
+                        {
+                            log::error!("Failed to send file {err}");
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+
+    Ok((transfer_id, tx))
 }
 
 const MIN_BLOCK_SIZE: u64 = 1024 * 128;

@@ -70,7 +70,6 @@ pub async fn walk_path(
     ignored_files: &IgnoredFiles,
 ) -> crate::Result<Vec<FileInfo>> {
     // TODO: change to async functions?
-    // TODO: load moved files
     let mut paths = vec![root_path.to_owned()];
     let mut files = get_deleted_files(transaction_log, storage_name).await?;
     let mut moved_files = get_moved_files(transaction_log, storage_name).await?;
