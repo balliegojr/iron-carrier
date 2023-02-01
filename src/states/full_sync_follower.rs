@@ -33,6 +33,7 @@ impl StateStep for FullSyncFollower {
         mut self: Box<Self>,
         shared_state: &SharedState,
     ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
+        // TODO: check for ignred files before delete/moving/receiving
         log::info!("full sync starting....");
 
         let mut event_stream =

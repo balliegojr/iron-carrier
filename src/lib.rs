@@ -26,7 +26,7 @@ mod stream;
 // use events::{CommandDispatcher, CommandHandler, Commands};
 
 pub mod constants;
-mod debouncer;
+// mod debouncer;
 mod hash_helper;
 
 mod ignored_files;
@@ -76,33 +76,10 @@ pub enum IronCarrierError {
     /// It wasn't possible to read a file
     #[error("There was an error reading information from disk")]
     IOReadingError,
-    /// It wasn't possible to write a file
-    #[error("There was an error writing information to disk")]
-    IOWritingError,
-    /// It wasn't possible to start the server    
-    #[error("There was an error starting the server: {0}")]
-    ServerStartError(String),
-    /// The target peer is disconnected
-    #[error("The target peer is not available: {0}")]
-    PeerDisconectedError(SocketAddr),
-    /// It wasn't possible to read from network socket
-    #[error("There was an error reading information from network stream")]
-    NetworkIOReadingError,
-    /// It wans't possible to write to network socket
-    #[error("There was an error writing information to network stream")]
-    NetworkIOWritingError,
-    /// It wasn't possible to parse command frame
-    #[error("There was an error parsing the provide command")]
-    ParseCommandError,
-    /// It wasn't possible to parse the log file
-    #[error("There was an error parsing the log")]
-    ParseLogError,
 
-    #[error("Invalid state change: {0}")]
-    InvalidStateChange(String),
+    #[error("There was an error parsing the network message")]
+    ParseNetworkMessage,
 
-    // #[error("Received an invalid message")]
-    // InvalidMessage,
     #[error("Received an invalid operation")]
     InvalidOperation,
 
@@ -121,7 +98,7 @@ pub enum IronCarrierError {
 
 impl From<bincode::Error> for IronCarrierError {
     fn from(_: bincode::Error) -> Self {
-        IronCarrierError::ParseCommandError
+        IronCarrierError::ParseNetworkMessage
     }
 }
 

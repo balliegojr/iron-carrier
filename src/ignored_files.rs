@@ -23,6 +23,7 @@ pub async fn load_ignored_file_pattern(path: impl AsRef<Path>) -> IgnoredFiles {
     }
 }
 
+#[cfg(test)]
 pub fn empty_ignored_files() -> IgnoredFiles {
     IgnoredFiles { ignore_sets: None }
 }
