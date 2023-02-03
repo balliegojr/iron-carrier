@@ -12,7 +12,7 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 toml = "^0.7"
 filetime = "0.2"
 bytes = "1.0.1"
-notify = "^4.0.12"
+notify =  { version = "^5.0", default-features = false, features = ["macos_kqueue"] }
 log = "^0.4.11"
 stderrlog = "0.5.0"
 clap = "2.33.3"
@@ -21,9 +21,9 @@ simple-mdns = { version = "^0.4", features = ["async-tokio", "sync"] }
 if-addrs = "^0.8"
 rand = "^0.8"
 machine-uid = "^0.2"
-dirs = "^3.0"
+dirs = "^4.0"
 globset = "^0.4"
-crc = "2.1.0"
+crc = "^3.0"
 serde_with = "2.1.0"
 tokio = { version = "1.23.0", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["sync"] }

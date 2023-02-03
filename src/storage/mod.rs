@@ -1,7 +1,7 @@
 //! This module is responsible for handling file system operations
 
 mod file_info;
-mod file_watcher;
+pub mod file_watcher;
 pub use file_info::{FileInfo, FileInfoType};
 
 use std::{

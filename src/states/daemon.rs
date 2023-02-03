@@ -1,11 +1,11 @@
-use std::fmt::Display;
+use std::{fmt::Display, time::Duration};
 
 use tokio_stream::StreamExt;
 
 use crate::{
     network_events::{NetworkEvents, Transition},
     state_machine::StateStep,
-    SharedState,
+    stream, SharedState,
 };
 
 use super::Consensus;
@@ -35,22 +35,41 @@ impl StateStep for Daemon {
         let _service_discovery =
             crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
 
+        let (watcher_events_sender, watcher_events) = tokio::sync::mpsc::channel(1);
+        let _watcher = crate::storage::file_watcher::get_file_watcher(
+            shared_state.config,
+            shared_state.transaction_log,
+            watcher_events_sender,
+        )?;
+
+        let mut watcher_events = stream::fold_timeout(
+            watcher_events,
+            Duration::from_secs(shared_state.config.delay_watcher_events),
+        );
+
         let mut events_stream = shared_state.connection_handler.events_stream().await;
         // tokio::pin!(events_stream);
 
         loop {
-            match events_stream.next().await {
-                Some((_, NetworkEvents::RequestTransition(Transition::Consensus))) => {
-                    return Ok(Some(Box::new(Consensus::new())))
+            tokio::select! {
+                stream_event = events_stream.next() => {
+                    match stream_event {
+                        Some((_, NetworkEvents::RequestTransition(Transition::Consensus))) => {
+                            return Ok(Some(Box::new(Consensus::new())))
+                        }
+                        // In case there is an ongoing election when this daemon becomes active
+                        Some((_, NetworkEvents::ConsensusElection(_))) => {
+                            return Ok(Some(Box::new(Consensus::new())));
+                        }
+                        Some(_) => {
+                            log::info!("received random event");
+                        }
+                        None => break Ok(None),
+                    }
                 }
-                // In case there is an ongoing election when this daemon becomes active
-                Some((_, NetworkEvents::ConsensusElection(_))) => {
-                    return Ok(Some(Box::new(Consensus::new())));
+                watcher_event = watcher_events.recv() => {
+                    dbg!(watcher_event);
                 }
-                Some(_) => {
-                    log::info!("received random event");
-                }
-                None => break Ok(None),
             }
         }
     }
