@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Display, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    time::Duration,
+};
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 
@@ -6,7 +10,7 @@ use crate::{
     config::PathConfig,
     file_transfer::process_transfer_events,
     network_events::{NetworkEvents, Synchronization, Transition},
-    state_machine::StateStep,
+    state_machine::Step,
     storage::{get_storage, FileInfo, Storage},
     SharedState,
 };
@@ -15,7 +19,20 @@ mod matching_files;
 mod sync_actions;
 
 #[derive(Debug, Default)]
-pub struct FullSyncLeader;
+pub struct FullSyncLeader {
+    storages_to_sync: HashSet<String>,
+}
+
+impl FullSyncLeader {
+    pub fn sync_everything() -> Self {
+        Self {
+            storages_to_sync: Default::default(),
+        }
+    }
+    pub fn sync_just(storages_to_sync: HashSet<String>) -> Self {
+        Self { storages_to_sync }
+    }
+}
 
 impl Display for FullSyncLeader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -23,13 +40,9 @@ impl Display for FullSyncLeader {
     }
 }
 
-#[async_trait::async_trait]
-impl StateStep for FullSyncLeader {
-    type GlobalState = SharedState;
-    async fn execute(
-        mut self: Box<Self>,
-        shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
+impl Step for FullSyncLeader {
+    type Output = ();
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         shared_state
             .connection_handler
             .broadcast(Transition::FullSync.into())
@@ -44,7 +57,11 @@ impl StateStep for FullSyncLeader {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         let transfer_events_handle = tokio::spawn(process_transfer_events(*shared_state, rx));
 
-        for (storage_name, storage_config) in &shared_state.config.storages {
+        for (storage_name, storage_config) in
+            shared_state.config.storages.iter().filter(|(storage, _)| {
+                self.storages_to_sync.is_empty() || self.storages_to_sync.contains(storage.as_str())
+            })
+        {
             sync_storage(storage_name, storage_config, shared_state, &tx).await?;
         }
 
@@ -59,7 +76,7 @@ impl StateStep for FullSyncLeader {
             .broadcast(Transition::Done.into())
             .await?;
 
-        Ok(None)
+        Ok(())
     }
 }
 

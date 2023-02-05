@@ -3,7 +3,6 @@ use std::io::SeekFrom;
 use tokio::{
     fs::{File, OpenOptions},
     io::{AsyncSeekExt, AsyncWriteExt},
-    sync::OwnedSemaphorePermit,
 };
 
 use crate::{
@@ -22,7 +21,7 @@ pub struct FileReceiver {
     block_size: u64,
     expected_blocks: u64,
     received_blocks: u64,
-    _transfer_permit: OwnedSemaphorePermit,
+    // _transfer_permit: OwnedSemaphorePermit,
 }
 
 impl FileReceiver {
@@ -31,7 +30,7 @@ impl FileReceiver {
         transaction_log: &'static TransactionLog,
         remote_file: FileInfo,
         block_size: u64,
-        transfer_permit: OwnedSemaphorePermit,
+        // transfer_permit: OwnedSemaphorePermit,
     ) -> crate::Result<Self> {
         let file_handle = get_file_handle(&remote_file, config).await?;
         let file_size = remote_file.file_size()?;
@@ -45,7 +44,7 @@ impl FileReceiver {
                 &remote_file.storage,
                 &remote_file.path,
                 None,
-                LogEntry::new(EntryType::Write, EntryStatus::Done),
+                LogEntry::new(EntryType::Write, EntryStatus::Done, remote_file.get_date()),
             )
             .await?;
 
@@ -56,7 +55,7 @@ impl FileReceiver {
             expected_blocks,
             received_blocks: 0,
             file_handle,
-            _transfer_permit: transfer_permit,
+            // _transfer_permit: transfer_permit,
         })
     }
 
@@ -123,6 +122,7 @@ impl FileReceiver {
                     } else {
                         EntryStatus::Fail
                     },
+                    self.remote_file.get_date(),
                 ),
             )
             .await?;

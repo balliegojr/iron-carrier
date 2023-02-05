@@ -8,9 +8,9 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    pub fn new(event_type: EntryType, event_status: EntryStatus) -> Self {
+    pub fn new(event_type: EntryType, event_status: EntryStatus, timestamp: u64) -> Self {
         Self {
-            timestamp: std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
+            timestamp,
             event_type,
             event_status,
         }

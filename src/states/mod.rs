@@ -10,6 +10,9 @@ pub use daemon::Daemon;
 mod discover_peers;
 pub use discover_peers::DiscoverPeers;
 
+mod full_sync;
+pub use full_sync::FullSync;
+
 mod full_sync_leader;
 pub use full_sync_leader::FullSyncLeader;
 

@@ -1,8 +1,11 @@
-use std::{fmt::Display, net::ToSocketAddrs, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    net::{SocketAddr, ToSocketAddrs},
+    time::Duration,
+};
 
-use crate::{state_machine::StateStep, SharedState};
-
-use super::ConnectAllPeers;
+use crate::{state_machine::Step, SharedState};
 
 #[derive(Default, Debug)]
 pub struct DiscoverPeers {}
@@ -13,14 +16,10 @@ impl Display for DiscoverPeers {
     }
 }
 
-#[async_trait::async_trait]
-impl StateStep for DiscoverPeers {
-    type GlobalState = SharedState;
+impl Step for DiscoverPeers {
+    type Output = HashMap<SocketAddr, Option<u64>>;
 
-    async fn execute(
-        self: Box<Self>,
-        shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         let discovery = async_retry(10, || {
             crate::network::service_discovery::get_service_discovery(shared_state.config)
         })
@@ -49,11 +48,7 @@ impl StateStep for DiscoverPeers {
             }
         }
 
-        if addresses.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(Box::new(ConnectAllPeers::new(addresses))))
-        }
+        Ok(addresses)
     }
 }
 

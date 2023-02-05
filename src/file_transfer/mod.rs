@@ -72,21 +72,22 @@ pub async fn process_transfer_events(
             .timeout(Duration::from_secs(1)),
     );
 
-    let max_transfer = Arc::new(tokio::sync::Semaphore::new(
-        shared_state.config.max_parallel_transfers as usize,
-    ));
+    // TODO: implement max parallel transfer
+    // let max_transfer = Arc::new(tokio::sync::Semaphore::new(
+    //     shared_state.config.max_parallel_transfers as usize,
+    // ));
 
     let mut active_transfers = HashMap::new();
     loop {
         tokio::select! {
             Some((file, nodes)) = file_transfer_control_events.recv()=> {
-                let (transfer_id, sender) = send_file(shared_state, file, nodes, max_transfer.clone()).await?;
+                let (transfer_id, sender) = send_file(shared_state, file, nodes).await?;
                 active_transfers.insert(transfer_id, sender);
             }
             Some(Ok((transfer_id, node_id, event))) = events.next() => {
                 match event {
                     FileTransfer::QueryTransferType { file, block_size } => {
-                        if let Some(transfer) = query_transfer_type(shared_state, file, block_size, transfer_id, node_id, max_transfer.clone()).await? {
+                        if let Some(transfer) = query_transfer_type(shared_state, file, block_size, transfer_id, node_id).await? {
                             let sender = receive_file(
                                 shared_state,
                                 transfer,
@@ -121,7 +122,6 @@ async fn query_transfer_type(
     block_size: u64,
     transfer_id: u64,
     node_id: u64,
-    transfer_control: Arc<Semaphore>,
 ) -> crate::Result<Option<FileReceiver>> {
     let transfer_type = file_receiver::get_transfer_type(&file, shared_state.config).await?;
     shared_state
@@ -142,7 +142,6 @@ async fn query_transfer_type(
                 shared_state.transaction_log,
                 file,
                 block_size,
-                transfer_control.acquire_owned().await?,
             )
             .await?,
         )),
@@ -229,7 +228,7 @@ async fn send_file(
     shared_state: SharedState,
     file: FileInfo,
     nodes: Vec<u64>,
-    transfer_control: Arc<Semaphore>,
+    // transfer_control: Arc<Semaphore>,
 ) -> crate::Result<(u64, Sender<(u64, FileTransfer)>)> {
     log::trace!("Will send {:?} to {nodes:?}", &file.path);
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -238,7 +237,7 @@ async fn send_file(
         file,
         nodes,
         shared_state.config,
-        transfer_control.acquire_owned().await?,
+        // transfer_control.acquire_owned().await?,
     )
     .await?;
     let transfer_id = transfer.transfer_id();

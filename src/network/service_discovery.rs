@@ -51,7 +51,7 @@ fn get_my_ips() -> crate::Result<Vec<IpAddr>> {
 pub async fn get_peers(
     service_discovery: &ServiceDiscovery,
     group: Option<&String>,
-) -> HashMap<SocketAddr, Option<String>> {
+) -> HashMap<SocketAddr, Option<u64>> {
     let mut addresses = HashMap::new();
     let h_group = group.map(hashed_group);
 
@@ -61,10 +61,15 @@ pub async fn get_peers(
         .into_iter()
         .filter(|service| same_version(service) && same_group(service, &h_group));
 
-    for instance_info in services {
-        let id = &instance_info.attributes["id"];
+    for mut instance_info in services {
+        let id = instance_info
+            .attributes
+            .remove("id")
+            .flatten()
+            .map(hash_helper::hashed_str);
+
         for addr in instance_info.get_socket_addresses() {
-            addresses.insert(addr, id.clone());
+            addresses.insert(addr, id);
         }
     }
 

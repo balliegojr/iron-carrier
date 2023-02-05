@@ -2,7 +2,7 @@ use iron_carrier::leak::Leak;
 use rand::seq::SliceRandom;
 use std::fs;
 use std::iter::Iterator;
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 mod common;
 use iron_carrier::config::Config;
@@ -10,7 +10,7 @@ use iron_carrier::validation::Unverified;
 
 #[tokio::test]
 async fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
-    // common::enable_logs(5);
+    common::enable_logs();
     let [peer_1, peer_2, peer_3] = ["d", "e", "f"];
 
     let init_peer = |peer_name: &str, port: u16| {
@@ -19,7 +19,7 @@ async fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
 node_id="{peer_name}"
 group="partial_sync"
 port={port}
-log_path = "/tmp/partial_sync/peer_{peer_name}/peer_log.log"
+log_path = "/tmp/partial_sync/peer_{peer_name}.log"
 delay_watcher_events=1
 [storages]
 store_one = "/tmp/partial_sync/peer_{peer_name}/store_one"
@@ -32,6 +32,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
             .and_then(|config| config.validate())
             .unwrap()
             .leak();
+
         tokio::spawn(async move {
             iron_carrier::start_daemon(config)
                 .await
@@ -50,6 +51,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
         );
     };
 
+    let _ = fs::remove_dir_all("/tmp/partial_sync");
     // cleanup from prev executions
     for peer_name in [peer_1, peer_2, peer_3] {
         let _ = fs::remove_dir_all(format!("/tmp/partial_sync/peer_{peer_name}"));
@@ -61,7 +63,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
     init_peer(peer_2, 8096);
     init_peer(peer_3, 8097);
 
-    thread::sleep(Duration::from_secs(10));
+    tokio::time::sleep(Duration::from_secs(10)).await;
 
     let store_one = common::unchecked_generate_files(
         format!("/tmp/partial_sync/peer_{peer_1}/store_one"),
@@ -72,7 +74,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
         peer_1,
     );
 
-    thread::sleep(Duration::from_secs(20));
+    tokio::time::sleep(Duration::from_secs(20)).await;
     compare_all();
 
     for (i, file) in store_one.iter().enumerate() {
@@ -90,7 +92,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
         }
     }
 
-    thread::sleep(Duration::from_secs(10));
+    tokio::time::sleep(Duration::from_secs(10)).await;
     compare_all();
 
     let mut rng = rand::thread_rng();
@@ -110,7 +112,7 @@ store_two = "/tmp/partial_sync/peer_{peer_name}/store_two"
         }
     }
 
-    thread::sleep(Duration::from_secs(10));
+    tokio::time::sleep(Duration::from_secs(10)).await;
     compare_all();
 
     Ok(())

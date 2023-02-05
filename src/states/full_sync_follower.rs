@@ -5,7 +5,7 @@ use tokio_stream::StreamExt;
 use crate::{
     file_transfer::process_transfer_events,
     network_events::{NetworkEvents, Synchronization, Transition},
-    state_machine::StateStep,
+    state_machine::Step,
     SharedState,
 };
 
@@ -26,13 +26,10 @@ impl FullSyncFollower {
     }
 }
 
-#[async_trait::async_trait]
-impl StateStep for FullSyncFollower {
-    type GlobalState = SharedState;
-    async fn execute(
-        mut self: Box<Self>,
-        shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
+impl Step for FullSyncFollower {
+    type Output = ();
+
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         // TODO: check for ignred files before delete/moving/receiving
         log::info!("full sync starting....");
 
@@ -93,6 +90,14 @@ impl StateStep for FullSyncFollower {
                     )
                     .await?;
                 }
+                NetworkEvents::Synchronization(Synchronization::MoveFile { file }) => {
+                    crate::storage::move_file(
+                        shared_state.config,
+                        shared_state.transaction_log,
+                        &file,
+                    )
+                    .await?;
+                }
                 NetworkEvents::RequestTransition(Transition::Done) => break,
                 _ => continue,
             }
@@ -105,6 +110,6 @@ impl StateStep for FullSyncFollower {
         event_processing_handler.await??;
         shared_state.transaction_log.flush().await?;
 
-        Ok(None)
+        Ok(())
     }
 }

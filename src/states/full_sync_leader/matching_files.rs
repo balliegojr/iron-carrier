@@ -36,6 +36,8 @@ pub fn match_files(
         }
     }
 
+    // TODO: remove 'Existent' entries for any files that have a 'Move' entry
+
     MatchedFilesIter { consolidated }
 }
 

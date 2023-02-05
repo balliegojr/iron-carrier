@@ -1,17 +1,24 @@
-use std::{fmt::Display, time::Duration};
+use std::{collections::HashSet, fmt::Display, time::Duration};
 
 use tokio_stream::StreamExt;
 
 use crate::{
     network_events::{NetworkEvents, Transition},
-    state_machine::StateStep,
-    stream, SharedState,
+    state_machine::{StateComposer, Step},
+    states::FullSync,
+    stream, IronCarrierError, SharedState,
 };
 
-use super::Consensus;
+use super::{ConnectAllPeers, Consensus, DiscoverPeers, FullSyncLeader};
 
 #[derive(Default)]
 pub struct Daemon {}
+
+impl Daemon {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
 
 impl Display for Daemon {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -25,13 +32,10 @@ impl std::fmt::Debug for Daemon {
     }
 }
 
-#[async_trait::async_trait]
-impl StateStep for Daemon {
-    type GlobalState = SharedState;
-    async fn execute(
-        mut self: Box<Self>,
-        shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
+impl Step for Daemon {
+    type Output = DaemonTask;
+
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         let _service_discovery =
             crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
 
@@ -48,28 +52,60 @@ impl StateStep for Daemon {
         );
 
         let mut events_stream = shared_state.connection_handler.events_stream().await;
-        // tokio::pin!(events_stream);
 
         loop {
             tokio::select! {
                 stream_event = events_stream.next() => {
                     match stream_event {
+                        Some((_, NetworkEvents::ConsensusElection(_))) |
                         Some((_, NetworkEvents::RequestTransition(Transition::Consensus))) => {
-                            return Ok(Some(Box::new(Consensus::new())))
+                             return Ok(DaemonTask::ConsensusThenSync);
                         }
-                        // In case there is an ongoing election when this daemon becomes active
-                        Some((_, NetworkEvents::ConsensusElection(_))) => {
-                            return Ok(Some(Box::new(Consensus::new())));
+                        Some((leader_id, NetworkEvents::RequestTransition(Transition::FullSync))) => {
+                            return Ok(DaemonTask::TransitionToFollower(leader_id))
                         }
                         Some(_) => {
                             log::info!("received random event");
                         }
-                        None => break Ok(None),
+                        // TODO: return a proper "abort execution error"
+                        None => return Err(IronCarrierError::InvalidOperation.into())
                     }
                 }
-                watcher_event = watcher_events.recv() => {
-                    dbg!(watcher_event);
+                Some(to_sync) = watcher_events.recv() => {
+                     return Ok(DaemonTask::ConnectThenSync(to_sync));
                 }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum DaemonTask {
+    ConsensusThenSync,
+    ConnectThenSync(HashSet<String>),
+    TransitionToFollower(u64),
+}
+
+impl Step for DaemonTask {
+    type Output = ();
+
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+        match self {
+            DaemonTask::ConsensusThenSync => {
+                Consensus::new()
+                    .and_then(FullSync::new)
+                    .execute(shared_state)
+                    .await
+            }
+            DaemonTask::ConnectThenSync(storages_to_sync) => {
+                DiscoverPeers::default()
+                    .and_then(ConnectAllPeers::new)
+                    .and_then(move |_| FullSyncLeader::sync_just(storages_to_sync))
+                    .execute(shared_state)
+                    .await
+            }
+            DaemonTask::TransitionToFollower(leader_id) => {
+                FullSync::new(leader_id).execute(shared_state).await
             }
         }
     }

@@ -25,7 +25,7 @@ pub struct FileSender {
     participant_nodes: Vec<u64>,
 
     nodes_required_blocks: HashMap<u64, Vec<BlockIndex>>,
-    _transfer_permit: OwnedSemaphorePermit,
+    // _transfer_permit: OwnedSemaphorePermit,
 }
 
 impl FileSender {
@@ -33,7 +33,7 @@ impl FileSender {
         file: FileInfo,
         nodes: Vec<u64>,
         config: &'static Config,
-        transfer_permit: OwnedSemaphorePermit,
+        // transfer_permit: OwnedSemaphorePermit,
     ) -> crate::Result<Self> {
         let file_size = file.file_size()?;
         let block_size = get_block_size(file_size);
@@ -54,7 +54,7 @@ impl FileSender {
             nodes_required_blocks: HashMap::default(),
             block_hashes,
             file_handle,
-            _transfer_permit: transfer_permit,
+            // _transfer_permit: transfer_permit,
         })
     }
 

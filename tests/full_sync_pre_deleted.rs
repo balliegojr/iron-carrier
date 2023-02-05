@@ -1,19 +1,18 @@
-use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 
 use std::{fs, time::SystemTime};
 
 use iron_carrier::config::Config;
-use iron_carrier::constants::LINE_ENDING;
 use iron_carrier::leak::Leak;
+use iron_carrier::transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog};
 use iron_carrier::validation::Unverified;
 
 mod common;
 
 #[tokio::test]
 async fn test_sync_deleted_files() {
-    // common::enable_logs(5);
+    common::enable_logs();
     let mut port = 8100;
     let peers = ["g", "h"];
     let mut configs = Vec::new();
@@ -62,20 +61,24 @@ store_one = {store_path:?}
     ))
     .unwrap();
 
-    let mut log = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(log_path)
-        .unwrap();
+    let transaction_log = TransactionLog::load(&log_path)
+        .await
+        .expect("Failed to load log");
 
     for file in files.iter().filter(|f| !common::is_ignored(f)) {
-        let log_line = format!(
-            "{},store_one,Delete:{},Finished{}",
-            SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 5,
-            file.strip_prefix(&store_path).unwrap().to_str().unwrap(),
-            LINE_ENDING
-        );
-        log.write_all(log_line.as_bytes()).unwrap();
+        transaction_log
+            .append_entry(
+                "store_one",
+                file.strip_prefix(&store_path).unwrap(),
+                None,
+                LogEntry {
+                    timestamp: SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 5,
+                    event_type: EntryType::Delete,
+                    event_status: EntryStatus::Done,
+                },
+            )
+            .await
+            .expect("Failed to add entry");
     }
 
     let mut handles = Vec::new();
