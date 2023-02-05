@@ -15,13 +15,20 @@ use rand::Rng;
 const FOLDERS: usize = 1;
 const FILES_PER_FOLDER: usize = 2;
 
-pub fn enable_logs(verbosity: usize) {
-    stderrlog::new()
-        .verbosity(verbosity)
-        .modules(["iron_carrier", "iron_carrier_tests"])
-        .timestamp(stderrlog::Timestamp::Second)
-        .init()
+pub fn enable_logs() {
+    let verbosity: usize = std::env::var("LOG_LEVEL")
+        .unwrap_or_else(|_| "0".to_string())
+        .parse()
         .unwrap();
+
+    if verbosity > 0 {
+        stderrlog::new()
+            .verbosity(verbosity)
+            .modules(["iron_carrier", "iron_carrier_tests"])
+            .timestamp(stderrlog::Timestamp::Second)
+            .init()
+            .unwrap();
+    }
 }
 
 pub fn truncate_file<P: AsRef<Path>>(path: P) -> Result<(), std::io::Error> {
@@ -145,10 +152,6 @@ fn walk_path<P: AsRef<Path>>(root_path: P) -> (Vec<PathBuf>, HashSet<PathBuf>) {
 
             if path.is_dir() {
                 paths.push(path);
-                continue;
-            }
-
-            if path.extension().map(|ext| ext == "log").unwrap_or_default() {
                 continue;
             }
 

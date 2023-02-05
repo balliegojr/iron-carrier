@@ -143,6 +143,14 @@ impl FileInfo {
             get_permissions(&metadata),
         ))
     }
+
+    pub fn get_date(&self) -> u64 {
+        match self.info_type {
+            FileInfoType::Existent { modified_at, .. } => modified_at,
+            FileInfoType::Deleted { deleted_at } => deleted_at,
+            FileInfoType::Moved { moved_at, .. } => moved_at,
+        }
+    }
 }
 
 impl Hash for FileInfo {

@@ -206,6 +206,7 @@ pub async fn delete_file(
             LogEntry::new(
                 crate::transaction_log::EntryType::Delete,
                 crate::transaction_log::EntryStatus::Done,
+                file_info.get_date(),
             ),
         )
         .await
@@ -235,6 +236,7 @@ pub async fn move_file<'b>(
 
     log::debug!("moving file {src_path:?} to {dest_path:?}");
     tokio::fs::rename(&src_path, &dest_path).await?;
+    fix_times_and_permissions(file, config)?;
 
     // It is necessary to add two entries in the log, one for the new path as moved, one for the
     // old path as deleted
@@ -250,6 +252,7 @@ pub async fn move_file<'b>(
             LogEntry::new(
                 crate::transaction_log::EntryType::Delete,
                 crate::transaction_log::EntryStatus::Done,
+                file.get_date(),
             ),
         )
         .await?;
@@ -262,6 +265,7 @@ pub async fn move_file<'b>(
             LogEntry::new(
                 crate::transaction_log::EntryType::Move,
                 crate::transaction_log::EntryStatus::Done,
+                file.get_date(),
             ),
         )
         .await
@@ -270,11 +274,9 @@ pub async fn move_file<'b>(
 pub fn fix_times_and_permissions(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
     let file_path = file_info.get_absolute_path(config)?;
 
-    if let FileInfoType::Existent { modified_at, .. } = file_info.info_type {
-        let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(modified_at);
-        log::trace!("setting {file_path:?} modification time to {mod_time:?}");
-        filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mod_time))?;
-    }
+    let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.get_date());
+    log::trace!("setting {file_path:?} modification time to {mod_time:?}");
+    filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mod_time))?;
 
     if file_info.permissions > 0 {
         set_file_permissions(&file_path, file_info.permissions)?;

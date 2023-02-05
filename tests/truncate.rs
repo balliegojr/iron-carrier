@@ -1,5 +1,5 @@
 use std::fs;
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 mod common;
 use iron_carrier::config::Config;
@@ -8,16 +8,16 @@ use iron_carrier::validation::Unverified;
 
 #[tokio::test]
 async fn test_truncate() -> Result<(), Box<dyn std::error::Error>> {
-    // common::enable_logs(5);
+    common::enable_logs();
     let [peer_1, peer_2] = ["g", "h"];
 
-    let init_peer = |peer_name: &str, port: u16| {
+    async fn init_peer(peer_name: &str, port: u16) {
         let config = format!(
             r#"
 node_id="{peer_name}"
-group="partial_sync"
+group="truncate"
 port={port}
-log_path = "/tmp/truncate/peer_{peer_name}/peer_log.log"
+log_path = "/tmp/truncate/peer_{peer_name}.log"
 delay_watcher_events=1
 [storages]
 store_one = "/tmp/truncate/peer_{peer_name}/store_one"
@@ -30,8 +30,10 @@ store_one = "/tmp/truncate/peer_{peer_name}/store_one"
             .unwrap()
             .leak();
 
-        iron_carrier::run_full_sync(config)
-    };
+        iron_carrier::start_daemon(config)
+            .await
+            .expect("Failed to start");
+    }
 
     let compare_all = || {
         common::tree_compare(
@@ -46,22 +48,21 @@ store_one = "/tmp/truncate/peer_{peer_name}/store_one"
         let _ = fs::create_dir_all(format!("/tmp/truncate/peer_{peer_name}/store_one"));
     }
 
-    tokio::spawn(init_peer(peer_1, 8098));
-    tokio::spawn(init_peer(peer_2, 8099));
-
-    thread::sleep(Duration::from_secs(10));
-
     let store_one =
         common::unchecked_generate_files(format!("/tmp/truncate/peer_{peer_1}/store_one"), peer_1);
 
-    thread::sleep(Duration::from_secs(10));
+    tokio::spawn(init_peer(peer_1, 8098));
+    tokio::spawn(init_peer(peer_2, 8099));
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
     compare_all();
 
     for file in store_one.iter() {
         common::truncate_file(file).expect("failed to truncate file");
     }
 
-    thread::sleep(Duration::from_secs(10));
+    tokio::time::sleep(Duration::from_secs(10)).await;
     compare_all();
 
     Ok(())

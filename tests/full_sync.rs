@@ -8,16 +8,19 @@ mod common;
 
 #[tokio::test]
 async fn test_full_sync() {
-    // common::enable_logs(5);
+    common::enable_logs();
+
     let mut port = 8090;
     let peers = ["a", "b", "c"];
     let mut store_one = Vec::new();
     let mut store_two = Vec::new();
     let mut configs = Vec::new();
 
+    let _ = fs::remove_dir_all("/tmp/full_sync");
+
     for peer_name in peers {
         let peer_path = PathBuf::from_str(&format!("/tmp/full_sync/peer_{peer_name}")).unwrap();
-        let log_path = peer_path.join("peer_log.log");
+        let log_path = PathBuf::from_str(&format!("/tmp/full_sync/peer_{peer_name}.log")).unwrap();
         let store_one_path = peer_path.join("store_one");
         let store_two_path = peer_path.join("store_two");
 

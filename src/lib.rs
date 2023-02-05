@@ -7,10 +7,12 @@
 #![feature(let_chains)]
 #![feature(result_option_inspect)]
 #![feature(is_sorted)]
+#![feature(async_fn_in_trait)]
 
 use network::ConnectionHandler;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use state_machine::{StateComposer, Step};
+use states::FullSync;
 use thiserror::Error;
 use transaction_log::TransactionLog;
 use validation::Verified;
@@ -48,7 +50,7 @@ mod states;
 // mod sync;
 // use sync::{FileTransferMan, FileWatcher, Synchronizer};
 
-mod transaction_log;
+pub mod transaction_log;
 // use transaction_log::TransactionLogWriter;
 
 pub mod validation;
@@ -123,12 +125,12 @@ pub async fn run_full_sync(
         transaction_log,
     };
 
-    let state_machine = state_machine::StateStepper::new(shared_state, None);
-    state_machine
-        .execute(Box::<states::DiscoverPeers>::default())
-        .await;
-
-    Ok(())
+    states::DiscoverPeers::default()
+        .and_then(states::ConnectAllPeers::new)
+        .and_then(|_| states::Consensus::new())
+        .and_then(FullSync::new)
+        .execute(&shared_state)
+        .await
 }
 
 pub async fn start_daemon(
@@ -147,87 +149,11 @@ pub async fn start_daemon(
         transaction_log,
     };
 
-    let state_machine =
-        state_machine::StateStepper::new(shared_state, Some(|| Box::<states::Daemon>::default()));
-    state_machine
-        .execute(Box::<states::DiscoverPeers>::default())
-        .await;
-
-    Ok(())
-    // let mut log_writer = transaction_log::TransactionLogWriter::new_from_path(&config.log_path)?;
-    // let connection_man = get_command_handler_when_ready(config);
-    // let file_watcher = get_file_watcher(
-    //     config,
-    //     connection_man.command_dispatcher(),
-    //     log_writer.clone(),
-    //     ignored_files,
-    // );
-    //
-    // let mut file_transfer_man = FileTransferMan::new(
-    //     connection_man.command_dispatcher(),
-    //     config,
-    //     log_writer.clone(),
-    //     storage_state,
-    // );
-    //
-    // let mut negotiator = Negotiator::new(connection_man.command_dispatcher());
-    // let mut synchronizer = Synchronizer::new(
-    //     config,
-    //     connection_man.command_dispatcher(),
-    //     storage_state,
-    //     ignored_files,
-    // )?;
-    //
-    // connection_man.on_command(move |command, peer_id| -> crate::Result<bool> {
-    //     match command {
-    //         Commands::Command(event) => {
-    //             if matches!(event, sync::SyncEvent::StartSync) && peer_id.is_some() {
-    //                 negotiator.set_passive();
-    //             }
-    //
-    //             match peer_id {
-    //                 Some(peer_id) => synchronizer.handle_network_event(event, &peer_id),
-    //                 None => synchronizer.handle_signal(event),
-    //             }
-    //         }
-    //
-    //         Commands::Stream(data) => file_transfer_man.handle_stream(&data, &peer_id.unwrap()),
-    //         Commands::FileHandler(event) => {
-    //             file_transfer_man.handle_event(event, peer_id.as_deref())
-    //         }
-    //         Commands::Watcher(event) => match &file_watcher {
-    //             Some(watcher) => watcher.handle_event(event),
-    //             None => Ok(false),
-    //         },
-    //         Commands::Clear => {
-    //             log_writer.compress_log()?;
-    //             file_transfer_man.clear();
-    //             storage_state.clear();
-    //             synchronizer.clear();
-    //             negotiator.clear();
-    //
-    //             // TODO: only clear ignored files when there is a change in the .ignore file
-    //             ignored_files.clear();
-    //
-    //             Ok(false)
-    //         }
-    //         Commands::Negotiation(event) => {
-    //             negotiator.handle_negotiation(event, peer_id);
-    //             Ok(false)
-    //         }
-    //     }
-    // })
+    states::DiscoverPeers::default()
+        .and_then(states::ConnectAllPeers::new)
+        .and_then(|_| states::Consensus::new())
+        .and_then(FullSync::new)
+        .then_loop(|| states::Daemon::new().and_then(|daemon_task| daemon_task))
+        .execute(&shared_state)
+        .await
 }
-//
-// fn get_file_watcher(
-//     config: &'static Config,
-//     dispatcher: CommandDispatcher,
-//     log_writer: TransactionLogWriter<File>,
-//     ignored_files: &'static IgnoredFiles,
-// ) -> Option<FileWatcher> {
-//     if config.enable_file_watcher {
-//         FileWatcher::new(dispatcher, config, log_writer, ignored_files).ok()
-//     } else {
-//         None
-//     }
-// }

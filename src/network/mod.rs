@@ -72,7 +72,12 @@ impl ConnectionHandler<NetworkEvents> {
         })
     }
 
-    pub async fn connect(&self, addr: &SocketAddr) -> crate::Result<u64> {
+    pub async fn connect(&self, addr: &SocketAddr, peer_id: Option<u64>) -> crate::Result<u64> {
+        if let Some(peer_id) = peer_id {
+            if self.connections.lock().await.contains_peer(&peer_id) {
+                return Ok(peer_id);
+            }
+        }
         let transport_stream = if self.config.transport_encryption {
             // TODO: add transport layer encryption
             tokio::net::TcpStream::connect(addr).await?

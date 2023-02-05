@@ -11,8 +11,8 @@ use tokio_stream::StreamExt;
 
 use crate::{
     network_events::{self, NetworkEvents},
-    state_machine::StateStep,
-    SharedState,
+    state_machine::Step,
+    IronCarrierError, SharedState,
 };
 
 /// Possible states that a node can be
@@ -20,7 +20,7 @@ use crate::{
 /// Only the first two are actually used, when a node becomes leader, it imediately transition to
 /// FullSync state and request the same for the other followers, ending the election process
 #[derive(Debug, PartialEq, Eq)]
-enum NodeState {
+pub enum NodeState {
     Candidate,
     Follower,
     Leader,
@@ -52,13 +52,9 @@ impl Display for Consensus {
     }
 }
 
-#[async_trait::async_trait]
-impl StateStep for Consensus {
-    type GlobalState = SharedState;
-    async fn execute(
-        mut self: Box<Self>,
-        shared_state: &SharedState,
-    ) -> crate::Result<Option<Box<dyn StateStep<GlobalState = Self::GlobalState>>>> {
+impl Step for Consensus {
+    type Output = u64;
+    async fn execute(mut self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         // This election process repeats until a candidate becomes the leader
         //
         // After a timeout of 100-250ms, if the node is a candidate, it advances the current term
@@ -96,7 +92,7 @@ impl StateStep for Consensus {
 
 
                     if term.participants == 0 {
-                        return Ok(None);
+                        return Err(IronCarrierError::InvalidOperation.into())
                     }
 
                     deadline = tokio::time::Instant::now() + Duration::from_millis(get_timeout());
@@ -121,15 +117,14 @@ impl StateStep for Consensus {
                                         log::debug!("Node wins election");
                                         self.election_state = NodeState::Leader;
 
-                                        let full_sync = crate::states::FullSyncLeader::default();
-                                        return Ok(Some(Box::new(full_sync)))
+                                        return Ok(shared_state.config.node_id_hashed)
                                     }
                                 }
                                 _ => {}
                             }
                         }
                         NetworkEvents::RequestTransition(network_events::Transition::FullSync) => if self.election_state == NodeState::Follower {
-                            return Ok(Some(Box::new(crate::states::FullSyncFollower::new(peer_id))))
+                            return Ok(peer_id)
                         }
                         _ => {}
                     }

@@ -75,7 +75,7 @@ async fn register_event(
 
     let dst = event
         .paths
-        .get(0)
+        .get(1)
         .and_then(|p| get_storage_and_relative_path(storages, p));
 
     match event.kind {
@@ -90,7 +90,11 @@ async fn register_event(
                             storage,
                             dst_path,
                             Some(src_path),
-                            LogEntry::new(EntryType::Move, EntryStatus::Done),
+                            LogEntry::new(
+                                EntryType::Move,
+                                EntryStatus::Done,
+                                std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
+                            ),
                         )
                         .await?;
                 }
@@ -107,7 +111,11 @@ async fn register_event(
                         storage,
                         path,
                         None,
-                        LogEntry::new(EntryType::Delete, EntryStatus::Done),
+                        LogEntry::new(
+                            EntryType::Delete,
+                            EntryStatus::Done,
+                            std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
+                        ),
                     )
                     .await?;
             }
@@ -118,17 +126,12 @@ async fn register_event(
     Ok(src.map(|(storage, _)| storage))
 }
 
-fn get_dir_files(storage_path: &Path, path: &Path) -> Vec<PathBuf> {
-    todo!()
-}
-
 fn get_storage_and_relative_path(
     storages: &HashMap<PathBuf, String>,
     file_path: &Path,
 ) -> Option<(String, PathBuf)> {
     for (storage_path, storage) in storages.iter() {
         if file_path.starts_with(storage_path) {
-            dbg!(&storage_path, storage);
             return file_path
                 .strip_prefix(storage_path)
                 .map(|relative_path| (storage.clone(), relative_path.to_path_buf()))
