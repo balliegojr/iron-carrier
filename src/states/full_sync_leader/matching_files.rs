@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::storage::{FileInfo, Storage};
 
@@ -36,9 +36,30 @@ pub fn match_files(
         }
     }
 
-    // TODO: remove 'Existent' entries for any files that have a 'Move' entry
+    clean_moved_files_old_path(&mut consolidated);
 
     MatchedFilesIter { consolidated }
+}
+
+/// This function remove all entries for the 'old_path' for the moved files.  
+/// We need to do this in order to prevent the file to be created back
+fn clean_moved_files_old_path(
+    consolidated: &mut BTreeMap<std::path::PathBuf, HashMap<u64, FileInfo>>,
+) {
+    let to_remove: HashSet<std::path::PathBuf> = consolidated
+        .values()
+        .filter_map(|files| {
+            files.values().max_by(|a, b| a.date_cmp(b)).and_then(|f| {
+                if let crate::storage::FileInfoType::Moved { old_path, .. } = &f.info_type {
+                    Some(old_path.clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    consolidated.drain_filter(|k, _| to_remove.contains(k));
 }
 
 #[cfg(test)]
