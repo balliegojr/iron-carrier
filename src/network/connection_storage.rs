@@ -12,6 +12,7 @@ impl ConnectionStorage {
     pub fn insert(&mut self, connection: WriteHalf) {
         self.peer_to_connection
             .insert(connection.peer_id, connection.connection_id);
+
         self.connections
             .insert(connection.connection_id, connection);
     }
@@ -27,8 +28,18 @@ impl ConnectionStorage {
 
     pub fn remove(&mut self, connection_id: &ConnectionId) -> Option<WriteHalf> {
         let connection = self.connections.remove(connection_id);
+        log::info!("Removing connection {:?}", connection_id);
+
         if let Some(c) = connection.as_ref() {
-            self.peer_to_connection.remove(&c.peer_id);
+            if self
+                .peer_to_connection
+                .get(&c.peer_id)
+                .map(|connection_id| *connection_id == c.connection_id)
+                .unwrap_or_default()
+            {
+                log::info!("Removing connection to {}", c.peer_id);
+                self.peer_to_connection.remove(&c.peer_id);
+            }
         }
 
         connection
@@ -55,5 +66,10 @@ impl ConnectionStorage {
             .for_each(|(_, connection)| {
                 self.peer_to_connection.remove(&connection.peer_id);
             });
+    }
+
+    pub fn clear(&mut self) {
+        self.connections.clear();
+        self.peer_to_connection.clear();
     }
 }

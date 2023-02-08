@@ -19,8 +19,9 @@ use crate::{
 ///
 /// Only the first two are actually used, when a node becomes leader, it imediately transition to
 /// FullSync state and request the same for the other followers, ending the election process
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub enum NodeState {
+    #[default]
     Candidate,
     Follower,
     Leader,
@@ -33,7 +34,7 @@ pub enum ElectionEvents {
     VoteOnTerm(u32, bool),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Consensus {
     election_state: NodeState,
 }
@@ -90,10 +91,11 @@ impl Step for Consensus {
                         )
                         .await?;
 
-
                     if term.participants == 0 {
                         return Err(IronCarrierError::InvalidOperation.into())
                     }
+
+                    log::debug!("Requested vote for {}", term.participants);
 
                     deadline = tokio::time::Instant::now() + Duration::from_millis(get_timeout());
                 }

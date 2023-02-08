@@ -3,11 +3,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{
     io::AsyncWriteExt,
-    sync::{
-        broadcast,
-        mpsc::{Receiver, Sender},
-        Mutex,
-    },
+    sync::{broadcast, Mutex},
 };
 use tokio_stream::{Stream, StreamExt};
 
@@ -15,7 +11,7 @@ use crate::{
     config::Config, constants::PEER_IDENTIFICATION_TIMEOUT, network_events::NetworkEvents,
     IronCarrierError,
 };
-use connection::{Connection, ConnectionId, ReadHalf};
+use connection::{Connection, ReadHalf};
 
 use self::{connection_storage::ConnectionStorage, network_event_decoder::NetWorkEventDecoder};
 
@@ -23,12 +19,6 @@ mod connection;
 mod connection_storage;
 mod network_event_decoder;
 pub mod service_discovery;
-
-#[derive(Debug)]
-enum ConnectionEvent {
-    Connected(Connection),
-    Disconnected(ConnectionId),
-}
 
 pub struct ConnectionHandler<T>
 where
@@ -38,7 +28,7 @@ where
     connections: Arc<Mutex<connection_storage::ConnectionStorage>>,
 
     inbound_sender: broadcast::Sender<(u64, T)>,
-    connection_events: Sender<ConnectionEvent>,
+    _inbound_receiver: broadcast::Receiver<(u64, T)>,
 }
 
 impl ConnectionHandler<NetworkEvents> {
@@ -48,15 +38,7 @@ impl ConnectionHandler<NetworkEvents> {
 
         tokio::spawn(cleanup_stale_connections(connections.clone()));
 
-        let (connection_events_tx, connection_events_rx) = tokio::sync::mpsc::channel(1);
-        tokio::spawn(connection_events(
-            connection_events_rx,
-            inbound_sender.clone(),
-            connection_events_tx.clone(),
-            connections.clone(),
-        ));
-
-        let inbound_fut = listen_connections(config, connection_events_tx.clone());
+        let inbound_fut = listen_connections(config, inbound_sender.clone(), connections.clone());
 
         tokio::spawn(async move {
             if let Err(err) = inbound_fut.await {
@@ -68,22 +50,29 @@ impl ConnectionHandler<NetworkEvents> {
             config,
             connections,
             inbound_sender,
-            connection_events: connection_events_tx,
+            _inbound_receiver,
         })
     }
 
-    pub async fn connect(&self, addr: &SocketAddr, peer_id: Option<u64>) -> crate::Result<u64> {
+    pub async fn connect(&self, addr: SocketAddr, peer_id: Option<u64>) -> crate::Result<u64> {
         if let Some(peer_id) = peer_id {
             if self.connections.lock().await.contains_peer(&peer_id) {
+                log::info!("Already connected to {peer_id}");
                 return Ok(peer_id);
             }
         }
-        let transport_stream = if self.config.transport_encryption {
+
+        let backoff = backoff::ExponentialBackoffBuilder::new()
+            .with_max_elapsed_time(Some(Duration::from_secs(3)))
+            .build();
+
+        let transport_stream = backoff::future::retry(backoff, || async {
             // TODO: add transport layer encryption
-            tokio::net::TcpStream::connect(addr).await?
-        } else {
-            tokio::net::TcpStream::connect(addr).await?
-        };
+            tokio::net::TcpStream::connect(addr)
+                .await
+                .map_err(backoff::Error::from)
+        })
+        .await?;
 
         let (read, write) = transport_stream.into_split();
         let connection = tokio::time::timeout(
@@ -94,9 +83,12 @@ impl ConnectionHandler<NetworkEvents> {
         .map_err(|_| IronCarrierError::ConnectionTimeout)??;
 
         let peer_id = connection.peer_id;
-        self.connection_events
-            .send(ConnectionEvent::Connected(connection))
-            .await?;
+        append_connection(
+            self.inbound_sender.clone(),
+            self.connections.clone(),
+            connection,
+        )
+        .await;
 
         Ok(peer_id)
     }
@@ -145,36 +137,33 @@ impl ConnectionHandler<NetworkEvents> {
 
         Ok(())
     }
+
+    pub async fn close_all_connections(&self) -> crate::Result<()> {
+        self.connections.lock().await.clear();
+        Ok(())
+    }
 }
 
-async fn connection_events(
-    mut connection_events: Receiver<ConnectionEvent>,
+async fn append_connection(
     event_stream: broadcast::Sender<(u64, NetworkEvents)>,
-    connection_events_sender: Sender<ConnectionEvent>,
     connections: Arc<Mutex<ConnectionStorage>>,
+    connection: Connection,
 ) {
-    while let Some(event) = connection_events.recv().await {
-        match event {
-            ConnectionEvent::Connected(connection) => {
-                let mut connections = connections.lock().await;
-                if connections.contains_peer(&connection.peer_id) {
-                    continue;
-                }
-
-                let (write, read) = connection.split();
-                tokio::spawn(read_network_data(
-                    read,
-                    event_stream.clone(),
-                    connection_events_sender.clone(),
-                ));
-
-                connections.insert(write);
-            }
-            ConnectionEvent::Disconnected(connection_id) => {
-                connections.lock().await.remove(&connection_id);
-            }
-        }
+    let mut connections_guard = connections.lock().await;
+    if connections_guard.contains_peer(&connection.peer_id) {
+        log::info!("Already connected to {}", connection.peer_id);
+        return;
     }
+
+    let (write, read) = connection.split();
+    tokio::spawn(read_network_data(
+        read,
+        event_stream.clone(),
+        connections.clone(),
+    ));
+
+    log::info!("Connected to {}", write.peer_id);
+    connections_guard.insert(write);
 }
 
 async fn cleanup_stale_connections(connections: Arc<Mutex<ConnectionStorage>>) {
@@ -186,9 +175,11 @@ async fn cleanup_stale_connections(connections: Arc<Mutex<ConnectionStorage>>) {
 
 async fn listen_connections(
     config: &Config,
-    connection_events: Sender<ConnectionEvent>,
+    event_stream: broadcast::Sender<(u64, NetworkEvents)>,
+    connections: Arc<Mutex<ConnectionStorage>>,
 ) -> crate::Result<()> {
     // TODO: handle re-connection
+    log::debug!("Listening on {}", config.port);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
 
     while let Ok((stream, _addr)) = listener.accept().await {
@@ -206,9 +197,7 @@ async fn listen_connections(
             }
         };
 
-        connection_events
-            .send(ConnectionEvent::Connected(connection))
-            .await?
+        append_connection(event_stream.clone(), connections.clone(), connection).await;
     }
 
     Ok(())
@@ -217,7 +206,7 @@ async fn listen_connections(
 async fn read_network_data(
     read_connection: ReadHalf,
     event_stream: broadcast::Sender<(u64, NetworkEvents)>,
-    connection_events: Sender<ConnectionEvent>,
+    connections: Arc<Mutex<ConnectionStorage>>,
 ) {
     let peer_id = read_connection.peer_id;
     let connection_id = read_connection.connection_id;
@@ -226,7 +215,8 @@ async fn read_network_data(
     while let Some(event) = stream.next().await {
         match event {
             Ok(event) => {
-                if event_stream.send((peer_id, event)).is_err() {
+                if let Err(err) = event_stream.send((peer_id, event)) {
+                    log::error!("Error sending event to event stream {err}");
                     break;
                 }
             }
@@ -236,7 +226,5 @@ async fn read_network_data(
         }
     }
 
-    let _ = connection_events
-        .send(ConnectionEvent::Disconnected(connection_id))
-        .await;
+    connections.lock().await.remove(&connection_id);
 }

@@ -149,7 +149,7 @@ impl crate::validation::Verifiable for Config {
 
         for (alias, path) in &self.storages {
             if !path.path.exists() {
-                log::info!("creating directory for alias {}", alias);
+                log::info!("creating directory for storage {}", alias);
                 std::fs::create_dir_all(&path.path)?;
             }
             if !path.path.is_dir() {
@@ -161,7 +161,7 @@ impl crate::validation::Verifiable for Config {
             }
         }
 
-        if let Some(group) = &self.group && group.len() > 20 {
+        if let Some(group) = &self.group && group.len() > 255 {
             return Err(
                 IronCarrierError::ConfigFileIsInvalid("Group name is too long".into()).into(),
             );

@@ -9,7 +9,7 @@ use crate::{
     stream, IronCarrierError, SharedState,
 };
 
-use super::{ConnectAllPeers, Consensus, DiscoverPeers, FullSyncLeader};
+use super::{ConnectAllPeers, Consensus, DiscoverPeers};
 
 #[derive(Default)]
 pub struct Daemon {}
@@ -97,10 +97,11 @@ impl Step for DaemonTask {
                     .execute(shared_state)
                     .await
             }
-            DaemonTask::ConnectThenSync(storages_to_sync) => {
+            DaemonTask::ConnectThenSync(_storages_to_sync) => {
                 DiscoverPeers::default()
                     .and_then(ConnectAllPeers::new)
-                    .and_then(move |_| FullSyncLeader::sync_just(storages_to_sync))
+                    .and::<Consensus>()
+                    .and_then(FullSync::new)
                     .execute(shared_state)
                     .await
             }

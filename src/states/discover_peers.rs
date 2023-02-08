@@ -20,15 +20,20 @@ impl Step for DiscoverPeers {
     type Output = HashMap<SocketAddr, Option<u64>>;
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        let discovery = async_retry(10, || {
+        let backoff = backoff::ExponentialBackoffBuilder::new()
+            .with_max_elapsed_time(Some(Duration::from_secs(30)))
+            .build();
+
+        let discovery = backoff::future::retry(backoff, || async {
             crate::network::service_discovery::get_service_discovery(shared_state.config)
+                .await
+                .map_err(backoff::Error::from)
         })
         .await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
         let mut addresses = match discovery {
             Some(discovery) => {
+                tokio::time::sleep(Duration::from_secs(2)).await;
                 crate::network::service_discovery::get_peers(
                     &discovery,
                     shared_state.config.group.as_ref(),
@@ -49,29 +54,5 @@ impl Step for DiscoverPeers {
         }
 
         Ok(addresses)
-    }
-}
-
-// NOTE: move this to a utils file?
-async fn async_retry<T, F, Fut>(tries: u64, retriable: F) -> crate::Result<T>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = crate::Result<T>>,
-{
-    let mut current_try = 0u64;
-    loop {
-        match (retriable)().await {
-            Err(err) => {
-                current_try += 1;
-                if current_try == tries {
-                    return Err(err)?;
-                }
-
-                log::error!("{err}");
-                tokio::time::sleep(Duration::from_secs(current_try)).await;
-                continue;
-            }
-            Ok(ok) => return Ok(ok),
-        }
     }
 }

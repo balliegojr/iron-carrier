@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use state_machine::{StateComposer, Step};
 use states::FullSync;
 use thiserror::Error;
+use tokio::sync::mpsc::Sender;
 use transaction_log::TransactionLog;
 use validation::Verified;
 
@@ -23,17 +24,11 @@ use config::Config;
 
 mod network_events;
 mod stream;
-// mod connection;
-
-// mod events;
-// use events::{CommandDispatcher, CommandHandler, Commands};
 
 pub mod constants;
-// mod debouncer;
 mod hash_helper;
 
 mod ignored_files;
-// use ignored_files::IgnoredFiles;
 
 pub mod leak;
 use leak::Leak;
@@ -45,15 +40,7 @@ mod file_transfer;
 mod state_machine;
 mod states;
 
-// mod storage_hash_cache;
-// use storage_hash_cache::StorageHashCache;
-
-// mod sync;
-// use sync::{FileTransferMan, FileWatcher, Synchronizer};
-
 pub mod transaction_log;
-// use transaction_log::TransactionLogWriter;
-
 pub mod validation;
 
 /// Result<T, IronCarrierError> alias
@@ -128,10 +115,17 @@ pub async fn run_full_sync(
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
-        .and_then(|_| states::Consensus::new())
+        .and::<states::Consensus>()
         .and_then(FullSync::new)
         .execute(&shared_state)
-        .await
+        .await?;
+
+    shared_state
+        .connection_handler
+        .close_all_connections()
+        .await?;
+
+    Ok(())
 }
 
 pub async fn start_daemon(
@@ -152,9 +146,22 @@ pub async fn start_daemon(
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
-        .and_then(|_| states::Consensus::new())
+        .and::<states::Consensus>()
         .and_then(FullSync::new)
         .then_loop(|| states::Daemon::new().and_then(|daemon_task| daemon_task))
         .execute(&shared_state)
         .await
 }
+
+// fn drop_shared_state(shared_state: SharedState) {
+//     unsafe {
+//         let _ = Box::from_raw(
+//             shared_state.connection_handler as *const ConnectionHandler<NetworkEvents>
+//                 as *mut ConnectionHandler<NetworkEvents>,
+//         );
+//
+//         let _ = Box::from_raw(
+//             shared_state.transaction_log as *const TransactionLog as *mut TransactionLog,
+//         );
+//     }
+// }
