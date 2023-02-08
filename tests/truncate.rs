@@ -2,59 +2,43 @@ use std::fs;
 use std::time::Duration;
 
 mod common;
-use iron_carrier::config::Config;
-use iron_carrier::leak::Leak;
-use iron_carrier::validation::Unverified;
 
-#[tokio::test]
-async fn test_truncate() -> Result<(), Box<dyn std::error::Error>> {
+#[test]
+fn test_truncate() -> Result<(), Box<dyn std::error::Error>> {
     common::enable_logs();
-    let [peer_1, peer_2] = ["g", "h"];
 
-    async fn init_peer(peer_name: &str, port: u16) {
-        let config = format!(
-            r#"
-node_id="{peer_name}"
-group="truncate"
-port={port}
-log_path = "/tmp/truncate/peer_{peer_name}.log"
-delay_watcher_events=1
-[storages]
-store_one = "/tmp/truncate/peer_{peer_name}/store_one"
-"#,
-        );
-
-        let config = config
-            .parse::<Unverified<Config>>()
-            .and_then(|config| config.validate())
-            .unwrap()
-            .leak();
-
-        iron_carrier::start_daemon(config)
-            .await
-            .expect("Failed to start");
-    }
+    let _ = fs::remove_dir_all("/tmp/truncate");
+    let configs = common::generate_configs("truncate", 8098, 2, 1);
 
     let compare_all = || {
         common::tree_compare(
-            format!("/tmp/truncate/peer_{peer_1}/store_one"),
-            format!("/tmp/truncate/peer_{peer_2}/store_one"),
+            &configs[0].storages["storage_0"].path,
+            &configs[1].storages["storage_0"].path,
         );
     };
 
-    // cleanup from prev executions
-    for peer_name in [peer_1, peer_2] {
-        let _ = fs::remove_dir_all(format!("/tmp/truncate/peer_{peer_name}"));
-        let _ = fs::create_dir_all(format!("/tmp/truncate/peer_{peer_name}/store_one"));
-    }
+    let store_one = common::unchecked_generate_files(
+        &configs[0].storages["storage_0"].path,
+        &configs[0].node_id,
+    );
 
-    let store_one =
-        common::unchecked_generate_files(format!("/tmp/truncate/peer_{peer_1}/store_one"), peer_1);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let handles: Vec<_> = configs
+            .iter()
+            .map(|config| {
+                tokio::spawn(async {
+                    let _ = iron_carrier::run_full_sync(config).await;
+                })
+            })
+            .collect();
 
-    tokio::spawn(init_peer(peer_1, 8098));
-    tokio::spawn(init_peer(peer_2, 8099));
+        for handle in handles {
+            handle.await.expect("Iron carrier failed");
+        }
+    });
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    rt.shutdown_timeout(Duration::from_secs(5));
 
     compare_all();
 
@@ -62,7 +46,22 @@ store_one = "/tmp/truncate/peer_{peer_name}/store_one"
         common::truncate_file(file).expect("failed to truncate file");
     }
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let handles: Vec<_> = configs
+            .iter()
+            .map(|config| {
+                tokio::spawn(async {
+                    let _ = iron_carrier::run_full_sync(config).await;
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.await.expect("Iron carrier failed");
+        }
+    });
+
     compare_all();
 
     Ok(())

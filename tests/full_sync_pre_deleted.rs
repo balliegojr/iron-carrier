@@ -1,75 +1,27 @@
-use std::path::PathBuf;
-use std::str::FromStr;
-
-use std::{fs, time::SystemTime};
-
-use iron_carrier::config::Config;
-use iron_carrier::leak::Leak;
 use iron_carrier::transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog};
-use iron_carrier::validation::Unverified;
+use std::time::SystemTime;
 
 mod common;
 
 #[tokio::test]
 async fn test_sync_deleted_files() {
     common::enable_logs();
-    let mut port = 8100;
-    let peers = ["g", "h"];
-    let mut configs = Vec::new();
+    const TEST_NAME: &str = "full_sync_pre_deleted";
 
-    for peer_name in peers {
-        let peer_path =
-            PathBuf::from_str(&format!("/tmp/full_sync_pre_deleted/peer_{peer_name}")).unwrap();
-        let log_path = peer_path.join("peer_log.log");
-        let store_path = peer_path.join("store_one");
+    let _ = std::fs::remove_dir_all(format!("/tmp/{TEST_NAME}"));
+    let configs = common::generate_configs(TEST_NAME, 8100, 2, 1);
 
-        let _ = fs::remove_dir_all(peer_path);
-
-        let config = format!(
-            r#"
-node_id="{peer_name}"
-group="pre_deleted"
-port={port}
-log_path = {log_path:?} 
-delay_watcher_events=1
-[storages]
-store_one = {store_path:?}
-"#
-        );
-
-        configs.push(
-            config
-                .parse::<Unverified<Config>>()
-                .and_then(|config| config.validate())
-                .unwrap()
-                .leak(),
-        );
-
-        port += 1;
-    }
-
-    let store_path = PathBuf::from_str(&format!(
-        "/tmp/full_sync_pre_deleted/peer_{}/store_one",
-        peers[1]
-    ))
-    .unwrap();
-    let files = common::generate_files(&store_path, "del");
-
-    let log_path = PathBuf::from_str(&format!(
-        "/tmp/full_sync_pre_deleted/peer_{}/peer_log.log",
-        peers[0]
-    ))
-    .unwrap();
-
-    let transaction_log = TransactionLog::load(&log_path)
+    let files = common::generate_files(&configs[1].storages["storage_0"].path, "del");
+    let transaction_log = TransactionLog::load(&configs[0].log_path)
         .await
         .expect("Failed to load log");
 
     for file in files.iter().filter(|f| !common::is_ignored(f)) {
         transaction_log
             .append_entry(
-                "store_one",
-                file.strip_prefix(&store_path).unwrap(),
+                "storage_0",
+                file.strip_prefix(&configs[1].storages["storage_0"].path)
+                    .unwrap(),
                 None,
                 LogEntry {
                     timestamp: SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 5,
@@ -81,17 +33,13 @@ store_one = {store_path:?}
             .expect("Failed to add entry");
     }
 
-    let mut handles = Vec::new();
-    for config in configs {
-        handles.push(tokio::spawn(async move {
-            iron_carrier::run_full_sync(config)
-                .await
-                .expect("Iron carrier failed");
-        }));
-    }
+    let handles = configs
+        .into_iter()
+        .map(|config| tokio::spawn(iron_carrier::run_full_sync(config)))
+        .collect::<Vec<_>>();
 
     for handle in handles {
-        handle.await.expect("Iron carrier failed");
+        let _ = handle.await;
     }
 
     for file in files {

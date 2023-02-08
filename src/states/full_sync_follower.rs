@@ -51,6 +51,7 @@ impl Step for FullSyncFollower {
                     name,
                     hash,
                 }) => {
+                    log::debug!("Queried about {name} storage");
                     let files = match shared_state.config.storages.get(&name) {
                         Some(storage_config) => {
                             match crate::storage::get_storage(
@@ -109,6 +110,8 @@ impl Step for FullSyncFollower {
 
         event_processing_handler.await??;
         shared_state.transaction_log.flush().await?;
+
+        log::info!("full sync end....");
 
         Ok(())
     }

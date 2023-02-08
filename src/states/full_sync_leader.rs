@@ -66,6 +66,9 @@ impl Step for FullSyncLeader {
         }
 
         drop(tx);
+
+        log::debug!("Wait for file transfers to finish");
+
         transfer_events_handle.await??;
         shared_state.transaction_log.flush().await?;
 
@@ -124,6 +127,8 @@ async fn wait_storage_from_peers(
             .into(),
         )
         .await?;
+
+    log::debug!("Expecting reply from {expected} nodes");
 
     let stream = (shared_state.connection_handler.events_stream().await)
         .filter_map(|(peer_id, ev)| match ev {

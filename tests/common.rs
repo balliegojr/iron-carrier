@@ -9,6 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use iron_carrier::config::Config;
+use iron_carrier::leak::Leak;
+use iron_carrier::validation::{Unverified, Verified};
 use rand::distributions::{Alphanumeric, Standard};
 use rand::Rng;
 
@@ -29,6 +32,63 @@ pub fn enable_logs() {
             .init()
             .unwrap();
     }
+}
+
+pub fn generate_configs(
+    test_name: &str,
+    initial_port: u16,
+    nodes: u16,
+    storages: usize,
+) -> Vec<&'static Verified<Config>> {
+    assert!(nodes > 1);
+
+    let final_port = initial_port + nodes;
+    let peers = |node: u16| -> String {
+        (initial_port..final_port)
+            .filter(|p| *p != node)
+            .map(|port| format!("\"127.0.0.1:{port}\""))
+            .collect::<Vec<String>>()
+            .join("\n,")
+    };
+
+    let storages = |node: u16| -> String {
+        (0..storages)
+            .map(|storage| {
+                format!("storage_{storage} = \"/tmp/{test_name}/peer_{node}/storage_{storage}/\"")
+            })
+            .collect::<Vec<String>>()
+            .join("\n")
+    };
+
+    (initial_port..final_port)
+        .map(|port| {
+            let config = format!(
+                r#"
+node_id="peer_{port}"
+group="{test_name}"
+port={port}
+log_path = "/tmp/{test_name}/peer_{port}.log"
+delay_watcher_events=1
+enable_service_discovery=false
+
+peers = [
+{}
+]
+
+[storages]
+{}
+"#,
+                peers(port),
+                storages(port)
+            );
+
+            config
+                .parse::<Unverified<Config>>()
+                .and_then(|config| config.validate())
+                .unwrap()
+                .leak()
+        })
+        .collect()
 }
 
 pub fn truncate_file<P: AsRef<Path>>(path: P) -> Result<(), std::io::Error> {

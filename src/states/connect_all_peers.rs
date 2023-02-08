@@ -1,5 +1,7 @@
 use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 
+use rand::Rng;
+
 use crate::{state_machine::Step, SharedState};
 
 #[derive(Debug)]
@@ -25,16 +27,30 @@ impl Step for ConnectAllPeers {
     type Output = ();
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        for (addr, peer_id) in self.addresses_to_connect {
-            if let Err(err) = shared_state
-                .connection_handler
-                .connect(&addr, peer_id)
-                .await
-            {
-                log::error!("Failed to connect to peer {addr} {err}");
-            }
+        tokio::time::sleep(std::time::Duration::from_millis(get_timeout())).await;
+
+        let connection_handler = shared_state.connection_handler;
+        let handles = self
+            .addresses_to_connect
+            .into_iter()
+            .map(|(addr, peer_id)| {
+                tokio::spawn(async move {
+                    if let Err(err) = connection_handler.connect(addr, peer_id).await {
+                        log::error!("Failed to connect to {addr}: {err}");
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            let _ = handle.await;
         }
 
         Ok(())
     }
+}
+
+fn get_timeout() -> u64 {
+    let mut rng = rand::thread_rng();
+    rng.gen_range(150..500)
 }
