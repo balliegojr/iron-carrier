@@ -11,7 +11,7 @@ const MAX: usize = 8 * 1024 * 1024;
 
 impl Decoder for NetWorkEventDecoder {
     type Item = NetworkEvents;
-    type Error = Box<dyn Error>;
+    type Error = Box<dyn Error + Send + Sync>;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.len() < 4 {

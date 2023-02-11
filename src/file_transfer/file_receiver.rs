@@ -21,7 +21,6 @@ pub struct FileReceiver {
     block_size: u64,
     expected_blocks: u64,
     received_blocks: u64,
-    // _transfer_permit: OwnedSemaphorePermit,
 }
 
 impl FileReceiver {
@@ -30,7 +29,6 @@ impl FileReceiver {
         transaction_log: &'static TransactionLog,
         remote_file: FileInfo,
         block_size: u64,
-        // transfer_permit: OwnedSemaphorePermit,
     ) -> crate::Result<Self> {
         let file_handle = get_file_handle(&remote_file, config).await?;
         let file_size = remote_file.file_size()?;
@@ -44,7 +42,11 @@ impl FileReceiver {
                 &remote_file.storage,
                 &remote_file.path,
                 None,
-                LogEntry::new(EntryType::Write, EntryStatus::Done, remote_file.get_date()),
+                LogEntry::new(
+                    EntryType::Write,
+                    EntryStatus::Pending,
+                    remote_file.get_date(),
+                ),
             )
             .await?;
 
@@ -55,7 +57,6 @@ impl FileReceiver {
             expected_blocks,
             received_blocks: 0,
             file_handle,
-            // _transfer_permit: transfer_permit,
         })
     }
 
@@ -88,7 +89,7 @@ impl FileReceiver {
         &mut self,
         block_index: BlockIndex,
         block: &[u8],
-    ) -> crate::Result<bool> {
+    ) -> crate::Result<()> {
         let position = block_index * self.block_size;
 
         if self.file_handle.seek(SeekFrom::Start(position)).await? == position {
@@ -96,7 +97,7 @@ impl FileReceiver {
         }
 
         self.received_blocks += 1;
-        Ok(self.received_blocks == self.expected_blocks)
+        Ok(())
     }
 
     pub async fn finish(
@@ -134,19 +135,19 @@ impl FileReceiver {
 pub async fn get_transfer_type(
     remote_file: &FileInfo,
     config: &'static Config,
-) -> crate::Result<Option<TransferType>> {
+) -> crate::Result<TransferType> {
     let file_path = remote_file.get_absolute_path(config)?;
     if !file_path.exists() {
-        return Ok(Some(TransferType::Everything));
+        return Ok(TransferType::FullFile);
     }
 
     let local_file = remote_file.get_local_file_info(config)?;
     if hash_helper::calculate_file_hash(remote_file)
         != hash_helper::calculate_file_hash(&local_file)
     {
-        Ok(Some(TransferType::PartialTransfer))
+        Ok(TransferType::Partial)
     } else {
-        Ok(None)
+        Ok(TransferType::NoTransfer)
     }
 }
 

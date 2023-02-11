@@ -1,11 +1,11 @@
 use std::{
     cmp,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     io::SeekFrom,
 };
 
+use tokio::io::AsyncSeekExt;
 use tokio::{fs::File, io::AsyncReadExt};
-use tokio::{io::AsyncSeekExt, sync::OwnedSemaphorePermit};
 
 use crate::{
     config::Config, hash_helper, network::ConnectionHandler, network_events::NetworkEvents,
@@ -22,18 +22,16 @@ pub struct FileSender {
     file_handle: File,
     block_size: u64,
     block_hashes: Vec<BlockHash>,
-    participant_nodes: Vec<u64>,
+    participant_nodes: HashSet<u64>,
 
     nodes_required_blocks: HashMap<u64, Vec<BlockIndex>>,
-    // _transfer_permit: OwnedSemaphorePermit,
 }
 
 impl FileSender {
     pub async fn new(
         file: FileInfo,
-        nodes: Vec<u64>,
+        nodes: HashSet<u64>,
         config: &'static Config,
-        // transfer_permit: OwnedSemaphorePermit,
     ) -> crate::Result<Self> {
         let file_size = file.file_size()?;
         let block_size = get_block_size(file_size);
@@ -54,7 +52,6 @@ impl FileSender {
             nodes_required_blocks: HashMap::default(),
             block_hashes,
             file_handle,
-            // _transfer_permit: transfer_permit,
         })
     }
 
@@ -86,7 +83,7 @@ impl FileSender {
                         block_size: self.block_size,
                     },
                 ),
-                &self.participant_nodes,
+                self.participant_nodes.iter(),
             )
             .await
     }
@@ -95,29 +92,27 @@ impl FileSender {
         &mut self,
         connection_handler: &'static ConnectionHandler<NetworkEvents>,
         node_id: u64,
-        transfer_type: Option<TransferType>,
+        transfer_type: TransferType,
     ) -> crate::Result<()> {
         match transfer_type {
-            Some(transfer_type) => match transfer_type {
-                TransferType::Everything => {
-                    let required_blocks = (0..self.block_hashes.len() as u64).collect();
-                    self.nodes_required_blocks.insert(node_id, required_blocks);
-                }
-                TransferType::PartialTransfer => {
-                    connection_handler
-                        .send_to(
-                            NetworkEvents::FileTransfer(
-                                self.transfer_id,
-                                FileTransfer::QueryRequiredBlocks {
-                                    sender_block_index: self.block_hashes.clone(),
-                                },
-                            ),
-                            node_id,
-                        )
-                        .await?;
-                }
-            },
-            None => {
+            TransferType::FullFile => {
+                let required_blocks = (0..self.block_hashes.len() as u64).collect();
+                self.nodes_required_blocks.insert(node_id, required_blocks);
+            }
+            TransferType::Partial => {
+                connection_handler
+                    .send_to(
+                        NetworkEvents::FileTransfer(
+                            self.transfer_id,
+                            FileTransfer::QueryRequiredBlocks {
+                                sender_block_index: self.block_hashes.clone(),
+                            },
+                        ),
+                        node_id,
+                    )
+                    .await?;
+            }
+            TransferType::NoTransfer => {
                 self.nodes_required_blocks.remove(&node_id);
                 self.participant_nodes.retain(|node| *node != node_id);
             }
@@ -167,10 +162,17 @@ impl FileSender {
                             block: block.into(),
                         },
                     ),
-                    &nodes,
+                    nodes.iter(),
                 )
                 .await?;
         }
+
+        connection_handler
+            .broadcast_to(
+                NetworkEvents::FileTransfer(self.transfer_id, FileTransfer::TransferComplete),
+                self.participant_nodes.iter(),
+            )
+            .await?;
 
         Ok(())
     }

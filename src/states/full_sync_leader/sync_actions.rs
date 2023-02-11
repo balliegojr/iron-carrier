@@ -1,6 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::storage::{FileInfo, FileInfoType};
+use crate::{
+    network_events::Synchronization,
+    state_machine::Step,
+    storage::{FileInfo, FileInfoType},
+    IronCarrierError, SharedState,
+};
+
+use super::matching_files::MatchedFilesIter;
 
 pub fn get_file_sync_action(
     local_node: u64,
@@ -20,7 +27,7 @@ pub fn get_file_sync_action(
     let is_local_the_most_recent = node_with_most_recent_file == local_node;
 
     let most_recent_file = file.remove(&node_with_most_recent_file).unwrap();
-    let mut node_out_of_sync: Vec<u64> = peers
+    let node_out_of_sync: HashSet<u64> = peers
         .iter()
         .chain(&[local_node])
         .filter(|peer_id| {
@@ -33,7 +40,6 @@ pub fn get_file_sync_action(
         .copied()
         .collect();
 
-    node_out_of_sync.sort();
     if node_out_of_sync.is_empty() {
         return None;
     }
@@ -63,21 +69,148 @@ pub fn get_file_sync_action(
 pub enum SyncAction {
     Delete {
         file: FileInfo,
-        nodes: Vec<u64>,
+        nodes: HashSet<u64>,
     },
     Send {
         file: FileInfo,
-        nodes: Vec<u64>,
+        nodes: HashSet<u64>,
     },
     DelegateSend {
         delegate_to: u64,
         file: FileInfo,
-        nodes: Vec<u64>,
+        nodes: HashSet<u64>,
     },
     Move {
         file: FileInfo,
-        nodes: Vec<u64>,
+        nodes: HashSet<u64>,
     },
+}
+
+#[derive(Debug)]
+pub struct DispatchActions {
+    peers: Vec<u64>,
+    matched_files_iter: MatchedFilesIter,
+}
+
+impl DispatchActions {
+    pub fn new(peers: Vec<u64>, matched_files_iter: MatchedFilesIter) -> Self {
+        Self {
+            peers,
+            matched_files_iter,
+        }
+    }
+}
+
+impl Step for DispatchActions {
+    type Output = (Vec<(FileInfo, HashSet<u64>)>, HashSet<u64>);
+
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+        let actions = self.matched_files_iter.filter_map(|file| {
+            get_file_sync_action(shared_state.config.node_id_hashed, &self.peers, file)
+        });
+
+        let mut files_to_send = Vec::default();
+        let mut file_transfer_required = false;
+
+        for action in actions {
+            if let Err(err) = execute_action(
+                action,
+                shared_state,
+                &mut files_to_send,
+                &mut file_transfer_required,
+            )
+            .await
+            {
+                log::error!("failed to execute action {err}");
+            }
+        }
+
+        // TODO: use a proper abort error
+        if !file_transfer_required {
+            return Err(IronCarrierError::InvalidOperation.into());
+        }
+
+        shared_state
+            .connection_handler
+            .broadcast_to(
+                Synchronization::StartTransferingFiles.into(),
+                self.peers.iter(),
+            )
+            .await?;
+
+        Ok((
+            files_to_send,
+            HashSet::from_iter(self.peers.iter().copied()),
+        ))
+    }
+}
+
+pub async fn execute_action(
+    action: SyncAction,
+    shared_state: &SharedState,
+    files_to_send: &mut Vec<(FileInfo, HashSet<u64>)>,
+    file_transfer_required: &mut bool,
+) -> crate::Result<()> {
+    match action {
+        SyncAction::Delete { file, nodes } => {
+            if nodes.contains(&shared_state.config.node_id_hashed) {
+                crate::storage::delete_file(
+                    shared_state.config,
+                    shared_state.transaction_log,
+                    &file,
+                )
+                .await?;
+            }
+
+            log::trace!("Requesting {nodes:?} to delete {:?} ", file.path);
+            shared_state
+                .connection_handler
+                .broadcast_to(
+                    Synchronization::DeleteFile { file: file.clone() }.into(),
+                    nodes.iter(),
+                )
+                .await?;
+        }
+        SyncAction::Move { file, nodes } => {
+            if nodes.contains(&shared_state.config.node_id_hashed) {
+                crate::storage::move_file(shared_state.config, shared_state.transaction_log, &file)
+                    .await?;
+            }
+
+            shared_state
+                .connection_handler
+                .broadcast_to(
+                    Synchronization::MoveFile { file: file.clone() }.into(),
+                    nodes.iter(),
+                )
+                .await?;
+        }
+        SyncAction::Send { file, nodes } => {
+            *file_transfer_required = true;
+            files_to_send.push((file, nodes));
+        }
+        SyncAction::DelegateSend {
+            delegate_to,
+            file,
+            nodes,
+        } => {
+            *file_transfer_required = true;
+            log::trace!(
+                "Requesting {delegate_to} to send {:?} to {nodes:?}",
+                file.path
+            );
+
+            shared_state
+                .connection_handler
+                .send_to(
+                    Synchronization::SendFileTo { file, nodes }.into(),
+                    delegate_to,
+                )
+                .await?
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -107,17 +240,17 @@ mod tests {
         // bellow will generate the deletion action for node 1
 
         match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, vec![1]),
+            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
             _ => panic!(),
         }
 
         match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, vec![1]),
+            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
             _ => panic!(),
         }
 
         match get_file_sync_action(1, &[0], files.clone()).unwrap() {
-            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, vec![1]),
+            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
             _ => panic!(),
         }
 
@@ -145,7 +278,7 @@ mod tests {
         );
 
         match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, vec![1]),
+            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
             _ => panic!(),
         }
     }
@@ -166,12 +299,12 @@ mod tests {
         // records of the file, all other nodes should receive the file
 
         match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, vec![1, 2, 3]),
+            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([1, 2, 3])),
             _ => panic!(),
         }
 
         match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, vec![1]),
+            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
             _ => panic!(),
         }
 
@@ -198,14 +331,14 @@ mod tests {
 
         assert!(get_file_sync_action(0, &[1,], files.clone()).is_none());
         match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, vec![2, 3]),
+            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([2, 3])),
             SyncAction::DelegateSend {
                 file: _,
                 nodes,
                 delegate_to,
             } => {
                 assert_eq!(delegate_to, 1);
-                assert_eq!(nodes, vec![2, 3]);
+                assert_eq!(nodes, HashSet::from([2, 3]));
             }
             _ => panic!(),
         }
@@ -228,7 +361,7 @@ mod tests {
         );
 
         match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, vec![1]),
+            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
             _ => panic!(),
         }
     }
@@ -255,7 +388,7 @@ mod tests {
                 delegate_to,
             } => {
                 assert_eq!(delegate_to, 1);
-                assert_eq!(nodes, vec![0, 2, 3]);
+                assert_eq!(nodes, HashSet::from([0, 2, 3]));
             }
             _ => panic!(),
         }
@@ -267,7 +400,7 @@ mod tests {
                 delegate_to,
             } => {
                 assert_eq!(delegate_to, 1);
-                assert_eq!(nodes, vec![0]);
+                assert_eq!(nodes, HashSet::from([0]));
             }
             _ => panic!(),
         }
@@ -295,14 +428,14 @@ mod tests {
 
         assert!(get_file_sync_action(0, &[1,], files.clone()).is_none());
         match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, vec![2, 3]),
+            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([2, 3])),
             SyncAction::DelegateSend {
                 file: _,
                 nodes,
                 delegate_to,
             } => {
                 assert_eq!(delegate_to, 1);
-                assert_eq!(nodes, vec![2, 3]);
+                assert_eq!(nodes, HashSet::from([2, 3]));
             }
             _ => panic!(),
         }
@@ -331,11 +464,11 @@ mod tests {
 
         // File moving should generate actions only for nodes that do not have the file
         match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, vec![1, 2, 3]),
+            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, HashSet::from([1, 2, 3])),
             _ => panic!(),
         }
         match get_file_sync_action(2, &[0, 1, 3], files.clone()).unwrap() {
-            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, vec![1, 2, 3]),
+            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, HashSet::from([1, 2, 3])),
             _ => panic!(),
         }
 
@@ -358,7 +491,7 @@ mod tests {
         );
 
         match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, vec![1]),
+            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
             _ => panic!(),
         }
     }
