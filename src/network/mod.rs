@@ -3,9 +3,12 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{
     io::AsyncWriteExt,
-    sync::{broadcast, Mutex},
+    sync::{
+        mpsc::{Receiver, Sender},
+        Mutex,
+    },
 };
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::StreamExt;
 
 use crate::{
     config::Config, constants::PEER_IDENTIFICATION_TIMEOUT, network_events::NetworkEvents,
@@ -27,30 +30,31 @@ where
     config: &'static Config,
     connections: Arc<Mutex<connection_storage::ConnectionStorage>>,
 
-    inbound_sender: broadcast::Sender<(u64, T)>,
-    _inbound_receiver: broadcast::Receiver<(u64, T)>,
+    stream_sender: Sender<(u64, T)>,
+    stream_receiver: Arc<Mutex<Receiver<(u64, T)>>>,
 }
 
 impl ConnectionHandler<NetworkEvents> {
     pub async fn new(config: &'static Config) -> crate::Result<ConnectionHandler<NetworkEvents>> {
-        let (inbound_sender, _inbound_receiver) = tokio::sync::broadcast::channel(100);
+        let (stream_sender, stream_receiver) = tokio::sync::mpsc::channel(100);
         let connections: Arc<Mutex<ConnectionStorage>> = Default::default();
 
         tokio::spawn(cleanup_stale_connections(connections.clone()));
 
-        let inbound_fut = listen_connections(config, inbound_sender.clone(), connections.clone());
+        let inbound_fut = listen_connections(config, stream_sender.clone(), connections.clone());
 
         tokio::spawn(async move {
             if let Err(err) = inbound_fut.await {
                 log::error!("{err}");
             }
         });
+        let stream_receiver = Mutex::new(stream_receiver).into();
 
         Ok(Self {
             config,
             connections,
-            inbound_sender,
-            _inbound_receiver,
+            stream_sender,
+            stream_receiver,
         })
     }
 
@@ -84,7 +88,7 @@ impl ConnectionHandler<NetworkEvents> {
 
         let peer_id = connection.peer_id;
         append_connection(
-            self.inbound_sender.clone(),
+            self.stream_sender.clone(),
             self.connections.clone(),
             connection,
         )
@@ -103,11 +107,12 @@ impl ConnectionHandler<NetworkEvents> {
         Ok(())
     }
 
-    pub async fn events_stream(&self) -> impl Stream<Item = (u64, NetworkEvents)> {
-        let receiver = self.inbound_sender.subscribe();
-
-        let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
-        stream.filter_map(|ev| ev.ok())
+    pub async fn next_event(&self) -> Option<(u64, NetworkEvents)> {
+        if self.connections.lock().await.len() == 0 {
+            None
+        } else {
+            self.stream_receiver.lock().await.recv().await
+        }
     }
 
     pub async fn broadcast(&self, event: NetworkEvents) -> crate::Result<usize> {
@@ -121,11 +126,11 @@ impl ConnectionHandler<NetworkEvents> {
         Ok(connections.len())
     }
 
-    pub async fn broadcast_to(&self, event: NetworkEvents, nodes: &[u64]) -> crate::Result<()> {
-        if nodes.is_empty() {
-            return Ok(());
-        }
-
+    pub async fn broadcast_to(
+        &self,
+        event: NetworkEvents,
+        nodes: impl Iterator<Item = &u64>,
+    ) -> crate::Result<()> {
         let bytes = bincode::serialize(&event)?;
         let mut connections = self.connections.lock().await;
         for node in nodes {
@@ -145,7 +150,7 @@ impl ConnectionHandler<NetworkEvents> {
 }
 
 async fn append_connection(
-    event_stream: broadcast::Sender<(u64, NetworkEvents)>,
+    event_stream: Sender<(u64, NetworkEvents)>,
     connections: Arc<Mutex<ConnectionStorage>>,
     connection: Connection,
 ) {
@@ -175,7 +180,7 @@ async fn cleanup_stale_connections(connections: Arc<Mutex<ConnectionStorage>>) {
 
 async fn listen_connections(
     config: &Config,
-    event_stream: broadcast::Sender<(u64, NetworkEvents)>,
+    event_stream: Sender<(u64, NetworkEvents)>,
     connections: Arc<Mutex<ConnectionStorage>>,
 ) -> crate::Result<()> {
     // TODO: handle re-connection
@@ -205,7 +210,7 @@ async fn listen_connections(
 
 async fn read_network_data(
     read_connection: ReadHalf,
-    event_stream: broadcast::Sender<(u64, NetworkEvents)>,
+    event_stream: Sender<(u64, NetworkEvents)>,
     connections: Arc<Mutex<ConnectionStorage>>,
 ) {
     let peer_id = read_connection.peer_id;
@@ -215,7 +220,7 @@ async fn read_network_data(
     while let Some(event) = stream.next().await {
         match event {
             Ok(event) => {
-                if let Err(err) = event_stream.send((peer_id, event)) {
+                if let Err(err) = event_stream.send((peer_id, event)).await {
                     log::error!("Error sending event to event stream {err}");
                     break;
                 }
@@ -224,6 +229,13 @@ async fn read_network_data(
                 log::error!("error reading from peer {err}");
             }
         }
+    }
+
+    if let Err(err) = event_stream
+        .send((peer_id, NetworkEvents::Disconnected))
+        .await
+    {
+        log::error!("Error sending event to event stream {err}");
     }
 
     connections.lock().await.remove(&connection_id);

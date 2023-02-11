@@ -1,7 +1,5 @@
 use std::{collections::HashSet, fmt::Display, time::Duration};
 
-use tokio_stream::StreamExt;
-
 use crate::{
     network_events::{NetworkEvents, Transition},
     state_machine::{StateComposer, Step},
@@ -51,11 +49,9 @@ impl Step for Daemon {
             Duration::from_secs(shared_state.config.delay_watcher_events),
         );
 
-        let mut events_stream = shared_state.connection_handler.events_stream().await;
-
         loop {
             tokio::select! {
-                stream_event = events_stream.next() => {
+                stream_event = shared_state.connection_handler.next_event() => {
                     match stream_event {
                         Some((_, NetworkEvents::ConsensusElection(_))) |
                         Some((_, NetworkEvents::RequestTransition(Transition::Consensus))) => {

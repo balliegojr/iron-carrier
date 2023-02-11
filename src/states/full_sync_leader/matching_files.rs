@@ -1,9 +1,104 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::storage::{FileInfo, Storage};
+use crate::{
+    config::PathConfig,
+    network_events::{NetworkEvents, Synchronization},
+    state_machine::Step,
+    storage::{self, FileInfo, Storage},
+    SharedState,
+};
+
+#[derive(Debug)]
+pub struct BuildMatchingFiles {
+    storage_name: &'static str,
+    storage_config: &'static PathConfig,
+}
+
+impl BuildMatchingFiles {
+    pub fn new(storage_name: &'static str, storage_config: &'static PathConfig) -> Self {
+        Self {
+            storage_name,
+            storage_config,
+        }
+    }
+
+    async fn wait_storage_from_peers(
+        &self,
+        shared_state: &SharedState,
+        storage: &Storage,
+    ) -> crate::Result<HashMap<u64, Vec<FileInfo>>> {
+        let mut expected = shared_state
+            .connection_handler
+            .broadcast(
+                Synchronization::QueryStorageIndex {
+                    name: self.storage_name.to_string(),
+                    hash: storage.hash,
+                }
+                .into(),
+            )
+            .await?;
+
+        log::debug!("Expecting reply from {expected} nodes");
+
+        let mut peer_storages = HashMap::default();
+        while let Some((peer, event)) = shared_state.connection_handler.next_event().await {
+            match event {
+                NetworkEvents::Synchronization(Synchronization::ReplyStorageIndex {
+                    name,
+                    files,
+                }) => {
+                    expected -= 1;
+                    if let Some(files) = files && name == self.storage_name {
+                    peer_storages.insert(peer, files);
+                }
+
+                    if expected == 0 {
+                        break;
+                    }
+                }
+                e => {
+                    log::error!("Received unexpected event {e:?}");
+                }
+            }
+        }
+
+        Ok(peer_storages)
+    }
+}
+
+impl Step for BuildMatchingFiles {
+    type Output = (Vec<u64>, MatchedFilesIter);
+
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+        let storage = storage::get_storage(
+            self.storage_name,
+            self.storage_config,
+            shared_state.transaction_log,
+        )
+        .await?;
+        let peers_storages = self.wait_storage_from_peers(shared_state, &storage).await?;
+
+        let peers: Vec<u64> = peers_storages.keys().copied().collect();
+        log::trace!(
+            "Storage {0} to be synchronized with {peers:?}",
+            self.storage_name
+        );
+
+        Ok((
+            peers,
+            match_files(storage, peers_storages, shared_state.config.node_id_hashed),
+        ))
+    }
+}
 
 pub struct MatchedFilesIter {
     consolidated: BTreeMap<std::path::PathBuf, HashMap<u64, FileInfo>>,
+}
+
+impl std::fmt::Debug for MatchedFilesIter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MatchedFilesIter").finish()
+    }
 }
 
 impl Iterator for MatchedFilesIter {

@@ -1,9 +1,7 @@
-use std::fmt::Display;
-
-use tokio_stream::StreamExt;
+use std::{collections::HashSet, fmt::Display};
 
 use crate::{
-    file_transfer::process_transfer_events,
+    file_transfer::TransferFiles,
     network_events::{NetworkEvents, Synchronization, Transition},
     state_machine::Step,
     SharedState,
@@ -30,22 +28,16 @@ impl Step for FullSyncFollower {
     type Output = ();
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        // TODO: check for ignred files before delete/moving/receiving
+        // TODO: check for ignored files before delete/moving/receiving
         log::info!("full sync starting....");
 
-        let mut event_stream =
-            (shared_state.connection_handler.events_stream().await).filter_map(|(peer_id, ev)| {
-                if peer_id == self.sync_leader {
-                    Some(ev)
-                } else {
-                    None
-                }
-            });
+        let mut files_to_send = Vec::default();
+        while let Some((peer_id, ev)) = shared_state.connection_handler.next_event().await {
+            if peer_id != self.sync_leader {
+                log::trace!("Received event from non leader peer");
+                continue;
+            }
 
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let event_processing_handler = tokio::spawn(process_transfer_events(*shared_state, rx));
-
-        while let Some(ev) = event_stream.next().await {
             match ev {
                 NetworkEvents::Synchronization(Synchronization::QueryStorageIndex {
                     name,
@@ -81,7 +73,7 @@ impl Step for FullSyncFollower {
                         .await?;
                 }
                 NetworkEvents::Synchronization(Synchronization::SendFileTo { file, nodes }) => {
-                    tx.send((file, nodes)).await?;
+                    files_to_send.push((file, nodes));
                 }
                 NetworkEvents::Synchronization(Synchronization::DeleteFile { file }) => {
                     crate::storage::delete_file(
@@ -99,16 +91,19 @@ impl Step for FullSyncFollower {
                     )
                     .await?;
                 }
+                NetworkEvents::Synchronization(Synchronization::StartTransferingFiles) => {
+                    TransferFiles::new(
+                        std::mem::take(&mut files_to_send),
+                        HashSet::from([self.sync_leader]),
+                    )
+                    .execute(shared_state)
+                    .await?;
+                }
                 NetworkEvents::RequestTransition(Transition::Done) => break,
                 _ => continue,
             }
         }
 
-        drop(tx);
-
-        log::debug!("Wait for file transfers to finish");
-
-        event_processing_handler.await??;
         shared_state.transaction_log.flush().await?;
 
         log::info!("full sync end....");

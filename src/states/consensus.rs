@@ -7,7 +7,6 @@ use std::{fmt::Display, time::Duration};
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt;
 
 use crate::{
     network_events::{self, NetworkEvents},
@@ -77,9 +76,6 @@ impl Step for Consensus {
             .broadcast(network_events::Transition::Consensus.into())
             .await?;
 
-        let events = shared_state.connection_handler.events_stream().await;
-        tokio::pin!(events);
-
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline), if self.election_state == NodeState::Candidate => {
@@ -99,7 +95,7 @@ impl Step for Consensus {
 
                     deadline = tokio::time::Instant::now() + Duration::from_millis(get_timeout());
                 }
-                Some((peer_id, network_event)) = events.next() => {
+                Some((peer_id, network_event)) = shared_state.connection_handler.next_event() => {
                     match network_event {
                         NetworkEvents::ConsensusElection(ev) => {
                             match ev {
