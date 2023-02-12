@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
     config::PathConfig,
-    network_events::{NetworkEvents, Synchronization},
+    network_events::{NetworkEvents, StorageIndexStatus, Synchronization},
     state_machine::Step,
     storage::{self, FileInfo, Storage},
     SharedState,
@@ -45,12 +45,20 @@ impl BuildMatchingFiles {
             match event {
                 NetworkEvents::Synchronization(Synchronization::ReplyStorageIndex {
                     name,
-                    files,
-                }) => {
+                    storage_index,
+                }) if name == self.storage_name => {
                     expected -= 1;
-                    if let Some(files) = files && name == self.storage_name {
-                    peer_storages.insert(peer, files);
-                }
+                    match storage_index {
+                        StorageIndexStatus::StorageMissing => {
+                            // peer doesn't have the storage...
+                        }
+                        StorageIndexStatus::StorageInSync => {
+                            peer_storages.insert(peer, storage.files.clone());
+                        }
+                        StorageIndexStatus::SyncNecessary(files) => {
+                            peer_storages.insert(peer, files);
+                        }
+                    }
 
                     if expected == 0 {
                         break;

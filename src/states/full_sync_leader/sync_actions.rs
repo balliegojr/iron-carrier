@@ -125,7 +125,6 @@ impl Step for DispatchActions {
             }
         }
 
-        // TODO: use a proper abort error
         if !file_transfer_required {
             return Ok(None);
         }
