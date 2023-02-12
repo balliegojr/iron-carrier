@@ -27,7 +27,7 @@ impl FullSyncFollower {
 impl Step for FullSyncFollower {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
         // TODO: check for ignored files before delete/moving/receiving
         log::info!("full sync starting....");
 
@@ -108,6 +108,6 @@ impl Step for FullSyncFollower {
 
         log::info!("full sync end....");
 
-        Ok(())
+        Ok(Some(()))
     }
 }

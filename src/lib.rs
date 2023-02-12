@@ -99,9 +99,7 @@ pub struct SharedState {
     transaction_log: &'static TransactionLog,
 }
 
-pub async fn run_full_sync(
-    config: &'static validation::Verified<config::Config>,
-) -> crate::Result<()> {
+pub async fn run_full_sync(config: &'static validation::Verified<config::Config>) -> Result<()> {
     let connection_handler = network::ConnectionHandler::new(config).await?.leak();
     let transaction_log = transaction_log::TransactionLog::load(&config.log_path)
         .await?
@@ -116,7 +114,7 @@ pub async fn run_full_sync(
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(FullSync::new)
+        .and_then(|leader_id| FullSync::new(leader_id, None))
         .execute(&shared_state)
         .await?;
 
@@ -130,7 +128,8 @@ pub async fn run_full_sync(
 
 pub async fn start_daemon(
     config: &'static validation::Verified<config::Config>,
-) -> crate::Result<()> {
+    when_sync_done: Option<Sender<()>>,
+) -> Result<()> {
     log::trace!("My id is {}", config.node_id);
 
     let connection_handler = network::ConnectionHandler::new(config).await?.leak();
@@ -147,21 +146,12 @@ pub async fn start_daemon(
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(FullSync::new)
-        .then_loop(|| states::Daemon::new().and_then(|daemon_task| daemon_task))
+        .and_then(|leader_id| FullSync::new(leader_id, when_sync_done.clone()))
+        .then_loop(|| {
+            states::Daemon::new(when_sync_done.clone()).and_then(|daemon_task| daemon_task)
+        })
         .execute(&shared_state)
-        .await
-}
+        .await?;
 
-// fn drop_shared_state(shared_state: SharedState) {
-//     unsafe {
-//         let _ = Box::from_raw(
-//             shared_state.connection_handler as *const ConnectionHandler<NetworkEvents>
-//                 as *mut ConnectionHandler<NetworkEvents>,
-//         );
-//
-//         let _ = Box::from_raw(
-//             shared_state.transaction_log as *const TransactionLog as *mut TransactionLog,
-//         );
-//     }
-// }
+    Ok(())
+}

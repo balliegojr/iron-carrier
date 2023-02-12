@@ -1,20 +1,23 @@
 use std::{collections::HashSet, fmt::Display, time::Duration};
+use tokio::sync::mpsc::Sender;
 
 use crate::{
     network_events::{NetworkEvents, Transition},
     state_machine::{StateComposer, Step},
     states::FullSync,
-    stream, IronCarrierError, SharedState,
+    stream, SharedState,
 };
 
 use super::{ConnectAllPeers, Consensus, DiscoverPeers};
 
 #[derive(Default)]
-pub struct Daemon {}
+pub struct Daemon {
+    when_full_sync: Option<Sender<()>>,
+}
 
 impl Daemon {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(when_full_sync: Option<Sender<()>>) -> Self {
+        Self { when_full_sync }
     }
 }
 
@@ -33,7 +36,7 @@ impl std::fmt::Debug for Daemon {
 impl Step for Daemon {
     type Output = DaemonTask;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
         let _service_discovery =
             crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
 
@@ -55,20 +58,19 @@ impl Step for Daemon {
                     match stream_event {
                         Some((_, NetworkEvents::ConsensusElection(_))) |
                         Some((_, NetworkEvents::RequestTransition(Transition::Consensus))) => {
-                             return Ok(DaemonTask::ConsensusThenSync);
+                             return Ok(Some(DaemonTask::ConsensusThenSync(self.when_full_sync)));
                         }
                         Some((leader_id, NetworkEvents::RequestTransition(Transition::FullSync))) => {
-                            return Ok(DaemonTask::TransitionToFollower(leader_id))
+                            return Ok(Some(DaemonTask::TransitionToFollower(leader_id)))
                         }
                         Some(_) => {
                             log::info!("received random event");
                         }
-                        // TODO: return a proper "abort execution error"
-                        None => return Err(IronCarrierError::InvalidOperation.into())
+                        None => return Ok(None)
                     }
                 }
                 Some(to_sync) = watcher_events.recv() => {
-                     return Ok(DaemonTask::ConnectThenSync(to_sync));
+                     return Ok(Some(DaemonTask::ConnectThenSync(to_sync, self.when_full_sync)));
                 }
             }
         }
@@ -77,32 +79,32 @@ impl Step for Daemon {
 
 #[derive(Debug)]
 pub enum DaemonTask {
-    ConsensusThenSync,
-    ConnectThenSync(HashSet<String>),
+    ConsensusThenSync(Option<Sender<()>>),
+    ConnectThenSync(HashSet<String>, Option<Sender<()>>),
     TransitionToFollower(u64),
 }
 
 impl Step for DaemonTask {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
         match self {
-            DaemonTask::ConsensusThenSync => {
+            DaemonTask::ConsensusThenSync(when_sync_done) => {
                 Consensus::new()
-                    .and_then(FullSync::new)
+                    .and_then(|leader_id| FullSync::new(leader_id, when_sync_done))
                     .execute(shared_state)
                     .await
             }
-            DaemonTask::ConnectThenSync(_storages_to_sync) => {
+            DaemonTask::ConnectThenSync(_storages_to_sync, when_sync_done) => {
                 DiscoverPeers::default()
                     .and_then(ConnectAllPeers::new)
                     .and::<Consensus>()
-                    .and_then(FullSync::new)
+                    .and_then(|leader_id| FullSync::new(leader_id, when_sync_done))
                     .execute(shared_state)
                     .await
             }
             DaemonTask::TransitionToFollower(leader_id) => {
-                FullSync::new(leader_id).execute(shared_state).await
+                FullSync::new(leader_id, None).execute(shared_state).await
             }
         }
     }

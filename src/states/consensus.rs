@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     network_events::{self, NetworkEvents},
     state_machine::Step,
-    IronCarrierError, SharedState,
+    SharedState,
 };
 
 /// Possible states that a node can be
@@ -54,7 +54,7 @@ impl Display for Consensus {
 
 impl Step for Consensus {
     type Output = u64;
-    async fn execute(mut self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(mut self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
         // This election process repeats until a candidate becomes the leader
         //
         // After a timeout of 100-250ms, if the node is a candidate, it advances the current term
@@ -88,7 +88,7 @@ impl Step for Consensus {
                         .await?;
 
                     if term.participants == 0 {
-                        return Err(IronCarrierError::InvalidOperation.into())
+                        return Ok(None)
                     }
 
                     log::debug!("Requested vote for {}", term.participants);
@@ -115,14 +115,14 @@ impl Step for Consensus {
                                         log::debug!("Node wins election");
                                         self.election_state = NodeState::Leader;
 
-                                        return Ok(shared_state.config.node_id_hashed)
+                                        return Ok(Some(shared_state.config.node_id_hashed))
                                     }
                                 }
                                 _ => {}
                             }
                         }
                         NetworkEvents::RequestTransition(network_events::Transition::FullSync) => if self.election_state == NodeState::Follower {
-                            return Ok(peer_id)
+                            return Ok(Some(peer_id))
                         }
                         _ => {}
                     }
