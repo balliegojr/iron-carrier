@@ -1,8 +1,6 @@
+use rand::seq::SliceRandom;
 use std::fs;
 use std::iter::Iterator;
-use std::time::Duration;
-
-use rand::seq::SliceRandom;
 
 mod common;
 
@@ -33,18 +31,21 @@ async fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
         &configs[0].node_id,
     );
 
+    let (tx, mut when_sync_done) = tokio::sync::mpsc::channel(1);
+
     let handles: Vec<_> = configs
         .iter()
         .map(|config| {
+            let tx = tx.clone();
             tokio::spawn(async {
-                let _ = iron_carrier::start_daemon(config).await;
+                let _ = iron_carrier::start_daemon(config, Some(tx)).await;
             })
         })
         .collect();
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
-    compare_all();
+    when_sync_done.recv().await;
 
+    compare_all();
     for (i, file) in store_one.iter().enumerate() {
         match i % 3 {
             0 => {
@@ -60,8 +61,7 @@ async fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // TODO: wait for sync to finish
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    when_sync_done.recv().await;
     compare_all();
 
     let mut rng = rand::thread_rng();
@@ -81,8 +81,12 @@ async fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    when_sync_done.recv().await;
     compare_all();
+
+    for handle in handles {
+        handle.abort();
+    }
 
     Ok(())
 }

@@ -19,7 +19,7 @@ impl Display for DiscoverPeers {
 impl Step for DiscoverPeers {
     type Output = HashMap<SocketAddr, Option<u64>>;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
         let backoff = backoff::ExponentialBackoffBuilder::new()
             .with_max_elapsed_time(Some(Duration::from_secs(30)))
             .build();
@@ -53,6 +53,6 @@ impl Step for DiscoverPeers {
             }
         }
 
-        Ok(addresses)
+        Ok(Some(addresses))
     }
 }

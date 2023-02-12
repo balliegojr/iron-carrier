@@ -4,7 +4,7 @@ use crate::{
     network_events::Synchronization,
     state_machine::Step,
     storage::{FileInfo, FileInfoType},
-    IronCarrierError, SharedState,
+    SharedState,
 };
 
 use super::matching_files::MatchedFilesIter;
@@ -104,7 +104,7 @@ impl DispatchActions {
 impl Step for DispatchActions {
     type Output = (Vec<(FileInfo, HashSet<u64>)>, HashSet<u64>);
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
         let actions = self.matched_files_iter.filter_map(|file| {
             get_file_sync_action(shared_state.config.node_id_hashed, &self.peers, file)
         });
@@ -127,7 +127,7 @@ impl Step for DispatchActions {
 
         // TODO: use a proper abort error
         if !file_transfer_required {
-            return Err(IronCarrierError::InvalidOperation.into());
+            return Ok(None);
         }
 
         shared_state
@@ -138,10 +138,10 @@ impl Step for DispatchActions {
             )
             .await?;
 
-        Ok((
+        Ok(Some((
             files_to_send,
             HashSet::from_iter(self.peers.iter().copied()),
-        ))
+        )))
     }
 }
 

@@ -26,7 +26,7 @@ impl Display for ConnectAllPeers {
 impl Step for ConnectAllPeers {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
         tokio::time::sleep(std::time::Duration::from_millis(get_timeout())).await;
 
         let connection_handler = shared_state.connection_handler;
@@ -46,7 +46,7 @@ impl Step for ConnectAllPeers {
             let _ = handle.await;
         }
 
-        Ok(())
+        Ok(Some(()))
     }
 }
 

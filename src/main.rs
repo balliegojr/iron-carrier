@@ -41,7 +41,7 @@ async fn main() {
     let config = get_config(matches.value_of("config")).leak();
 
     let execution_result = if matches.is_present("daemon") {
-        iron_carrier::start_daemon(config).await
+        iron_carrier::start_daemon(config, None).await
     } else {
         iron_carrier::run_full_sync(config).await
     };

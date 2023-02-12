@@ -69,7 +69,7 @@ impl BuildMatchingFiles {
 impl Step for BuildMatchingFiles {
     type Output = (Vec<u64>, MatchedFilesIter);
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
         let storage = storage::get_storage(
             self.storage_name,
             self.storage_config,
@@ -77,6 +77,10 @@ impl Step for BuildMatchingFiles {
         )
         .await?;
         let peers_storages = self.wait_storage_from_peers(shared_state, &storage).await?;
+        if peers_storages.is_empty() {
+            log::trace!("Storage already in sync with all peers");
+            return Ok(None);
+        }
 
         let peers: Vec<u64> = peers_storages.keys().copied().collect();
         log::trace!(
@@ -84,10 +88,10 @@ impl Step for BuildMatchingFiles {
             self.storage_name
         );
 
-        Ok((
+        Ok(Some((
             peers,
             match_files(storage, peers_storages, shared_state.config.node_id_hashed),
-        ))
+        )))
     }
 }
 
