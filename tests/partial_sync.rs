@@ -1,6 +1,7 @@
 use rand::seq::SliceRandom;
 use std::fs;
 use std::iter::Iterator;
+use std::time::Duration;
 
 mod common;
 
@@ -44,8 +45,9 @@ async fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     when_sync_done.recv().await;
-
     compare_all();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
     for (i, file) in store_one.iter().enumerate() {
         match i % 3 {
             0 => {
@@ -63,6 +65,7 @@ async fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
 
     when_sync_done.recv().await;
     compare_all();
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     let mut rng = rand::thread_rng();
     for i in 0..100 {

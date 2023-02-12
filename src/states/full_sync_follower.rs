@@ -2,7 +2,7 @@ use std::{collections::HashSet, fmt::Display};
 
 use crate::{
     file_transfer::TransferFiles,
-    network_events::{NetworkEvents, Synchronization, Transition},
+    network_events::{NetworkEvents, StorageIndexStatus, Synchronization, Transition},
     state_machine::Step,
     SharedState,
 };
@@ -44,7 +44,7 @@ impl Step for FullSyncFollower {
                     hash,
                 }) => {
                     log::debug!("Queried about {name} storage");
-                    let files = match shared_state.config.storages.get(&name) {
+                    let storage_index = match shared_state.config.storages.get(&name) {
                         Some(storage_config) => {
                             match crate::storage::get_storage(
                                 &name,
@@ -53,21 +53,30 @@ impl Step for FullSyncFollower {
                             )
                             .await
                             {
-                                Ok(storage) if storage.hash != hash => Some(storage.files),
+                                Ok(storage) => {
+                                    if storage.hash != hash {
+                                        StorageIndexStatus::SyncNecessary(storage.files)
+                                    } else {
+                                        StorageIndexStatus::StorageInSync
+                                    }
+                                }
                                 Err(err) => {
                                     log::error!("There was an error reading the storage: {err}");
-                                    None
+                                    StorageIndexStatus::StorageMissing
                                 }
-                                _ => None,
                             }
                         }
-                        None => None,
+                        None => StorageIndexStatus::StorageMissing,
                     };
 
                     shared_state
                         .connection_handler
                         .send_to(
-                            Synchronization::ReplyStorageIndex { name, files }.into(),
+                            Synchronization::ReplyStorageIndex {
+                                name,
+                                storage_index,
+                            }
+                            .into(),
                             self.sync_leader,
                         )
                         .await?;

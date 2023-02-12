@@ -46,7 +46,7 @@ pub enum Synchronization {
     },
     ReplyStorageIndex {
         name: String,
-        files: Option<Vec<storage::FileInfo>>,
+        storage_index: StorageIndexStatus,
     },
     DeleteFile {
         file: storage::FileInfo,
@@ -60,4 +60,14 @@ pub enum Synchronization {
     },
     StartTransferingFiles,
     DoneTransferingFiles,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum StorageIndexStatus {
+    /// Queried storage does not exist in the node, no sync will be done
+    StorageMissing,
+    /// Storage is in sync with the leader, further sync may be necessary
+    StorageInSync,
+    /// Storage is not in sync with leader, sync is necessary
+    SyncNecessary(Vec<storage::FileInfo>),
 }
