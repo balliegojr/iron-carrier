@@ -53,6 +53,8 @@ pub enum FileTransfer {
         file: FileInfo,
         nodes: Vec<u64>,
     },
+
+    RemovePeer,
 }
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
@@ -126,8 +128,13 @@ impl Step for TransferFiles {
             tokio::select! {
                 Some((peer_id, event)) = shared_state.connection_handler.next_event() => {
                     match event {
-                        // TODO: remove active/send transfers related to the disconnected peer
-                        NetworkEvents::Disconnected |
+                        NetworkEvents::Disconnected => {
+                            log::debug!("removing {peer_id} from transfers");
+                            peers_to_wait.remove(&peer_id);
+                            for transfer in active_transfers.values() {
+                                let _ = transfer.send((peer_id, FileTransfer::RemovePeer)).await;
+                            }
+                        }
                         NetworkEvents::Synchronization(Synchronization::DoneTransferingFiles) => {
                             log::debug!("removing {peer_id} from transfers");
                             peers_to_wait.remove(&peer_id);
@@ -214,6 +221,7 @@ async fn query_transfer_type(
                 shared_state.transaction_log,
                 file,
                 block_size,
+                node_id,
             )
             .await?,
         ))
@@ -233,14 +241,13 @@ async fn receive_file(
         mut transfer: FileReceiver,
         transfer_id: u64,
         mut rx: Receiver<(u64, FileTransfer)>,
-        when_done: Sender<u64>,
     ) -> crate::Result<()> {
         while let Some((node_id, event)) = rx.recv().await {
             match event {
                 FileTransfer::QueryRequiredBlocks { sender_block_index } => {
                     match transfer.get_required_block_index(sender_block_index).await {
                         Ok(required_blocks) => {
-                            shared_state
+                            let _ = shared_state
                                 .connection_handler
                                 .send_to(
                                     NetworkEvents::FileTransfer(
@@ -249,31 +256,36 @@ async fn receive_file(
                                     ),
                                     node_id,
                                 )
-                                .await?
+                                .await;
                         }
                         Err(err) => {
                             log::error!("Failed to get required blocks {err}");
-                            // TODO: send abort transfer event
+                            break;
                         }
                     }
                 }
                 FileTransfer::TransferBlock { block_index, block } => {
                     if let Err(err) = transfer.write_block(block_index, &block).await {
                         log::error!("Failed to write file block {err}");
-                        // TODO: send abort transfer event
+                        break;
                     }
                 }
 
+                FileTransfer::RemovePeer if transfer.receiving_from() == node_id => {
+                    break;
+                }
                 FileTransfer::TransferComplete => {
-                    transfer
-                        .finish(shared_state.config, shared_state.transaction_log)
-                        .await?;
-
-                    when_done.send(transfer_id).await?;
                     break;
                 }
                 _ => {}
             }
+        }
+
+        if let Err(err) = transfer
+            .finish(shared_state.config, shared_state.transaction_log)
+            .await
+        {
+            log::error!("Failed to finalize file {err}");
         }
 
         log::debug!("Done receiving file");
@@ -281,11 +293,20 @@ async fn receive_file(
     }
 
     tokio::spawn(async move {
-        if let Err(err) =
-            receive_file_inner(shared_state, transfer, transfer_id, rx, when_done).await
-        {
+        let node_id = transfer.receiving_from();
+        if let Err(err) = receive_file_inner(shared_state, transfer, transfer_id, rx).await {
             log::error!("{err}");
+
+            let _ = shared_state
+                .connection_handler
+                .send_to(
+                    NetworkEvents::FileTransfer(transfer_id, FileTransfer::RemovePeer),
+                    node_id,
+                )
+                .await;
         }
+
+        let _ = when_done.send(transfer_id).await;
     });
 
     Ok(tx)
@@ -302,9 +323,7 @@ async fn send_file(
     async fn send_file_inner(
         shared_state: SharedState,
         mut transfer: FileSender,
-        transfer_id: u64,
         mut rx: Receiver<(u64, FileTransfer)>,
-        when_done: Sender<u64>,
     ) -> crate::Result<()> {
         transfer
             .query_transfer_type(shared_state.connection_handler)
@@ -348,12 +367,17 @@ async fn send_file(
                         break;
                     }
                 }
+                FileTransfer::RemovePeer => {
+                    transfer.remove_node(node_id);
+                    if !transfer.has_participant_nodes() {
+                        break;
+                    }
+                }
                 _ => {}
             }
         }
 
         log::debug!("Done sending file");
-        when_done.send(transfer_id).await?;
 
         Ok(())
     }
@@ -362,10 +386,10 @@ async fn send_file(
     let transfer = FileSender::new(file, nodes, shared_state.config).await?;
     let transfer_id = transfer.transfer_id();
     tokio::spawn(async move {
-        if let Err(err) = send_file_inner(shared_state, transfer, transfer_id, rx, when_done).await
-        {
+        if let Err(err) = send_file_inner(shared_state, transfer, rx).await {
             log::error!("{err}");
         }
+        let _ = when_done.send(transfer_id).await;
     });
 
     Ok((transfer_id, tx))
