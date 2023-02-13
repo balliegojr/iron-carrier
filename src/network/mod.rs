@@ -183,7 +183,6 @@ async fn listen_connections(
     event_stream: Sender<(u64, NetworkEvents)>,
     connections: Arc<Mutex<ConnectionStorage>>,
 ) -> crate::Result<()> {
-    // TODO: handle re-connection
     log::debug!("Listening on {}", config.port);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
 

@@ -63,6 +63,10 @@ impl FileSender {
         !self.participant_nodes.is_empty()
     }
 
+    pub fn remove_node(&mut self, node_id: u64) {
+        self.participant_nodes.remove(&node_id);
+    }
+
     pub fn pending_information(&self) -> bool {
         !self
             .participant_nodes

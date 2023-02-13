@@ -16,6 +16,7 @@ use crate::{
 use super::{BlockHash, BlockIndex, TransferType};
 
 pub struct FileReceiver {
+    receiving_from: u64,
     remote_file: FileInfo,
     file_handle: File,
     block_size: u64,
@@ -29,6 +30,7 @@ impl FileReceiver {
         transaction_log: &'static TransactionLog,
         remote_file: FileInfo,
         block_size: u64,
+        receiving_from: u64,
     ) -> crate::Result<Self> {
         let file_handle = get_file_handle(&remote_file, config).await?;
         let file_size = remote_file.file_size()?;
@@ -52,6 +54,7 @@ impl FileReceiver {
 
         let expected_blocks = (file_size / block_size) + 1;
         Ok(Self {
+            receiving_from,
             remote_file,
             block_size,
             expected_blocks,
@@ -129,6 +132,10 @@ impl FileReceiver {
             .await?;
 
         Ok(())
+    }
+
+    pub fn receiving_from(&self) -> u64 {
+        self.receiving_from
     }
 }
 
