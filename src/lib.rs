@@ -22,13 +22,12 @@ use validation::Verified;
 pub mod config;
 use config::Config;
 
-mod network_events;
-mod stream;
-
 pub mod constants;
 mod hash_helper;
-
 mod ignored_files;
+mod network_events;
+pub mod relative_path;
+mod stream;
 
 pub mod leak;
 use leak::Leak;

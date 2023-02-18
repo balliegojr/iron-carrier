@@ -11,12 +11,10 @@ use sqlx::{
     Row, SqlitePool,
 };
 
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{collections::HashSet, path::Path, time::Duration};
 use thiserror::Error;
+
+use crate::relative_path::RelativePathBuf;
 
 const TRANSACTION_KEEP_LIMIT_SECS: u64 = 30 * 24 * 60 * 60;
 
@@ -37,8 +35,8 @@ impl TransactionLog {
     pub async fn append_entry(
         &self,
         storage: &str,
-        path: &Path,
-        old_path: Option<&Path>,
+        path: &RelativePathBuf,
+        old_path: Option<&RelativePathBuf>,
         entry: LogEntry,
     ) -> crate::Result<()> {
         sqlx::query("INSERT OR REPLACE INTO LogEntry (storage, path, old_path, entry_type, status, timestamp) VALUES (?,?,?,?,?,?)")
@@ -67,7 +65,7 @@ impl TransactionLog {
         Ok(())
     }
 
-    pub async fn get_deleted(&self, storage: &str) -> crate::Result<Vec<(PathBuf, u64)>> {
+    pub async fn get_deleted(&self, storage: &str) -> crate::Result<Vec<(RelativePathBuf, u64)>> {
         sqlx::query("SELECT path, timestamp FROM LogEntry WHERE storage = ? and entry_type = ?")
             .bind(storage)
             .bind(EntryType::Delete.to_string())
@@ -82,7 +80,10 @@ impl TransactionLog {
             .map_err(Box::from)
     }
 
-    pub async fn get_moved(&self, storage: &str) -> crate::Result<Vec<(PathBuf, PathBuf, u64)>> {
+    pub async fn get_moved(
+        &self,
+        storage: &str,
+    ) -> crate::Result<Vec<(RelativePathBuf, RelativePathBuf, u64)>> {
         sqlx::query(
             "SELECT path, old_path, timestamp FROM LogEntry WHERE storage = ? and entry_type = ?",
         )
@@ -100,7 +101,10 @@ impl TransactionLog {
         .map_err(Box::from)
     }
 
-    pub async fn get_failed_writes(&self, storage: &str) -> crate::Result<HashSet<PathBuf>> {
+    pub async fn get_failed_writes(
+        &self,
+        storage: &str,
+    ) -> crate::Result<HashSet<RelativePathBuf>> {
         sqlx::query("SELECT path FROM LogEntry WHERE storage = ? and entry_type = ? and status in ('fail', 'pending')")
             .bind(storage)
             .bind(EntryType::Write.to_string())

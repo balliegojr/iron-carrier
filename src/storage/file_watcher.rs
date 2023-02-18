@@ -1,3 +1,23 @@
+//! Expectations about file watcher
+//!
+//! Two big issues plagued the previous version of iron-carrier.
+//! 1. File changes were frequently missed by the notify watcher, this meant missing
+//!    synchronization, since the events where "pushed" to other online nodes
+//! 2. Receiving a change from other node meant a file change event, that would be pushed to other
+//!    nodes, this would lead to an endless loop of changes propagated to online peers. To prevent
+//!    this, it was necessary to have a complex mechanism to avoid generating a change event when
+//!    the node just received the event from other node. The whole thing was needles complex and
+//!    very error prone.
+//!
+//! This new implementation have different expectations
+//! 1. There is no partial synchronization/pushing of events. File change events will generate a
+//!    full synchronization for the storage that had the event. The only "partial" synchronization
+//!    now is actually sync just the storage that is needed.
+//! 2. The watcher does not run when a synchronization is happening
+//!
+//! With the two expectations above in place, the final implementation is a simpler. When a change
+//! is detected, just write to the transaction log and start a full synchronization process
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -6,12 +26,17 @@ use std::{
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::{
-    config::Config,
+    config::{Config, PathConfig},
+    ignored_files::{self, IgnoredFiles},
+    relative_path::RelativePathBuf,
     transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog},
+    IronCarrierError,
 };
 
+/// Creates and return a file watcher that watch for file changes in all the storages that have the
+/// watcher enabled.
 pub fn get_file_watcher(
-    config: &Config,
+    config: &'static Config,
     transaction_log: &'static TransactionLog,
     output: tokio::sync::mpsc::Sender<String>,
 ) -> crate::Result<Option<RecommendedWatcher>> {
@@ -44,7 +69,7 @@ pub fn get_file_watcher(
 
     tokio::task::spawn(async move {
         while let Some(event) = rx.recv().await {
-            match register_event(&storages, transaction_log, event).await {
+            match register_event(&storages, config, transaction_log, event).await {
                 Ok(Some(storage)) => {
                     if output.send(storage).await.is_err() {
                         break;
@@ -65,82 +90,240 @@ pub fn get_file_watcher(
 
 async fn register_event(
     storages: &HashMap<PathBuf, String>,
+    config: &Config,
     transaction_log: &TransactionLog,
     event: Event,
 ) -> crate::Result<Option<String>> {
-    let src = event
+    let storage = event
         .paths
         .get(0)
-        .and_then(|p| get_storage_and_relative_path(storages, p));
+        .and_then(|p| get_storage_for_path(storages, p))
+        .ok_or(IronCarrierError::InvalidOperation)?;
 
-    let dst = event
-        .paths
-        .get(1)
-        .and_then(|p| get_storage_and_relative_path(storages, p));
+    let storage_config = config.storages.get(&storage).unwrap();
+    // NOTE: this can be cached in the caller if it becomes a performance issue
+    let ignored_files: IgnoredFiles =
+        ignored_files::load_ignored_file_pattern(&storage_config.path).await;
+
+    let src = event.paths.get(0);
+    let dst = event.paths.get(1);
+
+    // We don't need to write every kind of event to the transaction log, just the ones that are
+    // related to delete or move a file. These are important to keep track so we don't recreate the
+    // file when trying to sync with other nodes
 
     match event.kind {
+        // This event represents a move where the origin and destination are both inside the same
+        // watche directory.
+        // Since this event don't make a distinction between a file or directory, it is necessary
+        // to handle both scenarios
         notify::EventKind::Modify(notify::event::ModifyKind::Name(
             notify::event::RenameMode::Both,
         )) => {
-            // TODO: handle dirs
-            if let Some((storage, src_path)) = &src {
-                if let Some((_, dst_path)) = &dst {
-                    transaction_log
-                        .append_entry(
-                            storage,
-                            dst_path,
-                            Some(src_path),
-                            LogEntry::new(
-                                EntryType::Move,
-                                EntryStatus::Done,
-                                std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
-                            ),
-                        )
-                        .await?;
+            if let (Some(src_path), Some(dst_path)) = (&src, &dst) {
+                for file_moved in list_files_moved_pair(
+                    storage_config,
+                    dst_path.to_path_buf(),
+                    src_path.to_path_buf(),
+                )? {
+                    write_moved_event(transaction_log, &ignored_files, &storage, file_moved).await
                 }
             }
         }
+        // Moved From events represent a move to outside the watcher directory, we consider this a
+        // delete.
+        //
+        // Remove events does have a distinction between files and directories, but I think it is
+        // simpler to handle both with the same code
         notify::EventKind::Modify(notify::event::ModifyKind::Name(
             notify::event::RenameMode::From,
         ))
-        | notify::EventKind::Remove(notify::event::RemoveKind::File) => {
-            // TODO: handle dirs
-            if let Some((storage, path)) = &src {
-                transaction_log
-                    .append_entry(
-                        storage,
-                        path,
-                        None,
-                        LogEntry::new(
-                            EntryType::Delete,
-                            EntryStatus::Done,
-                            std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
-                        ),
-                    )
-                    .await?;
+        | notify::EventKind::Remove(notify::event::RemoveKind::File)
+        | notify::EventKind::Remove(notify::event::RemoveKind::Folder) => {
+            if let Some(path) = &src {
+                for path in get_list_of_files(storage_config, path.to_path_buf(), &ignored_files)? {
+                    write_deleted_event(transaction_log, &storage, &path).await;
+                }
             }
         }
         _ => {}
     }
 
-    Ok(src.map(|(storage, _)| storage))
+    Ok(Some(storage))
 }
 
-fn get_storage_and_relative_path(
-    storages: &HashMap<PathBuf, String>,
-    file_path: &Path,
-) -> Option<(String, PathBuf)> {
+/// Write the delete event in the transaction log
+async fn write_deleted_event(
+    transaction_log: &TransactionLog,
+    storage: &str,
+    path: &RelativePathBuf,
+) {
+    if let Err(err) = transaction_log
+        .append_entry(
+            storage,
+            path,
+            None,
+            LogEntry::new(
+                EntryType::Delete,
+                EntryStatus::Done,
+                std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
+            ),
+        )
+        .await
+    {
+        log::error!("Error writing event {err}");
+    }
+}
+
+/// Write the moved and deleted events to the transaction log.
+///
+/// Move events have a few different scenarios
+/// 1. File moved to inside the watched directory don't need any log, they are considered a
+///    "created" file change
+/// 2. File moved from the watched directory to outside is considered a delete event and handled by
+///    the delete flow
+/// 3. File moved inside the watched directory (handled by this function).  
+///    If the origin is in the ignore pattern, nothing is done, it is considered a "created" event
+///    If the destination is in the ignore pattern, it is considered a delete and just the
+///    "deleted" log entry is created
+///    If no paths are ignored, a delete event is written to the origin and a moved event is
+///    written for the destination
+async fn write_moved_event(
+    transaction_log: &TransactionLog,
+    ignored_files: &IgnoredFiles,
+    storage: &str,
+    file_moved: MovedFilePair,
+) {
+    if ignored_files.is_ignored(&file_moved.from) {
+        return;
+    }
+
+    write_deleted_event(transaction_log, storage, &file_moved.from).await;
+
+    if ignored_files.is_ignored(&file_moved.to) {
+        return;
+    }
+
+    if let Err(err) = transaction_log
+        .append_entry(
+            storage,
+            &file_moved.to,
+            Some(&file_moved.from),
+            LogEntry::new(
+                EntryType::Move,
+                EntryStatus::Done,
+                std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
+            ),
+        )
+        .await
+    {
+        log::error!("Error writing event {err}");
+    }
+}
+
+/// If `root_file` is a path to file, return a vec with just that path.  
+/// If `root_file` is a path to a directory, traverse the directory and return a vec with all the
+/// files inside the directory.
+///
+/// Ignored paths are excluded from the result
+fn get_list_of_files(
+    storage: &PathConfig,
+    root_path: PathBuf,
+    ignored_files: &IgnoredFiles,
+) -> crate::Result<Vec<RelativePathBuf>> {
+    if root_path.is_file() {
+        let relative_path = RelativePathBuf::new(storage, root_path)?;
+        if ignored_files.is_ignored(&relative_path) {
+            return Ok(vec![]);
+        } else {
+            return Ok(vec![relative_path]);
+        }
+    }
+
+    let mut paths = vec![root_path];
+    let mut files = vec![];
+
+    while let Some(path) = paths.pop() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                paths.push(path);
+                continue;
+            }
+
+            let relative_path = RelativePathBuf::new(storage, path)?;
+            if ignored_files.is_ignored(&relative_path) {
+                continue;
+            }
+
+            files.push(relative_path);
+        }
+    }
+
+    files.sort();
+
+    Ok(files)
+}
+
+/// If `dst_file` is a path to file, return a vec with the pair (dst_path and src_path)
+/// If `dst_file` is a path to a directory, traverse the directory and return a vec with all the
+/// pairs inside the directory.
+fn list_files_moved_pair(
+    storage: &PathConfig,
+    dst_path: PathBuf,
+    src_path: PathBuf,
+) -> crate::Result<Vec<MovedFilePair>> {
+    if dst_path.is_file() {
+        return Ok(vec![MovedFilePair {
+            from: RelativePathBuf::new(storage, src_path)?,
+            to: RelativePathBuf::new(storage, dst_path)?,
+        }]);
+    }
+
+    let mut paths = vec![dst_path.clone()];
+    let mut files = vec![];
+
+    while let Some(path) = paths.pop() {
+        for entry in std::fs::read_dir(path)? {
+            let path = entry?.path();
+
+            if path.is_dir() {
+                paths.push(path);
+                continue;
+            }
+
+            let from = RelativePathBuf::new(
+                storage,
+                src_path.join(path.strip_prefix(dst_path.as_path())?),
+            )?;
+            let to = RelativePathBuf::new(storage, path)?;
+            files.push(MovedFilePair { from, to });
+        }
+    }
+
+    Ok(files)
+}
+
+struct MovedFilePair {
+    from: RelativePathBuf,
+    to: RelativePathBuf,
+}
+
+/// Get the name of the storage that `file_path` belongs to, In theory this operation is
+/// infallible, but an Option is used, just for safety
+fn get_storage_for_path(storages: &HashMap<PathBuf, String>, file_path: &Path) -> Option<String> {
     for (storage_path, storage) in storages.iter() {
         if file_path.starts_with(storage_path) {
-            return file_path
-                .strip_prefix(storage_path)
-                .map(|relative_path| (storage.clone(), relative_path.to_path_buf()))
-                .ok();
+            return Some(storage.clone());
         }
     }
 
     None
 }
+
+// Watcher events reference
 
 // creation
 // event: Event { kind: Create(File), paths: ["/home/junior/sources/iron-carrier/tmp/a/test"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }

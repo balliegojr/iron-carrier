@@ -46,7 +46,7 @@ impl Step for FullSyncFollower {
                     log::debug!("Queried about {name} storage");
                     let storage_index = match shared_state.config.storages.get(&name) {
                         Some(storage_config) => {
-                            match crate::storage::get_storage(
+                            match crate::storage::get_storage_info(
                                 &name,
                                 storage_config,
                                 shared_state.transaction_log,

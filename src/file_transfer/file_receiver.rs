@@ -7,13 +7,12 @@ use tokio::{
 
 use crate::{
     config::Config,
-    file_transfer::get_file_block_index,
     hash_helper,
     storage::{self, FileInfo},
     transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog},
 };
 
-use super::{BlockHash, BlockIndex, TransferType};
+use super::{block_index, BlockHash, BlockIndex, TransferType};
 
 pub struct FileReceiver {
     receiving_from: u64,
@@ -69,7 +68,8 @@ impl FileReceiver {
     ) -> crate::Result<Vec<BlockHash>> {
         let file_size = self.remote_file.file_size()?;
         let local_block_index =
-            get_file_block_index(&mut self.file_handle, self.block_size, file_size).await?;
+            block_index::get_file_block_index(&mut self.file_handle, self.block_size, file_size)
+                .await?;
 
         let required: Vec<u64> = remote_block_index
             .into_iter()

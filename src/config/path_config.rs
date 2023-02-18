@@ -2,8 +2,11 @@ use std::{path::PathBuf, str::FromStr};
 
 use serde::Deserialize;
 
+use crate::relative_path::RelativePathBuf;
+
 use super::OperationMode;
 
+/// Represents the configuration of a storage path
 #[derive(Debug, Deserialize, Default)]
 pub struct PathConfig {
     pub path: PathBuf,
@@ -20,5 +23,11 @@ impl FromStr for PathConfig {
             path: PathBuf::from_str(s)?,
             ..Default::default()
         })
+    }
+}
+
+impl PathConfig {
+    pub fn get_relative_path(&self, path: PathBuf) -> crate::Result<RelativePathBuf> {
+        RelativePathBuf::new(&self, path)
     }
 }
