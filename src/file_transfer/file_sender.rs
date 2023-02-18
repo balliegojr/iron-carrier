@@ -12,9 +12,7 @@ use crate::{
     storage::FileInfo, IronCarrierError,
 };
 
-use super::{
-    get_block_size, get_file_block_index, BlockHash, BlockIndex, FileTransfer, TransferType,
-};
+use super::{block_index, BlockHash, BlockIndex, FileTransfer, TransferType};
 
 pub struct FileSender {
     file: FileInfo,
@@ -34,7 +32,7 @@ impl FileSender {
         config: &'static Config,
     ) -> crate::Result<Self> {
         let file_size = file.file_size()?;
-        let block_size = get_block_size(file_size);
+        let block_size = block_index::get_block_size(file_size);
         let transfer_id = hash_helper::calculate_file_hash(&file);
 
         // TODO: file block index should be built only if necessary
@@ -42,7 +40,8 @@ impl FileSender {
             let file_path = file.get_absolute_path(config)?;
             tokio::fs::File::open(file_path).await?
         };
-        let block_hashes = get_file_block_index(&mut file_handle, block_size, file_size).await?;
+        let block_hashes =
+            block_index::get_file_block_index(&mut file_handle, block_size, file_size).await?;
 
         Ok(Self {
             file,

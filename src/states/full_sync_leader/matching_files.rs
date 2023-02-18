@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::{
     config::PathConfig,
     network_events::{NetworkEvents, StorageIndexStatus, Synchronization},
+    relative_path::RelativePathBuf,
     state_machine::Step,
     storage::{self, FileInfo, Storage},
     SharedState,
@@ -78,7 +79,7 @@ impl Step for BuildMatchingFiles {
     type Output = (Vec<u64>, MatchedFilesIter);
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
-        let storage = storage::get_storage(
+        let storage = storage::get_storage_info(
             self.storage_name,
             self.storage_config,
             shared_state.transaction_log,
@@ -104,7 +105,7 @@ impl Step for BuildMatchingFiles {
 }
 
 pub struct MatchedFilesIter {
-    consolidated: BTreeMap<std::path::PathBuf, HashMap<u64, FileInfo>>,
+    consolidated: BTreeMap<RelativePathBuf, HashMap<u64, FileInfo>>,
 }
 
 impl std::fmt::Debug for MatchedFilesIter {
@@ -126,7 +127,7 @@ pub fn match_files(
     peer_files: HashMap<u64, Vec<FileInfo>>,
     local_node_id: u64,
 ) -> MatchedFilesIter {
-    let mut consolidated: BTreeMap<std::path::PathBuf, HashMap<u64, FileInfo>> = Default::default();
+    let mut consolidated: BTreeMap<RelativePathBuf, HashMap<u64, FileInfo>> = Default::default();
     for file in storage.files.into_iter() {
         consolidated
             .entry(file.path.clone())
@@ -151,9 +152,9 @@ pub fn match_files(
 /// This function remove all entries for the 'old_path' for the moved files.  
 /// We need to do this in order to prevent the file to be created back
 fn clean_moved_files_old_path(
-    consolidated: &mut BTreeMap<std::path::PathBuf, HashMap<u64, FileInfo>>,
+    consolidated: &mut BTreeMap<RelativePathBuf, HashMap<u64, FileInfo>>,
 ) {
-    let to_remove: HashSet<std::path::PathBuf> = consolidated
+    let to_remove: HashSet<RelativePathBuf> = consolidated
         .values()
         .filter_map(|files| {
             files.values().max_by(|a, b| a.date_cmp(b)).and_then(|f| {
@@ -171,7 +172,7 @@ fn clean_moved_files_old_path(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use crate::relative_path::RelativePathBuf;
 
     use super::*;
 
@@ -203,12 +204,12 @@ mod tests {
         let m = matched.next().unwrap();
         assert!(m.contains_key(&0));
         assert!(m.contains_key(&1));
-        assert_eq!(m[&0].path, PathBuf::from("a"));
+        assert_eq!(m[&0].path, RelativePathBuf::from("a"));
 
         let m = matched.next().unwrap();
         assert!(m.contains_key(&1));
         assert!(m.contains_key(&2));
-        assert_eq!(m[&1].path, PathBuf::from("b"));
+        assert_eq!(m[&1].path, RelativePathBuf::from("b"));
 
         assert!(matched.next().is_none());
     }

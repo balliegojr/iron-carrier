@@ -1,4 +1,4 @@
-use crate::constants::IGNORE_FILE_NAME;
+use crate::{constants::IGNORE_FILE_NAME, relative_path::RelativePathBuf};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::path::Path;
 
@@ -9,10 +9,10 @@ pub struct IgnoredFiles {
 }
 
 impl IgnoredFiles {
-    pub fn is_ignored(&self, path: impl AsRef<Path>) -> bool {
+    pub fn is_ignored(&self, path: &RelativePathBuf) -> bool {
         self.ignore_sets
             .as_ref()
-            .map(|set| set.is_match(path))
+            .map(|set| set.is_match(&**path))
             .unwrap_or_default()
     }
 }

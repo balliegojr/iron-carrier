@@ -7,7 +7,7 @@ pub use file_info::{FileInfo, FileInfoType};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, SystemTime},
 };
 
@@ -16,9 +16,9 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::{
     config::{Config, PathConfig},
-    constants::IGNORE_FILE_NAME,
     hash_helper::{self, HASHER},
     ignored_files::IgnoredFiles,
+    relative_path::RelativePathBuf,
     transaction_log::{LogEntry, TransactionLog},
     IronCarrierError,
 };
@@ -30,21 +30,16 @@ pub struct Storage {
     pub ignored_files: IgnoredFiles,
 }
 
-pub async fn get_storage(
+/// Gets the file list and hash for the given storage
+pub async fn get_storage_info(
     name: &str,
     storage_path_config: &PathConfig,
     transaction_log: &TransactionLog,
 ) -> crate::Result<Storage> {
     let ignored_files =
         crate::ignored_files::load_ignored_file_pattern(&storage_path_config.path).await;
-    let files = walk_path(
-        transaction_log,
-        name,
-        &storage_path_config.path,
-        &ignored_files,
-    )
-    .await?;
-    let hash = get_state_hash(files.iter());
+    let files = walk_path(transaction_log, name, storage_path_config, &ignored_files).await?;
+    let hash = calculate_storage_hash(files.iter());
 
     Ok(Storage {
         // name,
@@ -60,18 +55,17 @@ fn system_time_to_secs(time: SystemTime) -> u64 {
         .expect("failed to get wall time")
 }
 
-/// Returns a sorted vector with the entire folder structure for the given path
+/// Returns a sorted vector with the entire folder structure (recursive read) for the given path.  
 ///
-/// This function will look for deletes files in the [DeletionTracker] log and append all entries to the return list  
-/// files with name or extension `.ironcarrier` will be ignored
+/// The list will contain deleted and moved files, by reading the transaction log.  
 pub async fn walk_path(
     transaction_log: &TransactionLog,
     storage_name: &str,
-    root_path: &Path,
+    storage_config: &PathConfig,
     ignored_files: &IgnoredFiles,
 ) -> crate::Result<Vec<FileInfo>> {
     // TODO: change to async functions?
-    let mut paths = vec![root_path.to_owned()];
+    let mut paths = vec![storage_config.path.to_owned()];
     let mut files = get_deleted_files(transaction_log, storage_name).await?;
     let mut moved_files = get_moved_files(transaction_log, storage_name).await?;
 
@@ -79,8 +73,7 @@ pub async fn walk_path(
 
     while let Some(path) = paths.pop() {
         for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let path = entry.path();
+            let path = entry?.path();
 
             if is_special_file(&path) {
                 continue;
@@ -91,7 +84,8 @@ pub async fn walk_path(
                 continue;
             }
 
-            let relative_path = path.strip_prefix(root_path)?.to_owned();
+            let metadata = path.metadata()?;
+            let relative_path = storage_config.get_relative_path(path)?;
             if ignored_files.is_ignored(&relative_path) {
                 continue;
             }
@@ -100,7 +94,6 @@ pub async fn walk_path(
                 continue;
             }
 
-            let metadata = path.metadata()?;
             let permissions = get_permissions(&metadata);
             let modified_at = metadata.modified().map(system_time_to_secs)?;
             let size = metadata.len();
@@ -126,7 +119,7 @@ pub async fn walk_path(
                         _ => unreachable!(),
                     };
 
-                    files.drain_filter(|f| f.path.eq(old_path.as_path()));
+                    files.drain_filter(|f| f.path.eq(old_path));
                     files.replace(moved_file);
                 }
                 _ => {
@@ -142,7 +135,9 @@ pub async fn walk_path(
     Ok(files)
 }
 
-pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
+/// Calculate a "shallow" hash for the files by hashing the attributes, it doesn't open the file to
+/// read the contents
+pub fn calculate_storage_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
     let mut digest = HASHER.digest();
 
     for file in files.filter(|f| f.is_existent()) {
@@ -152,6 +147,7 @@ pub fn get_state_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
     digest.finalize()
 }
 
+/// Fetch deleted file events from the transaction log
 async fn get_deleted_files(
     transaction_log: &TransactionLog,
     storage: &str,
@@ -164,10 +160,11 @@ async fn get_deleted_files(
     })
 }
 
+/// Fetch moved file events from the transaction log
 async fn get_moved_files(
     transaction_log: &TransactionLog,
     storage: &str,
-) -> crate::Result<HashMap<PathBuf, FileInfo>> {
+) -> crate::Result<HashMap<RelativePathBuf, FileInfo>> {
     transaction_log.get_moved(storage).await.map(|files| {
         files
             .into_iter()
@@ -180,6 +177,7 @@ async fn get_moved_files(
             .collect()
     })
 }
+
 pub async fn delete_file(
     config: &Config,
     transaction_log: &TransactionLog,
@@ -217,25 +215,27 @@ pub async fn move_file<'b>(
     transaction_log: &TransactionLog,
     file: &'b FileInfo,
 ) -> crate::Result<()> {
-    let dest_path = file.get_absolute_path(config)?;
+    let path_config = config
+        .storages
+        .get(&file.storage)
+        .ok_or_else(|| IronCarrierError::StorageNotAvailable(file.storage.clone()))?;
+
+    let dest_path_abs = file.path.absolute(path_config)?;
     let src_path = if let FileInfoType::Moved { old_path, .. } = &file.info_type {
-        config
-            .storages
-            .get(&file.storage)
-            .map(|p| p.path.canonicalize())
-            .ok_or_else(|| IronCarrierError::StorageNotAvailable(file.storage.clone()))??
-            .join(old_path)
+        old_path
     } else {
         return Err(Box::new(IronCarrierError::InvalidOperation));
     };
 
-    if dest_path.exists() || !src_path.exists() {
-        log::error!("can't move {src_path:?} to {dest_path:?}");
+    let src_path_abs = src_path.absolute(path_config)?;
+
+    if dest_path_abs.exists() || !src_path.exists() {
+        log::error!("can't move {src_path_abs:?} to {dest_path_abs:?}");
         return Err(Box::new(IronCarrierError::InvalidOperation));
     }
 
-    log::debug!("moving file {src_path:?} to {dest_path:?}");
-    tokio::fs::rename(&src_path, &dest_path).await?;
+    log::debug!("moving file {src_path_abs:?} to {dest_path_abs:?}");
+    tokio::fs::rename(&src_path_abs, &dest_path_abs).await?;
     fix_times_and_permissions(file, config)?;
 
     // It is necessary to add two entries in the log, one for the new path as moved, one for the
@@ -247,7 +247,7 @@ pub async fn move_file<'b>(
     transaction_log
         .append_entry(
             &file.storage,
-            &src_path,
+            src_path,
             None,
             LogEntry::new(
                 crate::transaction_log::EntryType::Delete,
@@ -260,8 +260,8 @@ pub async fn move_file<'b>(
     transaction_log
         .append_entry(
             &file.storage,
-            &dest_path,
-            Some(&src_path),
+            &file.path,
+            Some(src_path),
             LogEntry::new(
                 crate::transaction_log::EntryType::Move,
                 crate::transaction_log::EntryStatus::Done,
@@ -312,7 +312,7 @@ fn set_file_permissions(path: &Path, perm: u32) -> std::io::Result<()> {
 pub fn is_special_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.ends_with("ironcarrier") || ext.ends_with(IGNORE_FILE_NAME))
+        .map(|ext| ext.ends_with("ironcarrier"))
         .unwrap_or_default()
 }
 
@@ -336,7 +336,7 @@ a = "./src/"
         let files = walk_path(
             &TransactionLog::memory().await?,
             "a",
-            &storage.path.canonicalize().unwrap(),
+            storage,
             &crate::ignored_files::empty_ignored_files(),
         )
         .await?;

@@ -2,19 +2,18 @@ use serde::{Deserialize, Serialize};
 
 use std::{cmp::Ord, hash::Hash, path::PathBuf};
 
-use crate::{config::Config, IronCarrierError};
+use crate::{config::Config, relative_path::RelativePathBuf, IronCarrierError};
 
 use super::{get_permissions, system_time_to_secs};
 
-/// Holds the information for a file inside a mapped folder  
+/// Represents a file in the storage.  
 ///
-/// The `path` will always be relative to the alias root folder
+/// The state of the file is represented by the [FileInfoType] enum, where a file can be existent,
+/// deleted or moved
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileInfo {
     pub storage: String,
-    /// File path, it is always relative to the alias root  
-    /// The relative path will always be the same, no matter the machine
-    pub path: PathBuf,
+    pub path: RelativePathBuf,
 
     pub info_type: FileInfoType,
     pub permissions: u32,
@@ -22,15 +21,23 @@ pub struct FileInfo {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum FileInfoType {
+    /// Represent an existing file in the storage
     Existent { modified_at: u64, size: u64 },
+
+    /// Represent a deleted file, this information comes from the transaction log
     Deleted { deleted_at: u64 },
-    Moved { old_path: PathBuf, moved_at: u64 },
+
+    /// Represent a moved file, this information comes from the transaction log
+    Moved {
+        old_path: RelativePathBuf,
+        moved_at: u64,
+    },
 }
 
 impl FileInfo {
     pub fn existent(
         storage: String,
-        path: PathBuf,
+        path: RelativePathBuf,
         modified_at: u64,
         size: u64,
         permissions: u32,
@@ -42,7 +49,7 @@ impl FileInfo {
             permissions,
         }
     }
-    pub fn deleted(storage: String, path: PathBuf, deleted_at: u64) -> Self {
+    pub fn deleted(storage: String, path: RelativePathBuf, deleted_at: u64) -> Self {
         FileInfo {
             storage,
             path,
@@ -51,7 +58,12 @@ impl FileInfo {
         }
     }
 
-    pub fn moved(storage: String, path: PathBuf, old_path: PathBuf, moved_at: u64) -> Self {
+    pub fn moved(
+        storage: String,
+        path: RelativePathBuf,
+        old_path: RelativePathBuf,
+        moved_at: u64,
+    ) -> Self {
         Self {
             storage,
             path,
@@ -65,6 +77,7 @@ impl FileInfo {
         !matches!(self.info_type, FileInfoType::Deleted { .. })
     }
 
+    /// Returns true if modification date, size or entry type are different
     pub fn is_out_of_sync(&self, other: &FileInfo) -> bool {
         match (&self.info_type, &other.info_type) {
             (
@@ -86,6 +99,7 @@ impl FileInfo {
         }
     }
 
+    /// Return the file size if the file type is existent
     pub fn file_size(&self) -> crate::Result<u64> {
         if let FileInfoType::Existent { size, .. } = self.info_type {
             Ok(size)
@@ -98,11 +112,7 @@ impl FileInfo {
     /// Using the provided root path for the alias in [Config]
     pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
         match config.storages.get(&self.storage) {
-            Some(path) => path
-                .path
-                .canonicalize()
-                .map(|root_path| root_path.join(&self.path))
-                .map_err(Box::from),
+            Some(path) => self.path.absolute(path),
             None => {
                 log::error!(
                     "provided storage does not exist in this node: {}",
@@ -113,6 +123,7 @@ impl FileInfo {
         }
     }
 
+    /// Compare the dates for two files, regardless of entry type
     pub fn date_cmp(&self, other: &Self) -> std::cmp::Ordering {
         let self_date = match self.info_type {
             FileInfoType::Existent { modified_at, .. } => modified_at,
@@ -144,6 +155,11 @@ impl FileInfo {
         ))
     }
 
+    /// Get the date of the file.  
+    ///
+    /// For existent files, this is the modified date
+    /// For deleted files, this is the deleted date
+    /// For moved files, this is the moved date
     pub fn get_date(&self) -> u64 {
         match self.info_type {
             FileInfoType::Existent { modified_at, .. } => modified_at,
@@ -182,8 +198,6 @@ impl Ord for FileInfo {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use crate::hash_helper;
 
     use super::*;
@@ -192,7 +206,7 @@ mod tests {
     fn calc_hash() {
         let mut file = FileInfo {
             storage: "a".to_owned(),
-            path: Path::new("./some_file_path").to_owned(),
+            path: "./some_file_path".into(),
             info_type: FileInfoType::Existent {
                 modified_at: 0,
                 size: 0,
@@ -202,7 +216,7 @@ mod tests {
 
         assert_eq!(hash_helper::calculate_file_hash(&file), 4552872816654674580);
 
-        file.path = Path::new("./some_other_file").to_owned();
+        file.path = "./some_other_file".into();
         assert_ne!(hash_helper::calculate_file_hash(&file), 4552872816654674580);
     }
 
@@ -210,7 +224,7 @@ mod tests {
     fn test_is_out_of_sync() {
         let mut file_info = FileInfo {
             storage: "a".to_owned(),
-            path: Path::new("./some_file_path").to_owned(),
+            path: "./some_file_path".into(),
             permissions: 0,
             info_type: FileInfoType::Existent {
                 modified_at: 0,

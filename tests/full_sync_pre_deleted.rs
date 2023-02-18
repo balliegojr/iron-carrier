@@ -1,4 +1,7 @@
-use iron_carrier::transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog};
+use iron_carrier::{
+    relative_path::RelativePathBuf,
+    transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog},
+};
 use std::time::SystemTime;
 
 mod common;
@@ -20,7 +23,7 @@ async fn test_sync_deleted_files() {
         transaction_log
             .append_entry(
                 "storage_0",
-                file.strip_prefix(&configs[1].storages["storage_0"].path)
+                &RelativePathBuf::new(&configs[1].storages["storage_0"], file.to_path_buf())
                     .unwrap(),
                 None,
                 LogEntry {
