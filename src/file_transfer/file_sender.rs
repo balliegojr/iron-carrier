@@ -35,11 +35,9 @@ impl FileSender {
         let block_size = block_index::get_block_size(file_size);
         let transfer_id = hash_helper::calculate_file_hash(&file);
 
+        let mut file_handle =
+            crate::storage::file_operations::open_file_for_reading(config, &file).await?;
         // TODO: file block index should be built only if necessary
-        let mut file_handle = {
-            let file_path = file.get_absolute_path(config)?;
-            tokio::fs::File::open(file_path).await?
-        };
         let block_hashes =
             block_index::get_file_block_index(&mut file_handle, block_size, file_size).await?;
 

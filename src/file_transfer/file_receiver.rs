@@ -1,7 +1,7 @@
 use std::io::SeekFrom;
 
 use tokio::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{AsyncSeekExt, AsyncWriteExt},
 };
 
@@ -31,7 +31,8 @@ impl FileReceiver {
         block_size: u64,
         receiving_from: u64,
     ) -> crate::Result<Self> {
-        let file_handle = get_file_handle(&remote_file, config).await?;
+        let file_handle =
+            crate::storage::file_operations::open_file_for_writing(config, &remote_file).await?;
         let file_size = remote_file.file_size()?;
         if file_size != file_handle.metadata().await?.len() {
             file_handle.set_len(file_size).await?;
@@ -156,23 +157,4 @@ pub async fn get_transfer_type(
     } else {
         Ok(TransferType::NoTransfer)
     }
-}
-
-pub async fn get_file_handle(file_info: &FileInfo, config: &'static Config) -> crate::Result<File> {
-    let file_path = file_info.get_absolute_path(config)?;
-
-    if let Some(parent) = file_path.parent() {
-        if !parent.exists() {
-            log::debug!("creating folders {:?}", parent);
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-
-    OpenOptions::new()
-        .write(true)
-        .create(true)
-        .read(true)
-        .open(file_path)
-        .await
-        .map_err(Box::from)
 }

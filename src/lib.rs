@@ -98,6 +98,12 @@ pub struct SharedState {
     transaction_log: &'static TransactionLog,
 }
 
+// TODO: implement operation mode
+// TODO: implement cron for full sync in the daemon
+// TODO: implement client mode if the daemon is running (basic a cli that shows sync status)
+// TODO: add sync information to the transaction log (when it was last synched and what nodes
+// participated
+
 pub async fn run_full_sync(config: &'static validation::Verified<config::Config>) -> Result<()> {
     let connection_handler = network::ConnectionHandler::new(config).await?.leak();
     let transaction_log = transaction_log::TransactionLog::load(&config.log_path)

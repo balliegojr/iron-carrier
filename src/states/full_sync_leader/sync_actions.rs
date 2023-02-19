@@ -153,7 +153,7 @@ pub async fn execute_action(
     match action {
         SyncAction::Delete { file, nodes } => {
             if nodes.contains(&shared_state.config.node_id_hashed) {
-                crate::storage::delete_file(
+                crate::storage::file_operations::delete_file(
                     shared_state.config,
                     shared_state.transaction_log,
                     &file,
@@ -172,8 +172,12 @@ pub async fn execute_action(
         }
         SyncAction::Move { file, nodes } => {
             if nodes.contains(&shared_state.config.node_id_hashed) {
-                crate::storage::move_file(shared_state.config, shared_state.transaction_log, &file)
-                    .await?;
+                crate::storage::file_operations::move_file(
+                    shared_state.config,
+                    shared_state.transaction_log,
+                    &file,
+                )
+                .await?;
             }
 
             shared_state

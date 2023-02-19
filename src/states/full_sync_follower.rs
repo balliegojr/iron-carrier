@@ -85,7 +85,7 @@ impl Step for FullSyncFollower {
                     files_to_send.push((file, nodes));
                 }
                 NetworkEvents::Synchronization(Synchronization::DeleteFile { file }) => {
-                    crate::storage::delete_file(
+                    crate::storage::file_operations::delete_file(
                         shared_state.config,
                         shared_state.transaction_log,
                         &file,
@@ -93,7 +93,7 @@ impl Step for FullSyncFollower {
                     .await?;
                 }
                 NetworkEvents::Synchronization(Synchronization::MoveFile { file }) => {
-                    crate::storage::move_file(
+                    crate::storage::file_operations::move_file(
                         shared_state.config,
                         shared_state.transaction_log,
                         &file,

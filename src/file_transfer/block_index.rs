@@ -1,6 +1,6 @@
 //! Functions related to build the block index of a file
 
-use tokio::{fs::File, io::AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::hash_helper;
 
@@ -16,8 +16,8 @@ pub fn get_block_size(file_size: u64) -> u64 {
     block_size
 }
 
-pub async fn get_file_block_index(
-    file: &mut File,
+pub async fn get_file_block_index<T: AsyncRead + Unpin>(
+    file: &mut T,
     block_size: u64,
     file_size: u64,
 ) -> crate::Result<Vec<u64>> {
