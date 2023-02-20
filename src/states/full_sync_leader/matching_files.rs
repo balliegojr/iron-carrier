@@ -192,7 +192,6 @@ mod tests {
         let storage = Storage {
             hash: 0,
             files: vec![file_with_name("a")],
-            ignored_files: crate::ignored_files::empty_ignored_files(),
         };
 
         let mut peer_files = HashMap::default();

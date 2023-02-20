@@ -27,7 +27,6 @@ use crate::{
 pub struct Storage {
     pub hash: u64,
     pub files: Vec<FileInfo>,
-    pub ignored_files: IgnoredFiles,
 }
 
 /// Gets the file list and hash for the given storage
@@ -36,14 +35,12 @@ pub async fn get_storage_info(
     storage_path_config: &PathConfig,
     transaction_log: &TransactionLog,
 ) -> crate::Result<Storage> {
-    let ignored_files =
-        crate::ignored_files::load_ignored_file_pattern(&storage_path_config.path).await;
+    let ignored_files = crate::ignored_files::IgnoredFiles::new(storage_path_config).await;
     let files = walk_path(transaction_log, name, storage_path_config, &ignored_files).await?;
     let hash = calculate_storage_hash(files.iter());
 
     Ok(Storage {
         // name,
-        ignored_files,
         files,
         hash,
     })
@@ -244,7 +241,7 @@ a = "./src/"
             &TransactionLog::memory().await?,
             "a",
             storage,
-            &crate::ignored_files::empty_ignored_files(),
+            &crate::ignored_files::IgnoredFiles::empty(),
         )
         .await?;
 

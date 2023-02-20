@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    ignored_files::IgnoredFilesCache,
     network_events::Synchronization,
     state_machine::Step,
     storage::{FileInfo, FileInfoType},
@@ -111,6 +112,7 @@ impl Step for DispatchActions {
 
         let mut files_to_send = Vec::default();
         let mut file_transfer_required = false;
+        let mut ignored_files_cache = IgnoredFilesCache::default();
 
         for action in actions {
             if let Err(err) = execute_action(
@@ -118,6 +120,7 @@ impl Step for DispatchActions {
                 shared_state,
                 &mut files_to_send,
                 &mut file_transfer_required,
+                &mut ignored_files_cache,
             )
             .await
             {
@@ -149,6 +152,7 @@ pub async fn execute_action(
     shared_state: &SharedState,
     files_to_send: &mut Vec<(FileInfo, HashSet<u64>)>,
     file_transfer_required: &mut bool,
+    ignored_files_cache: &mut IgnoredFilesCache,
 ) -> crate::Result<()> {
     match action {
         SyncAction::Delete { file, nodes } => {
@@ -157,6 +161,7 @@ pub async fn execute_action(
                     shared_state.config,
                     shared_state.transaction_log,
                     &file,
+                    ignored_files_cache,
                 )
                 .await?;
             }
@@ -176,6 +181,7 @@ pub async fn execute_action(
                     shared_state.config,
                     shared_state.transaction_log,
                     &file,
+                    ignored_files_cache,
                 )
                 .await?;
             }

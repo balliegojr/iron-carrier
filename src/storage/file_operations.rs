@@ -2,6 +2,7 @@ use tokio::fs::OpenOptions;
 
 use crate::{
     config::Config,
+    ignored_files::IgnoredFilesCache,
     transaction_log::{LogEntry, TransactionLog},
     IronCarrierError,
 };
@@ -13,11 +14,17 @@ pub async fn move_file<'b>(
     config: &Config,
     transaction_log: &TransactionLog,
     file: &'b FileInfo,
+    ignored_files_cache: &mut IgnoredFilesCache,
 ) -> crate::Result<()> {
     let path_config = config
         .storages
         .get(&file.storage)
         .ok_or_else(|| IronCarrierError::StorageNotAvailable(file.storage.clone()))?;
+
+    let ignored_files = ignored_files_cache.get(path_config).await;
+    if ignored_files.is_ignored(&file.path) {
+        return Ok(());
+    }
 
     let dest_path_abs = file.path.absolute(path_config)?;
     let src_path = if let FileInfoType::Moved { old_path, .. } = &file.info_type {
@@ -25,6 +32,10 @@ pub async fn move_file<'b>(
     } else {
         return Err(Box::new(IronCarrierError::InvalidOperation));
     };
+
+    if ignored_files.is_ignored(src_path) {
+        return Ok(());
+    }
 
     let src_path_abs = src_path.absolute(path_config)?;
 
@@ -75,7 +86,15 @@ pub async fn delete_file(
     config: &Config,
     transaction_log: &TransactionLog,
     file_info: &FileInfo,
+    ignored_files_cache: &mut IgnoredFilesCache,
 ) -> crate::Result<()> {
+    if let Some(storage_config) = config.storages.get(&file_info.storage) {
+        let ignored_files = ignored_files_cache.get(storage_config).await;
+        if ignored_files.is_ignored(&file_info.path) {
+            return Ok(());
+        }
+    }
+
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
         log::debug!("delete_file: given path doesn't exist ({:?})", path);

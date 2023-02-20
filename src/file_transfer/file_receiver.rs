@@ -8,6 +8,7 @@ use tokio::{
 use crate::{
     config::Config,
     hash_helper,
+    ignored_files::IgnoredFilesCache,
     storage::{self, FileInfo},
     transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog},
 };
@@ -143,7 +144,18 @@ impl FileReceiver {
 pub async fn get_transfer_type(
     remote_file: &FileInfo,
     config: &'static Config,
+    ignored_files_cache: &mut IgnoredFilesCache,
 ) -> crate::Result<TransferType> {
+    if let Some(storage_config) = config.storages.get(&remote_file.storage) {
+        if ignored_files_cache
+            .get(storage_config)
+            .await
+            .is_ignored(&remote_file.path)
+        {
+            return Ok(TransferType::NoTransfer);
+        }
+    }
+
     let file_path = remote_file.get_absolute_path(config)?;
     if !file_path.exists() {
         return Ok(TransferType::FullFile);

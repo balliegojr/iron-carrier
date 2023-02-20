@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
+    ignored_files::IgnoredFilesCache,
     network_events::{NetworkEvents, Synchronization},
     state_machine::Step,
     storage::FileInfo,
@@ -108,6 +109,7 @@ impl Step for TransferFiles {
         let (when_done_tx, mut when_done) = tokio::sync::mpsc::channel(1);
         let mut active_transfers = HashMap::new();
         let mut peers_to_wait = self.peers_with_transfers.clone();
+        let mut ignore_cache = IgnoredFilesCache::default();
 
         log::debug!("Starting file transfer");
 
@@ -143,6 +145,7 @@ impl Step for TransferFiles {
                                     block_size,
                                     transfer_id,
                                     peer_id,
+                                    &mut ignore_cache
                                 )
                                 .await?
                                 {
@@ -195,8 +198,10 @@ async fn query_transfer_type(
     block_size: u64,
     transfer_id: u64,
     node_id: u64,
+    ignored_files_cache: &mut IgnoredFilesCache,
 ) -> crate::Result<Option<FileReceiver>> {
-    let transfer_type = file_receiver::get_transfer_type(&file, shared_state.config).await?;
+    let transfer_type =
+        file_receiver::get_transfer_type(&file, shared_state.config, ignored_files_cache).await?;
     shared_state
         .connection_handler
         .send_to(
