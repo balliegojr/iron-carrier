@@ -1,6 +1,25 @@
-use crate::{constants::IGNORE_FILE_NAME, relative_path::RelativePathBuf};
+use crate::{config::PathConfig, constants::IGNORE_FILE_NAME, relative_path::RelativePathBuf};
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
+
+#[derive(Default)]
+pub struct IgnoredFilesCache {
+    loaded: HashMap<PathBuf, IgnoredFiles>,
+}
+
+impl IgnoredFilesCache {
+    pub async fn get(&mut self, path_config: &PathConfig) -> &IgnoredFiles {
+        if !self.loaded.contains_key(&path_config.path) {
+            let ignored_files = IgnoredFiles::new(path_config).await;
+            self.loaded.insert(path_config.path.clone(), ignored_files);
+        }
+
+        self.loaded.get(&path_config.path).unwrap()
+    }
+}
 
 /// Handle ignored files
 #[derive(Debug)]
@@ -9,6 +28,17 @@ pub struct IgnoredFiles {
 }
 
 impl IgnoredFiles {
+    pub async fn new(path_config: &PathConfig) -> Self {
+        IgnoredFiles {
+            ignore_sets: get_glob_set(&path_config.path).await,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn empty() -> Self {
+        IgnoredFiles { ignore_sets: None }
+    }
+
     pub fn is_ignored(&self, path: &RelativePathBuf) -> bool {
         self.ignore_sets
             .as_ref()
@@ -17,18 +47,7 @@ impl IgnoredFiles {
     }
 }
 
-pub async fn load_ignored_file_pattern(path: impl AsRef<Path>) -> IgnoredFiles {
-    IgnoredFiles {
-        ignore_sets: get_glob_set(path.as_ref()).await,
-    }
-}
-
-#[cfg(test)]
-pub fn empty_ignored_files() -> IgnoredFiles {
-    IgnoredFiles { ignore_sets: None }
-}
-
-async fn get_glob_set<P: AsRef<Path>>(path: P) -> Option<GlobSet> {
+async fn get_glob_set(path: impl AsRef<Path>) -> Option<GlobSet> {
     let patterns = get_ignore_patterns(path.as_ref()).await?;
 
     let mut builder = GlobSetBuilder::new();

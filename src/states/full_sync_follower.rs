@@ -2,6 +2,7 @@ use std::{collections::HashSet, fmt::Display};
 
 use crate::{
     file_transfer::TransferFiles,
+    ignored_files::IgnoredFilesCache,
     network_events::{NetworkEvents, StorageIndexStatus, Synchronization, Transition},
     state_machine::Step,
     SharedState,
@@ -31,6 +32,7 @@ impl Step for FullSyncFollower {
         // TODO: check for ignored files before delete/moving/receiving
         log::info!("full sync starting....");
 
+        let mut ignored_files_cache = IgnoredFilesCache::default();
         let mut files_to_send = Vec::default();
         while let Some((peer_id, ev)) = shared_state.connection_handler.next_event().await {
             if peer_id != self.sync_leader {
@@ -89,6 +91,7 @@ impl Step for FullSyncFollower {
                         shared_state.config,
                         shared_state.transaction_log,
                         &file,
+                        &mut ignored_files_cache,
                     )
                     .await?;
                 }
@@ -97,6 +100,7 @@ impl Step for FullSyncFollower {
                         shared_state.config,
                         shared_state.transaction_log,
                         &file,
+                        &mut ignored_files_cache,
                     )
                     .await?;
                 }

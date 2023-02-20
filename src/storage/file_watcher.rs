@@ -27,7 +27,7 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::{
     config::{Config, PathConfig},
-    ignored_files::{self, IgnoredFiles},
+    ignored_files::{IgnoredFiles, IgnoredFilesCache},
     relative_path::RelativePathBuf,
     transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog},
     IronCarrierError,
@@ -68,8 +68,18 @@ pub fn get_file_watcher(
     }
 
     tokio::task::spawn(async move {
+        let mut ignored_files_cache = IgnoredFilesCache::default();
+
         while let Some(event) = rx.recv().await {
-            match register_event(&storages, config, transaction_log, event).await {
+            match register_event(
+                &storages,
+                config,
+                transaction_log,
+                event,
+                &mut ignored_files_cache,
+            )
+            .await
+            {
                 Ok(Some(storage)) => {
                     if output.send(storage).await.is_err() {
                         break;
@@ -93,6 +103,7 @@ async fn register_event(
     config: &Config,
     transaction_log: &TransactionLog,
     event: Event,
+    ignored_files_cache: &mut IgnoredFilesCache,
 ) -> crate::Result<Option<String>> {
     let storage = event
         .paths
@@ -101,9 +112,7 @@ async fn register_event(
         .ok_or(IronCarrierError::InvalidOperation)?;
 
     let storage_config = config.storages.get(&storage).unwrap();
-    // NOTE: this can be cached in the caller if it becomes a performance issue
-    let ignored_files: IgnoredFiles =
-        ignored_files::load_ignored_file_pattern(&storage_config.path).await;
+    let ignored_files = ignored_files_cache.get(storage_config).await;
 
     let src = event.paths.get(0);
     let dst = event.paths.get(1);
@@ -126,7 +135,7 @@ async fn register_event(
                     dst_path.to_path_buf(),
                     src_path.to_path_buf(),
                 )? {
-                    write_moved_event(transaction_log, &ignored_files, &storage, file_moved).await
+                    write_moved_event(transaction_log, ignored_files, &storage, file_moved).await
                 }
             }
         }
@@ -141,7 +150,7 @@ async fn register_event(
         | notify::EventKind::Remove(notify::event::RemoveKind::File)
         | notify::EventKind::Remove(notify::event::RemoveKind::Folder) => {
             if let Some(path) = &src {
-                for path in get_list_of_files(storage_config, path.to_path_buf(), &ignored_files)? {
+                for path in get_list_of_files(storage_config, path.to_path_buf(), ignored_files)? {
                     write_deleted_event(transaction_log, &storage, &path).await;
                 }
             }
