@@ -29,7 +29,6 @@ impl Step for FullSyncFollower {
     type Output = ();
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
-        // TODO: check for ignored files before delete/moving/receiving
         log::info!("full sync starting....");
 
         let mut ignored_files_cache = IgnoredFilesCache::default();
