@@ -50,8 +50,6 @@ another node in the same group.
 ## Ignoring files
 Each root folder can have a **.ignore** file with glob patterns to ignore files, the file must be
 always located at the root.  
-This file is **NOT** synchronized between peers, you need to write the file manually for every peer
-you want to synchronize
 
 
 ## Configuration File

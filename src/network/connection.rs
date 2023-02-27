@@ -17,38 +17,34 @@ static CONNECTION_ID_COUNT: AtomicU32 = AtomicU32::new(0);
 pub struct ConnectionId(u32);
 
 pub struct Connection {
-    read: Pin<Box<dyn AsyncRead + Send + Sync>>,
-    write: Pin<Box<dyn AsyncWrite + Send + Sync>>,
+    stream: tokio::net::TcpStream,
     pub connection_id: ConnectionId,
     pub peer_id: u64,
 }
 
 impl Connection {
-    pub fn new(
-        read: Pin<Box<dyn AsyncRead + Send + Sync>>,
-        write: Pin<Box<dyn AsyncWrite + Send + Sync>>,
-        peer_id: u64,
-    ) -> Self {
+    pub fn new(stream: tokio::net::TcpStream, peer_id: u64) -> Self {
         let connection_id = CONNECTION_ID_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         Connection {
             peer_id,
             connection_id: ConnectionId(connection_id),
-            read,
-            write,
+            stream,
         }
     }
 
     pub fn split(self) -> (WriteHalf, ReadHalf) {
+        let (read, write) = self.stream.into_split();
+
         (
             WriteHalf {
-                inner: self.write,
+                inner: Box::pin(write),
                 connection_id: self.connection_id,
                 peer_id: self.peer_id,
                 last_access: Instant::now(),
             },
             ReadHalf {
-                inner: self.read,
+                inner: Box::pin(read),
                 connection_id: self.connection_id,
                 peer_id: self.peer_id,
             },
@@ -124,11 +120,10 @@ impl AsyncRead for ReadHalf {
 
 pub async fn identify_outgoing_connection(
     config: &Config,
-    mut read: Pin<Box<dyn AsyncRead + Send + Sync>>,
-    mut write: Pin<Box<dyn AsyncWrite + Send + Sync>>,
+    mut stream: tokio::net::TcpStream,
 ) -> crate::Result<Connection> {
     let version = hash_helper::hashed_str(VERSION);
-    if !round_trip_compare(&mut read, &mut write, version).await? {
+    if !round_trip_compare(&mut stream, version).await? {
         return Err(Box::new(IronCarrierError::VersionMismatch));
     }
 
@@ -138,26 +133,22 @@ pub async fn identify_outgoing_connection(
         .map(hash_helper::hashed_str)
         .unwrap_or_default();
 
-    if !round_trip_compare(&mut read, &mut write, group).await? {
+    if !round_trip_compare(&mut stream, group).await? {
         return Err(Box::new(IronCarrierError::GroupMismatch));
     }
 
-    write.write_u64(config.node_id_hashed).await?;
-    let peer_id = read.read_u64().await?;
+    stream.write_u64(config.node_id_hashed).await?;
+    let peer_id = stream.read_u64().await?;
 
-    Ok(Connection::new(read, write, peer_id))
+    Ok(Connection::new(stream, peer_id))
 }
 
 pub async fn identify_incoming_connection(
     config: &Config,
-    mut read: Pin<Box<dyn AsyncRead + Send + Sync>>,
-    mut write: Pin<Box<dyn AsyncWrite + Send + Sync>>,
+    mut stream: tokio::net::TcpStream,
 ) -> crate::Result<Connection> {
     let version = hash_helper::hashed_str(VERSION);
-    wait_and_compare(&mut read, &mut write, version, || {
-        IronCarrierError::VersionMismatch
-    })
-    .await?;
+    wait_and_compare(&mut stream, version, || IronCarrierError::VersionMismatch).await?;
 
     let group = config
         .group
@@ -165,37 +156,30 @@ pub async fn identify_incoming_connection(
         .map(hash_helper::hashed_str)
         .unwrap_or_default();
 
-    wait_and_compare(&mut read, &mut write, group, || {
-        IronCarrierError::GroupMismatch
-    })
-    .await?;
+    wait_and_compare(&mut stream, group, || IronCarrierError::GroupMismatch).await?;
 
-    write.write_u64(config.node_id_hashed).await?;
-    let peer_id = read.read_u64().await?;
+    stream.write_u64(config.node_id_hashed).await?;
+    let peer_id = stream.read_u64().await?;
 
-    Ok(Connection::new(read, write, peer_id))
+    Ok(Connection::new(stream, peer_id))
 }
 
-async fn round_trip_compare(
-    read: &mut (dyn AsyncRead + Unpin + Send + Sync),
-    write: &mut (dyn AsyncWrite + Unpin + Send + Sync),
-    value: u64,
-) -> crate::Result<bool> {
-    write.write_u64(value).await?;
-    read.read_u64()
+async fn round_trip_compare(stream: &mut tokio::net::TcpStream, value: u64) -> crate::Result<bool> {
+    stream.write_u64(value).await?;
+    stream
+        .read_u64()
         .await
         .map(|result| result == value)
         .map_err(Box::from)
 }
 
 async fn wait_and_compare(
-    read: &mut (dyn AsyncRead + Unpin + Send),
-    write: &mut (dyn AsyncWrite + Unpin + Send),
+    stream: &mut tokio::net::TcpStream,
     value: u64,
     err: fn() -> IronCarrierError,
 ) -> crate::Result<()> {
-    if read.read_u64().await? == value {
-        write.write_u64(value).await.map_err(Box::from)
+    if stream.read_u64().await? == value {
+        stream.write_u64(value).await.map_err(Box::from)
     } else {
         Err(Box::new(err()))
     }

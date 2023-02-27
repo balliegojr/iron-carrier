@@ -78,10 +78,9 @@ impl ConnectionHandler<NetworkEvents> {
         })
         .await?;
 
-        let (read, write) = transport_stream.into_split();
         let connection = tokio::time::timeout(
             Duration::from_secs(PEER_IDENTIFICATION_TIMEOUT),
-            connection::identify_outgoing_connection(self.config, Box::pin(read), Box::pin(write)),
+            connection::identify_outgoing_connection(self.config, transport_stream),
         )
         .await
         .map_err(|_| IronCarrierError::ConnectionTimeout)??;
@@ -187,10 +186,9 @@ async fn listen_connections(
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
 
     while let Ok((stream, _addr)) = listener.accept().await {
-        let (read, write) = stream.into_split();
         let connection = match tokio::time::timeout(
             Duration::from_secs(PEER_IDENTIFICATION_TIMEOUT),
-            connection::identify_incoming_connection(config, Box::pin(read), Box::pin(write)),
+            connection::identify_incoming_connection(config, stream),
         )
         .await
         {
