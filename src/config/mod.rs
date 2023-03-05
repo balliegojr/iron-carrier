@@ -67,13 +67,12 @@ pub struct Config {
     #[serde(default = "defaults::log_path")]
     pub log_path: PathBuf,
 
-    #[serde(default = "defaults::encryption")]
-    pub encryption: bool,
-
     pub encryption_key: Option<String>,
 
     #[serde(default = "defaults::max_parallel_transfers")]
     pub max_parallel_transfers: u8,
+
+    pub schedule_sync: Option<String>,
 }
 
 impl Config {
@@ -169,11 +168,13 @@ impl crate::validation::Verifiable for Config {
             );
         }
 
-        if self.encryption && self.encryption_key.is_none() {
-            return Err(IronCarrierError::ConfigFileIsInvalid(
-                "It is necessary specify an encryption key".into(),
-            )
-            .into());
+        if let Some(schedule_cron) = self.schedule_sync.as_ref() {
+            if cron::Schedule::from_str(schedule_cron).is_err() {
+                return Err(IronCarrierError::ConfigFileIsInvalid(
+                    "schedule_sync contains an invalid cron".into(),
+                )
+                .into());
+            }
         }
 
         Ok(())
@@ -193,9 +194,6 @@ mod defaults {
         4
     }
     pub fn service_discovery_enabled() -> bool {
-        true
-    }
-    pub fn encryption() -> bool {
         true
     }
     pub fn log_path() -> PathBuf {

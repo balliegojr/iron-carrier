@@ -1,7 +1,8 @@
-use std::{collections::HashSet, fmt::Display, time::Duration};
+use std::{collections::HashSet, fmt::Display, future, str::FromStr, time::Duration};
 use tokio::sync::mpsc::Sender;
 
 use crate::{
+    config::Config,
     network_events::{NetworkEvents, Transition},
     state_machine::{StateComposer, Step},
     states::FullSync,
@@ -52,6 +53,9 @@ impl Step for Daemon {
             Duration::from_secs(shared_state.config.delay_watcher_events),
         );
 
+        let full_sync_deadline = next_cron_schedule(shared_state.config);
+        tokio::pin!(full_sync_deadline);
+
         loop {
             tokio::select! {
                 stream_event = shared_state.connection_handler.next_event() => {
@@ -72,8 +76,35 @@ impl Step for Daemon {
                 Some(to_sync) = watcher_events.recv() => {
                      return Ok(Some(DaemonTask::ConnectThenSync(to_sync, self.when_full_sync)));
                 }
+                _ = &mut full_sync_deadline => {
+                    return Ok(Some(DaemonTask::ConnectThenSync(Default::default(), self.when_full_sync)));
+                }
             }
         }
+    }
+}
+
+async fn next_cron_schedule(config: &Config) {
+    let cron_deadline = config.schedule_sync.as_ref().and_then(|schedule_cron| {
+        let schedule = cron::Schedule::from_str(schedule_cron).unwrap();
+
+        schedule
+            .upcoming(chrono::Local)
+            .take(1)
+            .next()
+            .map(|event| {
+                let deadline = std::time::Instant::now()
+                    + event
+                        .signed_duration_since(chrono::Local::now())
+                        .to_std()
+                        .unwrap();
+                tokio::time::sleep_until(deadline.into())
+            })
+    });
+
+    match cron_deadline {
+        Some(deadline) => deadline.await,
+        None => future::pending().await,
     }
 }
 
