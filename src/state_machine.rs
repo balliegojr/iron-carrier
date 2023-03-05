@@ -95,11 +95,7 @@ where
 }
 
 #[derive(Debug)]
-pub struct And<T, U>
-where
-    T: Step,
-    U: Step,
-{
+pub struct And<T, U> {
     previous: T,
     _next: PhantomData<U>,
 }

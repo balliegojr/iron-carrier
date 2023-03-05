@@ -30,7 +30,6 @@ pub fn calculate_file_hash_digest(file: &FileInfo, digest: &mut Digest<u64>) {
         digest.update(path.as_bytes());
     });
 
-    // NOTE: add a different byte depending on the match value?
     match &file.info_type {
         FileInfoType::Existent { modified_at, size } => {
             digest.update(&modified_at.to_le_bytes());

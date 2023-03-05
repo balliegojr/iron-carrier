@@ -1,10 +1,9 @@
 //! Keep your files in sync!
 //!
 //! Synchronize your files in differents machines on the same network
-
+#![allow(incomplete_features)]
 #![feature(hash_drain_filter)]
 #![feature(btree_drain_filter)]
-#![feature(drain_filter)]
 #![feature(let_chains)]
 #![feature(result_option_inspect)]
 #![feature(is_sorted)]
