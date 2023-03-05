@@ -107,11 +107,7 @@ impl ConnectionHandler<NetworkEvents> {
     }
 
     pub async fn next_event(&self) -> Option<(u64, NetworkEvents)> {
-        if self.connections.lock().await.len() == 0 {
-            None
-        } else {
-            self.stream_receiver.lock().await.recv().await
-        }
+        self.stream_receiver.lock().await.recv().await
     }
 
     pub async fn broadcast(&self, event: NetworkEvents) -> crate::Result<usize> {

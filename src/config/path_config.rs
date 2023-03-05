@@ -10,7 +10,6 @@ use super::OperationMode;
 #[derive(Debug, Deserialize, Default)]
 pub struct PathConfig {
     pub path: PathBuf,
-    pub force_sync: Option<u64>,
     pub enable_watcher: Option<bool>,
     pub mode: Option<OperationMode>,
 }
