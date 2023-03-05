@@ -19,7 +19,7 @@ pub struct FileSender {
     transfer_id: u64,
     file_handle: File,
     block_size: u64,
-    block_hashes: Vec<BlockHash>,
+    block_hashes: Option<Vec<BlockHash>>,
     participant_nodes: HashSet<u64>,
 
     nodes_required_blocks: HashMap<u64, Vec<BlockIndex>>,
@@ -35,11 +35,8 @@ impl FileSender {
         let block_size = block_index::get_block_size(file_size);
         let transfer_id = hash_helper::calculate_file_hash(&file);
 
-        let mut file_handle =
+        let file_handle =
             crate::storage::file_operations::open_file_for_reading(config, &file).await?;
-        // TODO: file block index should be built only if necessary
-        let block_hashes =
-            block_index::get_file_block_index(&mut file_handle, block_size, file_size).await?;
 
         Ok(Self {
             file,
@@ -47,7 +44,7 @@ impl FileSender {
             participant_nodes: nodes,
             block_size,
             nodes_required_blocks: HashMap::default(),
-            block_hashes,
+            block_hashes: None,
             file_handle,
         })
     }
@@ -97,16 +94,19 @@ impl FileSender {
     ) -> crate::Result<()> {
         match transfer_type {
             TransferType::FullFile => {
-                let required_blocks = (0..self.block_hashes.len() as u64).collect();
+                let block_hashes = self.get_block_index().await?;
+                let required_blocks = (0..block_hashes.len() as u64).collect();
                 self.nodes_required_blocks.insert(node_id, required_blocks);
             }
             TransferType::Partial => {
+                let block_hashes = self.get_block_index().await?.clone();
+
                 connection_handler
                     .send_to(
                         NetworkEvents::FileTransfer(
                             self.transfer_id,
                             FileTransfer::QueryRequiredBlocks {
-                                sender_block_index: self.block_hashes.clone(),
+                                sender_block_index: block_hashes,
                             },
                         ),
                         node_id,
@@ -176,5 +176,19 @@ impl FileSender {
             .await?;
 
         Ok(())
+    }
+
+    async fn get_block_index(&mut self) -> crate::Result<&Vec<u64>> {
+        if self.block_hashes.is_none() {
+            let block_hashes = block_index::get_file_block_index(
+                &mut self.file_handle,
+                self.block_size,
+                self.file.file_size()?,
+            )
+            .await?;
+            self.block_hashes = Some(block_hashes);
+        }
+
+        Ok(self.block_hashes.as_ref().unwrap())
     }
 }
