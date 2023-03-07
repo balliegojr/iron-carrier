@@ -11,7 +11,7 @@
 
 use network::ConnectionHandler;
 use serde::{Deserialize, Serialize};
-use state_machine::{StateComposer, Step};
+use state_machine::{State, StateComposer};
 use states::FullSync;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
@@ -47,6 +47,8 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 /// Error types
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum IronCarrierError {
+    #[error("Execution aborted")]
+    AbortExecution,
     /// Configuration file was not found
     #[error("Configuration file not found on provided path")]
     ConfigFileNotFound,
@@ -95,6 +97,7 @@ pub struct SharedState {
     config: &'static Validated<Config>,
     connection_handler: &'static ConnectionHandler<network_events::NetworkEvents>,
     transaction_log: &'static TransactionLog,
+    after_sync: &'static Option<Sender<()>>,
 }
 
 // TODO: implement operation mode
@@ -112,12 +115,13 @@ pub async fn run_full_sync(config: &'static validation::Validated<config::Config
         config,
         connection_handler,
         transaction_log,
+        after_sync: &None,
     };
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(|leader_id| FullSync::new(leader_id, None))
+        .and_then(FullSync::new)
         .execute(&shared_state)
         .await?;
 
@@ -144,15 +148,14 @@ pub async fn start_daemon(
         config,
         connection_handler,
         transaction_log,
+        after_sync: when_sync_done.leak(),
     };
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(|leader_id| FullSync::new(leader_id, when_sync_done.clone()))
-        .then_loop(|| {
-            states::Daemon::new(when_sync_done.clone()).and_then(|daemon_task| daemon_task)
-        })
+        .and_then(FullSync::new)
+        .then_default_to(states::Daemon::new)
         .execute(&shared_state)
         .await?;
 

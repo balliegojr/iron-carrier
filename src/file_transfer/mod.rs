@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use crate::{
     ignored_files::IgnoredFilesCache,
     network_events::{NetworkEvents, Synchronization},
-    state_machine::Step,
+    state_machine::State,
     storage::FileInfo,
     SharedState,
 };
@@ -102,10 +102,10 @@ impl TransferFiles {
     }
 }
 
-impl Step for TransferFiles {
+impl State for TransferFiles {
     type Output = ();
 
-    async fn execute(mut self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
+    async fn execute(mut self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         let (when_done_tx, mut when_done) = tokio::sync::mpsc::channel(1);
         let mut active_transfers = HashMap::new();
         let mut peers_to_wait = self.peers_with_transfers.clone();
@@ -188,7 +188,7 @@ impl Step for TransferFiles {
 
         log::debug!("Finishing file transfer");
 
-        Ok(Some(()))
+        Ok(())
     }
 }
 

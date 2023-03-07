@@ -3,12 +3,11 @@ use std::{collections::HashSet, fmt::Display};
 use crate::{
     file_transfer::TransferFiles,
     network_events::Transition,
-    state_machine::{StateComposer, Step},
+    state_machine::{State, StateComposer},
     SharedState,
 };
 use matching_files::BuildMatchingFiles;
 use sync_actions::DispatchActions;
-use tokio::sync::mpsc::Sender;
 
 mod matching_files;
 mod sync_actions;
@@ -16,24 +15,16 @@ mod sync_actions;
 #[derive(Debug, Default)]
 pub struct FullSyncLeader {
     storages_to_sync: HashSet<String>,
-    when_sync_done: Option<Sender<()>>,
 }
 
 impl FullSyncLeader {
-    pub fn sync_everything(when_sync_done: Option<Sender<()>>) -> Self {
+    pub fn sync_everything() -> Self {
         Self {
             storages_to_sync: Default::default(),
-            when_sync_done,
         }
     }
-    pub fn sync_just(
-        storages_to_sync: HashSet<String>,
-        when_sync_done: Option<Sender<()>>,
-    ) -> Self {
-        Self {
-            storages_to_sync,
-            when_sync_done,
-        }
+    pub fn sync_just(storages_to_sync: HashSet<String>) -> Self {
+        Self { storages_to_sync }
     }
 }
 
@@ -43,9 +34,9 @@ impl Display for FullSyncLeader {
     }
 }
 
-impl Step for FullSyncLeader {
+impl State for FullSyncLeader {
     type Output = ();
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         shared_state
             .connection_handler
             .broadcast(Transition::FullSync.into())
@@ -80,10 +71,10 @@ impl Step for FullSyncLeader {
             .broadcast(Transition::Done.into())
             .await?;
 
-        if let Some(when_sync_done) = self.when_sync_done {
+        if let Some(when_sync_done) = shared_state.after_sync {
             let _ = when_sync_done.send(()).await;
         }
 
-        Ok(Some(()))
+        Ok(())
     }
 }
