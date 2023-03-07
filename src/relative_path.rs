@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::PathConfig;
 
+/// Represents a relative Path starting from the root of the storage.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RelativePathBuf {
     inner: PathBuf,
@@ -21,6 +22,7 @@ impl RelativePathBuf {
             .map_err(Box::from)
     }
 
+    /// Returns the absolute for the given [PathConfig]
     pub fn absolute(&self, path_config: &PathConfig) -> crate::Result<PathBuf> {
         path_config
             .path

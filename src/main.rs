@@ -1,5 +1,5 @@
 use clap::{App, Arg};
-use iron_carrier::{config::Config, constants::VERSION, leak::Leak, validation::Verified};
+use iron_carrier::{config::Config, constants::VERSION, leak::Leak, validation::Validated};
 use std::{path::PathBuf, process::exit};
 
 #[tokio::main]
@@ -52,7 +52,7 @@ async fn main() {
     };
 }
 
-fn get_config(config_path: Option<&str>) -> Verified<Config> {
+fn get_config(config_path: Option<&str>) -> Validated<Config> {
     let config = match config_path {
         Some(config) => config.into(),
         None => get_project_dir().join("config.toml"),

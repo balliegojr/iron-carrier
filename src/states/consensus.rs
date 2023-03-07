@@ -68,7 +68,7 @@ impl Step for Consensus {
         // If the candidate receives "yes" votes from every other peer, it becomes a leader and
         // transition to the next state
 
-        let mut deadline = tokio::time::Instant::now() + Duration::from_millis(get_timeout());
+        let mut deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
         let mut term = ElectionTerm::default();
 
         shared_state
@@ -93,7 +93,7 @@ impl Step for Consensus {
 
                     log::debug!("Requested vote for {}", term.participants);
 
-                    deadline = tokio::time::Instant::now() + Duration::from_millis(get_timeout());
+                    deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
                 }
                 Some((peer_id, network_event)) = shared_state.connection_handler.next_event() => {
                     match network_event {
@@ -161,7 +161,7 @@ impl ElectionTerm {
     }
 }
 
-fn get_timeout() -> u64 {
+fn random_wait_time() -> u64 {
     let mut rng = rand::thread_rng();
     rng.gen_range(100..250)
 }
