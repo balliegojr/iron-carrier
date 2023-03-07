@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt::Display, future, str::FromStr, time::Duration};
+use std::{collections::HashSet, future, str::FromStr, time::Duration};
 
 use crate::{
     config::Config,
@@ -10,26 +10,8 @@ use crate::{
 
 use super::{ConnectAllPeers, Consensus, DiscoverPeers, FullSyncFollower, FullSyncLeader};
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Daemon {}
-
-impl Daemon {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Display for Daemon {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Daemon")
-    }
-}
-
-impl std::fmt::Debug for Daemon {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Daemon").finish()
-    }
-}
 
 impl State for Daemon {
     type Output = ();

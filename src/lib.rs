@@ -155,7 +155,7 @@ pub async fn start_daemon(
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
         .and_then(FullSync::new)
-        .then_default_to(states::Daemon::new)
+        .then_default_to(states::Daemon::default)
         .execute(&shared_state)
         .await?;
 
