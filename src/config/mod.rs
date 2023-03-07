@@ -7,7 +7,7 @@ use std::{
     str::FromStr,
 };
 
-use crate::{hash_helper, validation::Unverified, IronCarrierError};
+use crate::{hash_helper, validation::Unvalidated, IronCarrierError};
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, PickFirst};
 
@@ -81,7 +81,7 @@ impl Config {
     /// [Ok]`(`[Config]`)` if successful  
     /// [IronCarrierError::ConfigFileNotFound] if the provided path doesn't exists   
     /// [IronCarrierError::ConfigFileIsInvalid] if the provided configuration is not valid   
-    pub fn new(config_path: &Path) -> crate::Result<Unverified<Self>> {
+    pub fn new(config_path: &Path) -> crate::Result<Unvalidated<Self>> {
         log::debug!("reading config file {:?}", config_path);
 
         read_to_string(config_path)?.parse()
@@ -118,14 +118,14 @@ impl Config {
     }
 }
 
-impl Unverified<Config> {}
+impl Unvalidated<Config> {}
 
-impl FromStr for Unverified<Config> {
+impl FromStr for Unvalidated<Config> {
     type Err = Box<dyn Error + Send + Sync>;
 
     fn from_str(content: &str) -> Result<Self, Self::Err> {
         Ok(toml::from_str::<Config>(content).map(|c| {
-            Unverified::new(
+            Unvalidated::new(
                 c.with_node_id()
                     .with_non_empty_group()
                     .with_correct_log_path(),
@@ -228,7 +228,7 @@ mod tests {
         "#
         .to_owned();
 
-        let config: Unverified<Config> = config_content.parse()?;
+        let config: Unvalidated<Config> = config_content.parse()?;
         assert_eq!(config.peers, Some(vec!["127.0.0.1:8888".to_owned()]));
 
         let storages = &config.storages;

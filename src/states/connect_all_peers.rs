@@ -27,7 +27,9 @@ impl Step for ConnectAllPeers {
     type Output = ();
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
-        tokio::time::sleep(std::time::Duration::from_millis(get_timeout())).await;
+        // prevent colision when multiple needs start at the same time
+        // this is an issue when running the tests, unlikely to be an issue for normal operation
+        tokio::time::sleep(std::time::Duration::from_millis(random_wait_time())).await;
 
         let connection_handler = shared_state.connection_handler;
         let handles = self
@@ -50,7 +52,7 @@ impl Step for ConnectAllPeers {
     }
 }
 
-fn get_timeout() -> u64 {
+fn random_wait_time() -> u64 {
     let mut rng = rand::thread_rng();
     rng.gen_range(150..500)
 }

@@ -16,7 +16,7 @@ use states::FullSync;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use transaction_log::TransactionLog;
-use validation::Verified;
+use validation::Validated;
 
 pub mod config;
 use config::Config;
@@ -92,7 +92,7 @@ impl From<bincode::Error> for IronCarrierError {
 
 #[derive(Clone, Copy)]
 pub struct SharedState {
-    config: &'static Verified<Config>,
+    config: &'static Validated<Config>,
     connection_handler: &'static ConnectionHandler<network_events::NetworkEvents>,
     transaction_log: &'static TransactionLog,
 }
@@ -102,7 +102,7 @@ pub struct SharedState {
 // TODO: add sync information to the transaction log (when it was last synched and what nodes
 // participated
 
-pub async fn run_full_sync(config: &'static validation::Verified<config::Config>) -> Result<()> {
+pub async fn run_full_sync(config: &'static validation::Validated<config::Config>) -> Result<()> {
     let connection_handler = network::ConnectionHandler::new(config).await?.leak();
     let transaction_log = transaction_log::TransactionLog::load(&config.log_path)
         .await?
@@ -130,7 +130,7 @@ pub async fn run_full_sync(config: &'static validation::Verified<config::Config>
 }
 
 pub async fn start_daemon(
-    config: &'static validation::Verified<config::Config>,
+    config: &'static validation::Validated<config::Config>,
     when_sync_done: Option<Sender<()>>,
 ) -> Result<()> {
     log::trace!("My id is {}", config.node_id);

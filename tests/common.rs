@@ -11,7 +11,7 @@ use std::{
 
 use iron_carrier::config::Config;
 use iron_carrier::leak::Leak;
-use iron_carrier::validation::{Unverified, Verified};
+use iron_carrier::validation::{Unvalidated, Validated};
 use rand::distributions::{Alphanumeric, Standard};
 use rand::Rng;
 
@@ -39,7 +39,7 @@ pub fn generate_configs(
     initial_port: u16,
     nodes: u16,
     storages: usize,
-) -> Vec<&'static Verified<Config>> {
+) -> Vec<&'static Validated<Config>> {
     assert!(nodes > 1);
 
     let final_port = initial_port + nodes;
@@ -83,7 +83,7 @@ peers = [
             );
 
             config
-                .parse::<Unverified<Config>>()
+                .parse::<Unvalidated<Config>>()
                 .and_then(|config| config.validate())
                 .unwrap()
                 .leak()

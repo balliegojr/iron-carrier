@@ -221,7 +221,7 @@ pub fn is_special_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::{leak::Leak, validation::Unverified};
+    use crate::{leak::Leak, validation::Unvalidated};
 
     use super::*;
 
@@ -231,7 +231,7 @@ mod tests {
 [storages]
 a = "./src/"
 "#
-        .parse::<Unverified<Config>>()?
+        .parse::<Unvalidated<Config>>()?
         .leak();
 
         let storage = config.storages.get("a").unwrap();

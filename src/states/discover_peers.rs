@@ -24,6 +24,7 @@ impl Step for DiscoverPeers {
             .with_max_elapsed_time(Some(Duration::from_secs(30)))
             .build();
 
+        // this retry is here in case the network card isn't ready when initializing the daemon
         let discovery = backoff::future::retry(backoff, || async {
             crate::network::service_discovery::get_service_discovery(shared_state.config)
                 .await
@@ -33,6 +34,7 @@ impl Step for DiscoverPeers {
 
         let mut addresses = match discovery {
             Some(discovery) => {
+                // Wait for a while to discover peers in the network
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 crate::network::service_discovery::get_peers(
                     &discovery,
@@ -44,11 +46,9 @@ impl Step for DiscoverPeers {
         };
 
         if let Some(peers) = &shared_state.config.peers {
-            for peer in peers {
-                if let Ok(addrs) = peer.to_socket_addrs() {
-                    for addr in addrs {
-                        addresses.entry(addr).or_insert(None);
-                    }
+            for addrs in peers.iter().filter_map(|p| p.to_socket_addrs().ok()) {
+                for addr in addrs {
+                    addresses.entry(addr).or_insert(None);
                 }
             }
         }
