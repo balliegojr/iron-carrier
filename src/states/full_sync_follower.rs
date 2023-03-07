@@ -4,7 +4,7 @@ use crate::{
     file_transfer::TransferFiles,
     ignored_files::IgnoredFilesCache,
     network_events::{NetworkEvents, StorageIndexStatus, Synchronization, Transition},
-    state_machine::Step,
+    state_machine::State,
     SharedState,
 };
 
@@ -25,10 +25,10 @@ impl FullSyncFollower {
     }
 }
 
-impl Step for FullSyncFollower {
+impl State for FullSyncFollower {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         log::info!("full sync starting....");
 
         let mut ignored_files_cache = IgnoredFilesCache::default();
@@ -120,6 +120,6 @@ impl Step for FullSyncFollower {
 
         log::info!("full sync end....");
 
-        Ok(Some(()))
+        Ok(())
     }
 }

@@ -4,9 +4,9 @@ use crate::{
     config::PathConfig,
     network_events::{NetworkEvents, StorageIndexStatus, Synchronization},
     relative_path::RelativePathBuf,
-    state_machine::Step,
+    state_machine::State,
     storage::{self, FileInfo, Storage},
-    SharedState,
+    IronCarrierError, SharedState,
 };
 
 #[derive(Debug)]
@@ -75,10 +75,10 @@ impl BuildMatchingFiles {
     }
 }
 
-impl Step for BuildMatchingFiles {
+impl State for BuildMatchingFiles {
     type Output = (Vec<u64>, MatchedFilesIter);
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         let storage = storage::get_storage_info(
             self.storage_name,
             self.storage_config,
@@ -88,7 +88,7 @@ impl Step for BuildMatchingFiles {
         let peers_storages = self.wait_storage_from_peers(shared_state, &storage).await?;
         if peers_storages.is_empty() {
             log::trace!("Storage already in sync with all peers");
-            return Ok(None);
+            return Err(IronCarrierError::AbortExecution.into());
         }
 
         let peers: Vec<u64> = peers_storages.keys().copied().collect();
@@ -97,10 +97,10 @@ impl Step for BuildMatchingFiles {
             self.storage_name
         );
 
-        Ok(Some((
+        Ok((
             peers,
             match_files(storage, peers_storages, shared_state.config.node_id_hashed),
-        )))
+        ))
     }
 }
 

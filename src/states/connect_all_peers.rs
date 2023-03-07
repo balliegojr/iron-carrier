@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 
 use rand::Rng;
 
-use crate::{state_machine::Step, SharedState};
+use crate::{state_machine::State, SharedState};
 
 #[derive(Debug)]
 pub struct ConnectAllPeers {
@@ -23,10 +23,14 @@ impl Display for ConnectAllPeers {
     }
 }
 
-impl Step for ConnectAllPeers {
+impl State for ConnectAllPeers {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Option<Self::Output>> {
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+        if self.addresses_to_connect.is_empty() {
+            return Ok(());
+        }
+
         // prevent colision when multiple needs start at the same time
         // this is an issue when running the tests, unlikely to be an issue for normal operation
         tokio::time::sleep(std::time::Duration::from_millis(random_wait_time())).await;
@@ -48,7 +52,7 @@ impl Step for ConnectAllPeers {
             let _ = handle.await;
         }
 
-        Ok(Some(()))
+        Ok(())
     }
 }
 
