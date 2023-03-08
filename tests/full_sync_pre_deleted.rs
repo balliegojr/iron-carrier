@@ -12,7 +12,7 @@ async fn test_sync_deleted_files() {
     const TEST_NAME: &str = "full_sync_pre_deleted";
 
     let _ = std::fs::remove_dir_all(format!("/tmp/{TEST_NAME}"));
-    let configs = common::generate_configs(TEST_NAME, 8100, 2, 1);
+    let configs = common::generate_configs(TEST_NAME, common::FULL_SYNC_PRE_DELETED_PORT, 2, 1);
 
     let files = common::generate_files(&configs[1].storages["storage_0"].path, "del");
     let transaction_log = TransactionLog::load(&configs[0].log_path)

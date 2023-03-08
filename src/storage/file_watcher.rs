@@ -71,6 +71,7 @@ pub fn get_file_watcher(
         let mut ignored_files_cache = IgnoredFilesCache::default();
 
         while let Some(event) = rx.recv().await {
+            log::debug!("File Watcher event: {event:?}");
             match register_event(
                 &storages,
                 config,
@@ -130,28 +131,36 @@ async fn register_event(
             notify::event::RenameMode::Both,
         )) => {
             if let (Some(src_path), Some(dst_path)) = (&src, &dst) {
+                let timestamp = dst_path
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .map(super::system_time_to_secs)
+                    .ok();
+
                 for file_moved in list_files_moved_pair(
                     storage_config,
                     dst_path.to_path_buf(),
                     src_path.to_path_buf(),
                 )? {
-                    write_moved_event(transaction_log, ignored_files, &storage, file_moved).await
+                    write_moved_event(
+                        transaction_log,
+                        ignored_files,
+                        &storage,
+                        file_moved,
+                        timestamp,
+                    )
+                    .await
                 }
             }
         }
-        // Moved From events represent a move to outside the watcher directory, we consider this a
-        // delete.
-        //
-        // Remove events does have a distinction between files and directories, but I think it is
-        // simpler to handle both with the same code
         notify::EventKind::Modify(notify::event::ModifyKind::Name(
             notify::event::RenameMode::From,
         ))
-        | notify::EventKind::Remove(notify::event::RemoveKind::File)
-        | notify::EventKind::Remove(notify::event::RemoveKind::Folder) => {
+        | notify::EventKind::Remove(notify::event::RemoveKind::File) => {
             if let Some(path) = &src {
-                for path in get_list_of_files(storage_config, path.to_path_buf(), ignored_files)? {
-                    write_deleted_event(transaction_log, &storage, &path).await;
+                let relative_path = RelativePathBuf::new(storage_config, path.to_path_buf())?;
+                if !ignored_files.is_ignored(&relative_path) {
+                    write_deleted_event(transaction_log, &storage, &relative_path).await;
                 }
             }
         }
@@ -202,6 +211,7 @@ async fn write_moved_event(
     ignored_files: &IgnoredFiles,
     storage: &str,
     file_moved: MovedFilePair,
+    timestamp: Option<u64>,
 ) {
     if ignored_files.is_ignored(&file_moved.from) {
         return;
@@ -221,59 +231,13 @@ async fn write_moved_event(
             LogEntry::new(
                 EntryType::Move,
                 EntryStatus::Done,
-                std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
+                timestamp.unwrap_or_else(|| std::time::UNIX_EPOCH.elapsed().unwrap().as_secs()),
             ),
         )
         .await
     {
         log::error!("Error writing event {err}");
     }
-}
-
-/// If `root_file` is a path to file, return a vec with just that path.  
-/// If `root_file` is a path to a directory, traverse the directory and return a vec with all the
-/// files inside the directory.
-///
-/// Ignored paths are excluded from the result
-fn get_list_of_files(
-    storage: &PathConfig,
-    root_path: PathBuf,
-    ignored_files: &IgnoredFiles,
-) -> crate::Result<Vec<RelativePathBuf>> {
-    if root_path.is_file() {
-        let relative_path = RelativePathBuf::new(storage, root_path)?;
-        if ignored_files.is_ignored(&relative_path) {
-            return Ok(vec![]);
-        } else {
-            return Ok(vec![relative_path]);
-        }
-    }
-
-    let mut paths = vec![root_path];
-    let mut files = vec![];
-
-    while let Some(path) = paths.pop() {
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                paths.push(path);
-                continue;
-            }
-
-            let relative_path = RelativePathBuf::new(storage, path)?;
-            if ignored_files.is_ignored(&relative_path) {
-                continue;
-            }
-
-            files.push(relative_path);
-        }
-    }
-
-    files.sort();
-
-    Ok(files)
 }
 
 /// If `dst_file` is a path to file, return a vec with the pair (dst_path and src_path)

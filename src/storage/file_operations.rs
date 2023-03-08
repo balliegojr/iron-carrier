@@ -44,6 +44,13 @@ pub async fn move_file<'b>(
         return Err(Box::new(IronCarrierError::InvalidOperation));
     }
 
+    if let Some(parent) = dest_path_abs.parent() {
+        if !parent.exists() {
+            log::debug!("creating folders {:?}", parent);
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
     log::debug!("moving file {src_path_abs:?} to {dest_path_abs:?}");
     tokio::fs::rename(&src_path_abs, &dest_path_abs).await?;
     fix_times_and_permissions(file, config)?;

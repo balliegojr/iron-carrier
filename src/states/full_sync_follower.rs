@@ -5,6 +5,7 @@ use crate::{
     ignored_files::IgnoredFilesCache,
     network_events::{NetworkEvents, StorageIndexStatus, Synchronization, Transition},
     state_machine::State,
+    storage::FileInfo,
     SharedState,
 };
 
@@ -39,80 +40,23 @@ impl State for FullSyncFollower {
                 continue;
             }
 
-            match ev {
-                NetworkEvents::Synchronization(Synchronization::QueryStorageIndex {
-                    name,
-                    hash,
-                }) => {
-                    log::debug!("Queried about {name} storage");
-                    let storage_index = match shared_state.config.storages.get(&name) {
-                        Some(storage_config) => {
-                            match crate::storage::get_storage_info(
-                                &name,
-                                storage_config,
-                                shared_state.transaction_log,
-                            )
-                            .await
-                            {
-                                Ok(storage) => {
-                                    if storage.hash != hash {
-                                        StorageIndexStatus::SyncNecessary(storage.files)
-                                    } else {
-                                        StorageIndexStatus::StorageInSync
-                                    }
-                                }
-                                Err(err) => {
-                                    log::error!("There was an error reading the storage: {err}");
-                                    StorageIndexStatus::StorageMissing
-                                }
-                            }
-                        }
-                        None => StorageIndexStatus::StorageMissing,
-                    };
-
-                    shared_state
-                        .connection_handler
-                        .send_to(
-                            Synchronization::ReplyStorageIndex {
-                                name,
-                                storage_index,
-                            }
-                            .into(),
-                            self.sync_leader,
-                        )
-                        .await?;
+            match execute_event(
+                shared_state,
+                ev,
+                self.sync_leader,
+                &mut ignored_files_cache,
+                &mut files_to_send,
+            )
+            .await
+            {
+                Ok(should_continue) => {
+                    if !should_continue {
+                        break;
+                    }
                 }
-                NetworkEvents::Synchronization(Synchronization::SendFileTo { file, nodes }) => {
-                    files_to_send.push((file, nodes));
+                Err(err) => {
+                    log::error!("Error executing event {err}");
                 }
-                NetworkEvents::Synchronization(Synchronization::DeleteFile { file }) => {
-                    crate::storage::file_operations::delete_file(
-                        shared_state.config,
-                        shared_state.transaction_log,
-                        &file,
-                        &mut ignored_files_cache,
-                    )
-                    .await?;
-                }
-                NetworkEvents::Synchronization(Synchronization::MoveFile { file }) => {
-                    crate::storage::file_operations::move_file(
-                        shared_state.config,
-                        shared_state.transaction_log,
-                        &file,
-                        &mut ignored_files_cache,
-                    )
-                    .await?;
-                }
-                NetworkEvents::Synchronization(Synchronization::StartTransferingFiles) => {
-                    TransferFiles::new(
-                        std::mem::take(&mut files_to_send),
-                        HashSet::from([self.sync_leader]),
-                    )
-                    .execute(shared_state)
-                    .await?;
-                }
-                NetworkEvents::RequestTransition(Transition::Done) => break,
-                _ => continue,
             }
         }
 
@@ -122,4 +66,85 @@ impl State for FullSyncFollower {
 
         Ok(())
     }
+}
+
+async fn execute_event(
+    shared_state: &SharedState,
+    ev: NetworkEvents,
+    sync_leader: u64,
+
+    ignored_files_cache: &mut IgnoredFilesCache,
+    files_to_send: &mut Vec<(FileInfo, HashSet<u64>)>,
+) -> crate::Result<bool> {
+    match ev {
+        NetworkEvents::Synchronization(Synchronization::QueryStorageIndex { name, hash }) => {
+            log::debug!("Queried about {name} storage");
+            let storage_index = match shared_state.config.storages.get(&name) {
+                Some(storage_config) => {
+                    match crate::storage::get_storage_info(
+                        &name,
+                        storage_config,
+                        shared_state.transaction_log,
+                    )
+                    .await
+                    {
+                        Ok(storage) => {
+                            if storage.hash != hash {
+                                StorageIndexStatus::SyncNecessary(storage.files)
+                            } else {
+                                StorageIndexStatus::StorageInSync
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("There was an error reading the storage: {err}");
+                            StorageIndexStatus::StorageMissing
+                        }
+                    }
+                }
+                None => StorageIndexStatus::StorageMissing,
+            };
+
+            shared_state
+                .connection_handler
+                .send_to(
+                    Synchronization::ReplyStorageIndex {
+                        name,
+                        storage_index,
+                    }
+                    .into(),
+                    sync_leader,
+                )
+                .await?;
+        }
+        NetworkEvents::Synchronization(Synchronization::SendFileTo { file, nodes }) => {
+            files_to_send.push((file, nodes));
+        }
+        NetworkEvents::Synchronization(Synchronization::DeleteFile { file }) => {
+            crate::storage::file_operations::delete_file(
+                shared_state.config,
+                shared_state.transaction_log,
+                &file,
+                ignored_files_cache,
+            )
+            .await?;
+        }
+        NetworkEvents::Synchronization(Synchronization::MoveFile { file }) => {
+            crate::storage::file_operations::move_file(
+                shared_state.config,
+                shared_state.transaction_log,
+                &file,
+                ignored_files_cache,
+            )
+            .await?;
+        }
+        NetworkEvents::Synchronization(Synchronization::StartTransferingFiles) => {
+            TransferFiles::new(std::mem::take(files_to_send), HashSet::from([sync_leader]))
+                .execute(shared_state)
+                .await?;
+        }
+        NetworkEvents::RequestTransition(Transition::Done) => return Ok(false),
+        _ => {}
+    }
+
+    Ok(true)
 }
