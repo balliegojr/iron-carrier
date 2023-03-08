@@ -176,14 +176,6 @@ impl State for TransferFiles {
                     }
                 }
             }
-
-            log::debug!(
-                "{} - p{} - a{} - s{}",
-                shared_state.config.node_id,
-                self.peers_with_transfers.len(),
-                active_transfers.len(),
-                self.files_to_send.len()
-            );
         }
 
         log::debug!("Finishing file transfer");

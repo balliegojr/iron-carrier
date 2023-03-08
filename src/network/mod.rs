@@ -99,6 +99,7 @@ impl ConnectionHandler<NetworkEvents> {
     pub async fn send_to(&self, event: NetworkEvents, peer_id: u64) -> crate::Result<()> {
         if let Some(connection) = self.connections.lock().await.get_mut(&peer_id) {
             let bytes = bincode::serialize(&event)?;
+            connection.write_u8(0).await?;
             connection.write_u32(bytes.len() as u32).await?;
             connection.write_all(&bytes).await?;
         }
@@ -114,6 +115,7 @@ impl ConnectionHandler<NetworkEvents> {
         let bytes = bincode::serialize(&event)?;
         let mut connections = self.connections.lock().await;
         for connection in connections.connections_mut() {
+            connection.write_u8(0).await?;
             connection.write_u32(bytes.len() as u32).await?;
             connection.write_all(&bytes).await?;
         }
@@ -130,8 +132,30 @@ impl ConnectionHandler<NetworkEvents> {
         let mut connections = self.connections.lock().await;
         for node in nodes {
             if let Some(connection) = connections.get_mut(node) {
+                connection.write_u8(0).await?;
                 connection.write_u32(bytes.len() as u32).await?;
                 connection.write_all(&bytes).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn stream_to(
+        &self,
+        transfer_id: u64,
+        block_index: u64,
+        block: &[u8],
+        nodes: impl Iterator<Item = &u64>,
+    ) -> crate::Result<()> {
+        let mut connections = self.connections.lock().await;
+        for node in nodes {
+            if let Some(connection) = connections.get_mut(node) {
+                connection.write_u8(1).await?;
+                connection.write_u64(transfer_id).await?;
+                connection.write_u64(block_index).await?;
+                connection.write_u32(block.len() as u32).await?;
+                connection.write_all(block).await?;
             }
         }
 
