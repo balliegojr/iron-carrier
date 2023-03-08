@@ -139,7 +139,6 @@ impl FileSender {
         }
 
         let file_size = self.file.file_size()?;
-        // FIXME: use a proper streaming for this, without bincode
         for (block_index, nodes) in block_nodes.into_iter() {
             let position = block_index * self.block_size;
             let bytes_to_read = cmp::min(self.block_size, file_size - position);
@@ -155,16 +154,7 @@ impl FileSender {
                 .await?;
 
             connection_handler
-                .broadcast_to(
-                    NetworkEvents::FileTransfer(
-                        self.transfer_id,
-                        FileTransfer::TransferBlock {
-                            block_index,
-                            block: block.into(),
-                        },
-                    ),
-                    nodes.iter(),
-                )
+                .stream_to(self.transfer_id, block_index, &block, nodes.iter())
                 .await?;
         }
 
