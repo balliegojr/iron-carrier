@@ -91,6 +91,7 @@ pub async fn walk_path(
             }
 
             let permissions = get_permissions(&metadata);
+            let created_at = metadata.created().map(system_time_to_secs)?;
             let modified_at = metadata.modified().map(system_time_to_secs)?;
             let size = metadata.len();
 
@@ -98,6 +99,7 @@ pub async fn walk_path(
                 storage_name.to_owned(),
                 relative_path,
                 modified_at,
+                created_at,
                 size,
                 permissions,
             );

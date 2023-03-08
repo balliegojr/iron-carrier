@@ -18,6 +18,12 @@ use rand::Rng;
 const FOLDERS: usize = 1;
 const FILES_PER_FOLDER: usize = 2;
 
+pub const FULL_SYNC_PORT: u16 = 8090;
+pub const PARTIAL_SYNC_PORT: u16 = 8095;
+pub const FULL_SYNC_PRE_DELETED_PORT: u16 = 8100;
+pub const TRUNCATE_PORT: u16 = 8105;
+pub const FOLDER_OPERATION_PORT: u16 = 8110;
+
 pub fn enable_logs() {
     let verbosity: usize = std::env::var("LOG_LEVEL")
         .unwrap_or_else(|_| "0".to_string())

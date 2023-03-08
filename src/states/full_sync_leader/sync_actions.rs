@@ -241,6 +241,7 @@ mod tests {
             1,
             with_file_type(FileInfoType::Existent {
                 modified_at: 0,
+                created_at: 0,
                 size: 0,
             }),
         );
@@ -299,6 +300,7 @@ mod tests {
             0,
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
+                created_at: 0,
                 size: 0,
             }),
         );
@@ -327,6 +329,7 @@ mod tests {
             1,
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
+                created_at: 0,
                 size: 0,
             }),
         );
@@ -334,6 +337,7 @@ mod tests {
             0,
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
+                created_at: 0,
                 size: 0,
             }),
         );
@@ -358,6 +362,7 @@ mod tests {
             0,
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
+                created_at: 0,
                 size: 0,
             }),
         );
@@ -382,6 +387,7 @@ mod tests {
             1,
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
+                created_at: 0,
                 size: 0,
             }),
         );
@@ -424,6 +430,7 @@ mod tests {
             1,
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
+                created_at: 0,
                 size: 0,
             }),
         );
@@ -431,6 +438,7 @@ mod tests {
             0,
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
+                created_at: 0,
                 size: 0,
             }),
         );
@@ -466,6 +474,7 @@ mod tests {
             1,
             with_file_type(FileInfoType::Existent {
                 modified_at: 0,
+                created_at: 0,
                 size: 0,
             }),
         );

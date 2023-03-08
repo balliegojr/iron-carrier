@@ -31,7 +31,9 @@ pub fn calculate_file_hash_digest(file: &FileInfo, digest: &mut Digest<u64>) {
     });
 
     match &file.info_type {
-        FileInfoType::Existent { modified_at, size } => {
+        FileInfoType::Existent {
+            modified_at, size, ..
+        } => {
             digest.update(&modified_at.to_le_bytes());
             digest.update(&size.to_le_bytes());
         }

@@ -14,8 +14,12 @@ pub struct RelativePathBuf {
 }
 
 impl RelativePathBuf {
-    pub fn new(path_config: &PathConfig, path: PathBuf) -> crate::Result<Self> {
-        path.strip_prefix(&path_config.path)
+    pub fn new(path_config: &PathConfig, mut path: PathBuf) -> crate::Result<Self> {
+        if !path.has_root() {
+            path = path.canonicalize()?;
+        }
+
+        path.strip_prefix(&path_config.path.canonicalize()?)
             .map(|inner| Self {
                 inner: inner.to_path_buf(),
             })

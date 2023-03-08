@@ -22,7 +22,11 @@ pub struct FileInfo {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum FileInfoType {
     /// Represent an existing file in the storage
-    Existent { modified_at: u64, size: u64 },
+    Existent {
+        modified_at: u64,
+        created_at: u64,
+        size: u64,
+    },
 
     /// Represent a deleted file, this information comes from the transaction log
     Deleted { deleted_at: u64 },
@@ -39,13 +43,18 @@ impl FileInfo {
         storage: String,
         path: RelativePathBuf,
         modified_at: u64,
+        created_at: u64,
         size: u64,
         permissions: u32,
     ) -> Self {
         FileInfo {
             storage,
             path,
-            info_type: FileInfoType::Existent { modified_at, size },
+            info_type: FileInfoType::Existent {
+                modified_at,
+                created_at,
+                size,
+            },
             permissions,
         }
     }
@@ -81,10 +90,13 @@ impl FileInfo {
     pub fn is_out_of_sync(&self, other: &FileInfo) -> bool {
         match (&self.info_type, &other.info_type) {
             (
-                FileInfoType::Existent { modified_at, size },
+                FileInfoType::Existent {
+                    modified_at, size, ..
+                },
                 FileInfoType::Existent {
                     modified_at: other_modified_at,
                     size: other_size,
+                    ..
                 },
             ) => modified_at != other_modified_at || size != other_size,
             (FileInfoType::Deleted { .. }, FileInfoType::Deleted { .. }) => false,
@@ -126,13 +138,21 @@ impl FileInfo {
     /// Compare the dates for two files, regardless of entry type
     pub fn date_cmp(&self, other: &Self) -> std::cmp::Ordering {
         let self_date = match self.info_type {
-            FileInfoType::Existent { modified_at, .. } => modified_at,
+            FileInfoType::Existent {
+                modified_at,
+                created_at,
+                ..
+            } => modified_at.max(created_at),
             FileInfoType::Deleted { deleted_at } => deleted_at,
             FileInfoType::Moved { moved_at, .. } => moved_at,
         };
 
         let other_date = match other.info_type {
-            FileInfoType::Existent { modified_at, .. } => modified_at,
+            FileInfoType::Existent {
+                modified_at,
+                created_at,
+                ..
+            } => modified_at.max(created_at),
             FileInfoType::Deleted { deleted_at } => deleted_at,
             FileInfoType::Moved { moved_at, .. } => moved_at,
         };
@@ -144,12 +164,14 @@ impl FileInfo {
         let metadata = self.get_absolute_path(config)?.metadata()?;
 
         let modified_at = metadata.modified().map(system_time_to_secs)?;
+        let created_at = metadata.created().map(system_time_to_secs)?;
         let size = metadata.len();
 
         Ok(Self::existent(
             self.storage.clone(),
             self.path.clone(),
             modified_at,
+            created_at,
             size,
             get_permissions(&metadata),
         ))
@@ -209,6 +231,7 @@ mod tests {
             path: "./some_file_path".into(),
             info_type: FileInfoType::Existent {
                 modified_at: 0,
+                created_at: 0,
                 size: 0,
             },
             permissions: 0,
@@ -228,6 +251,7 @@ mod tests {
             permissions: 0,
             info_type: FileInfoType::Existent {
                 modified_at: 0,
+                created_at: 0,
                 size: 100,
             },
         };
@@ -237,12 +261,14 @@ mod tests {
 
         other_file.info_type = FileInfoType::Existent {
             modified_at: 1,
+            created_at: 1,
             size: 100,
         };
         assert!(file_info.is_out_of_sync(&other_file));
 
         other_file.info_type = FileInfoType::Existent {
             modified_at: 0,
+            created_at: 1,
             size: 101,
         };
         assert!(file_info.is_out_of_sync(&other_file));
