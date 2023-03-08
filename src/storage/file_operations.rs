@@ -39,8 +39,8 @@ pub async fn move_file<'b>(
 
     let src_path_abs = src_path.absolute(path_config)?;
 
-    if dest_path_abs.exists() || !src_path.exists() {
-        log::error!("can't move {src_path_abs:?} to {dest_path_abs:?}");
+    if dest_path_abs.exists() || !src_path_abs.exists() {
+        log::error!("failed to move {src_path_abs:?} to {dest_path_abs:?}");
         return Err(Box::new(IronCarrierError::InvalidOperation));
     }
 
