@@ -1,46 +1,34 @@
-use clap::{App, Arg};
+use clap::Parser;
 use iron_carrier::{config::Config, constants::VERSION, leak::Leak, validation::Validated};
 use std::{path::PathBuf, process::exit};
 
+#[derive(Parser)]
+#[command(name="Iron Carrier", version=VERSION, author="Ilson Balliego <ilson.balliego@gmail.com>", about="Synchronize your files")]
+struct Cli {
+    #[arg(value_name = "CONFIG", help = "Path to the config file to use")]
+    config: Option<String>,
+
+    #[arg(short, long, help = "Starts on daemon mode")]
+    daemon: bool,
+
+    #[arg(short, action = clap::ArgAction::Count, help = "Sets the level of verbosity")]
+    verbose: u8,
+}
+
 #[tokio::main]
 async fn main() {
-    let matches = App::new("Iron Carrier")
-        .version(VERSION)
-        .author("Ilson Roberto Balliego Junior <ilson.balliego@gmail.com>")
-        .about("Synchronize your files")
-        .arg(
-            Arg::with_name("config")
-                .help("Sets the config file to use")
-                .value_name("Config")
-                .required(false)
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("v")
-                .short("v")
-                .multiple(true)
-                .help("Sets the level of verbosity"),
-        )
-        .arg(
-            Arg::with_name("daemon")
-                .short("d")
-                .required(false)
-                .help("Runs as a daemon"),
-        )
-        .get_matches();
-
-    let verbosity = matches.occurrences_of("v") as usize;
+    let cli = Cli::parse();
 
     stderrlog::new()
         .module(module_path!())
-        .verbosity(verbosity)
+        .verbosity(cli.verbose as usize)
         .timestamp(stderrlog::Timestamp::Second)
         .init()
         .unwrap();
 
-    let config = get_config(matches.value_of("config")).leak();
+    let config = get_config(cli.config.as_deref()).leak();
 
-    let execution_result = if matches.is_present("daemon") {
+    let execution_result = if cli.daemon {
         iron_carrier::start_daemon(config, None).await
     } else {
         iron_carrier::run_full_sync(config).await

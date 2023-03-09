@@ -1,4 +1,4 @@
-use std::{collections::HashSet, future, str::FromStr, time::Duration};
+use std::{collections::HashSet, future, pin::pin, str::FromStr, time::Duration};
 
 use crate::{
     config::Config,
@@ -47,8 +47,7 @@ impl State for DaemonEventListener {
             Duration::from_secs(shared_state.config.delay_watcher_events),
         );
 
-        let full_sync_deadline = next_cron_schedule(shared_state.config);
-        tokio::pin!(full_sync_deadline);
+        let mut full_sync_deadline = pin!(next_cron_schedule(shared_state.config));
 
         loop {
             tokio::select! {
