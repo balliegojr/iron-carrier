@@ -11,3 +11,6 @@ install-as-user: install-bin
 	systemctl enable --user iron-carrier.service
 	systemctl start --user iron-carrier.service
 
+build-rasp:
+    ~/.cargo/bin/cross build --release --target=armv7-unknown-linux-gnueabihf
+
