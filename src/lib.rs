@@ -36,6 +36,7 @@ mod storage;
 
 mod file_transfer;
 mod state_machine;
+pub use state_machine::StateMachineError;
 mod states;
 
 pub mod transaction_log;
@@ -47,8 +48,6 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 /// Error types
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum IronCarrierError {
-    #[error("Execution aborted")]
-    AbortExecution,
     /// Configuration file was not found
     #[error("Configuration file not found on provided path")]
     ConfigFileNotFound,

@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     ignored_files::IgnoredFilesCache,
     network_events::Synchronization,
-    state_machine::State,
+    state_machine::{State, StateMachineError},
     storage::{FileInfo, FileInfoType},
-    IronCarrierError, SharedState,
+    SharedState,
 };
 
 use super::matching_files::MatchedFilesIter;
@@ -129,7 +129,7 @@ impl State for DispatchActions {
         }
 
         if !file_transfer_required {
-            return Err(IronCarrierError::AbortExecution.into());
+            Err(StateMachineError::Abort)?
         }
 
         shared_state
