@@ -1,6 +1,6 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const PEER_IDENTIFICATION_TIMEOUT: u64 = 1;
+pub const PEER_IDENTIFICATION_TIMEOUT: u64 = 5;
 pub const PEER_STALE_CONNECTION: u64 = 120;
 pub const IGNORE_FILE_NAME: &str = ".ignore";
 

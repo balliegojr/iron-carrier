@@ -66,21 +66,30 @@ impl ConnectionHandler<NetworkEvents> {
             }
         }
 
-        let backoff = backoff::ExponentialBackoffBuilder::new()
-            .with_max_elapsed_time(Some(Duration::from_secs(3)))
-            .build();
+        async fn connect_inner(
+            config: &'static Config,
+            addr: SocketAddr,
+        ) -> crate::Result<Connection> {
+            let backoff = backoff::ExponentialBackoffBuilder::new()
+                .with_max_elapsed_time(Some(Duration::from_secs(3)))
+                .build();
 
-        let transport_stream = backoff::future::retry(backoff, || async {
-            // TODO: add transport layer encryption
-            tokio::net::TcpStream::connect(addr)
+            let transport_stream = backoff::future::retry(backoff, || async {
+                // TODO: add transport layer encryption
+                tokio::net::TcpStream::connect(addr)
+                    .await
+                    .map_err(backoff::Error::from)
+            })
+            .await?;
+
+            connection::identify_outgoing_connection(config, transport_stream)
                 .await
-                .map_err(backoff::Error::from)
-        })
-        .await?;
+                .map_err(Box::from)
+        }
 
         let connection = tokio::time::timeout(
             Duration::from_secs(PEER_IDENTIFICATION_TIMEOUT),
-            connection::identify_outgoing_connection(self.config, transport_stream),
+            connect_inner(self.config, addr),
         )
         .await
         .map_err(|_| IronCarrierError::ConnectionTimeout)??;
