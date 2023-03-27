@@ -35,7 +35,9 @@ async fn main() {
     };
 
     if let Err(e) = execution_result {
-        log::error!("{e}");
+        if !e.is::<iron_carrier::StateMachineError>() {
+            log::error!("{e}");
+        }
         exit(-1)
     };
 }

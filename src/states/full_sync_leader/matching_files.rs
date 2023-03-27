@@ -4,9 +4,9 @@ use crate::{
     config::PathConfig,
     network_events::{NetworkEvents, StorageIndexStatus, Synchronization},
     relative_path::RelativePathBuf,
-    state_machine::State,
+    state_machine::{State, StateMachineError},
     storage::{self, FileInfo, Storage},
-    IronCarrierError, SharedState,
+    SharedState,
 };
 
 #[derive(Debug)]
@@ -88,7 +88,7 @@ impl State for BuildMatchingFiles {
         let peers_storages = self.wait_storage_from_peers(shared_state, &storage).await?;
         if peers_storages.is_empty() {
             log::trace!("Storage already in sync with all peers");
-            return Err(IronCarrierError::AbortExecution.into());
+            Err(StateMachineError::Abort)?
         }
 
         let peers: Vec<u64> = peers_storages.keys().copied().collect();

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     network_events::{self, NetworkEvents},
-    state_machine::State,
-    IronCarrierError, SharedState,
+    state_machine::{State, StateMachineError},
+    SharedState,
 };
 
 /// Possible states that a node can be
@@ -88,7 +88,7 @@ impl State for Consensus {
                         .await?;
 
                     if term.participants == 0 {
-                        return Err(IronCarrierError::AbortExecution.into())
+                        Err(StateMachineError::Abort)?
                     }
 
                     log::debug!("Requested vote for {}", term.participants);

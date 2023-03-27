@@ -3,9 +3,9 @@ use std::{collections::HashSet, future, pin::pin, str::FromStr, time::Duration};
 use crate::{
     config::Config,
     network_events::{NetworkEvents, Transition},
-    state_machine::{State, StateComposer},
+    state_machine::{State, StateComposer, StateMachineError},
     states::FullSync,
-    stream, IronCarrierError, SharedState,
+    stream, SharedState,
 };
 
 use super::{ConnectAllPeers, Consensus, DiscoverPeers, FullSyncFollower, FullSyncLeader};
@@ -63,7 +63,7 @@ impl State for DaemonEventListener {
                         Some(_) => {
                             log::info!("received random event");
                         }
-                        None => return Err(IronCarrierError::AbortExecution.into())
+                        None =>  Err(StateMachineError::Abort)?
                     }
                 }
                 Some(to_sync) = watcher_events.recv() => {

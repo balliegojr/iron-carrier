@@ -1,6 +1,14 @@
 use std::marker::PhantomData;
 
+use thiserror::Error;
+
 use crate::SharedState;
+
+#[derive(Error, Debug)]
+pub enum StateMachineError {
+    #[error("Execution aborted")]
+    Abort,
+}
 
 /// Represent a task or state to be executed
 pub trait State: std::fmt::Debug {
@@ -30,10 +38,11 @@ pub trait StateComposer {
         AndThen {
             previous: self,
             map_fn,
+            _marker: Default::default(),
         }
     }
 
-    fn then_default_to<T, F>(self, loop_fn: F) -> ThenDefault<Self, T, F>
+    fn then_default_to<T, F>(self, loop_fn: F) -> ThenDefault<Self, F>
     where
         Self: State + Sized,
         T: State,
@@ -48,33 +57,15 @@ pub trait StateComposer {
 
 impl<T> StateComposer for T where T: State {}
 
-impl<T> State for Box<T>
-where
-    T: State,
-{
-    type Output = ();
-
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        (*self).execute(shared_state).await?;
-        Ok(())
-    }
-}
-
-pub struct AndThen<T, U, F>
-where
-    T: State,
-    U: State,
-    F: FnOnce(T::Output) -> U,
-{
+pub struct AndThen<T, U, F> {
     previous: T,
     map_fn: F,
+    _marker: PhantomData<U>,
 }
 
 impl<T, U, F> std::fmt::Debug for AndThen<T, U, F>
 where
-    T: State,
-    U: State,
-    F: FnOnce(T::Output) -> U,
+    T: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AndThen")
@@ -129,24 +120,23 @@ where
     }
 }
 
-pub struct ThenDefault<T, U, F>
-where
-    F: FnOnce() -> U,
-{
+pub struct ThenDefault<T, F> {
     previous: T,
     loop_fn: F,
 }
 
-impl<T, U, F> std::fmt::Debug for ThenDefault<T, U, F>
+impl<T, F> std::fmt::Debug for ThenDefault<T, F>
 where
-    F: FnOnce() -> U,
+    T: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Loop").finish()
+        f.debug_struct("ThenDefault")
+            .field("previous", &self.previous)
+            .finish()
     }
 }
 
-impl<T, U, F> State for ThenDefault<T, U, F>
+impl<T, U, F> State for ThenDefault<T, F>
 where
     T: State,
     U: State,
@@ -157,7 +147,9 @@ where
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         log::debug!("Executing {:?}", self.previous);
         if let Err(err) = self.previous.execute(shared_state).await {
-            log::error!("{err}");
+            if !err.is::<StateMachineError>() {
+                log::error!("{err}");
+            }
         };
 
         let next = (self.loop_fn)();
