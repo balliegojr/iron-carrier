@@ -4,7 +4,7 @@ use crate::{
     file_transfer::TransferFiles,
     network_events::Transition,
     state_machine::{State, StateComposer},
-    SharedState,
+    SharedState, StateMachineError,
 };
 use matching_files::BuildMatchingFiles;
 use sync_actions::DispatchActions;
@@ -58,7 +58,9 @@ impl State for FullSyncLeader {
                 .await;
 
             if let Err(err) = sync_result {
-                log::error!("{err}");
+                if !err.is::<StateMachineError>() {
+                    log::error!("{err}");
+                }
             }
         }
 

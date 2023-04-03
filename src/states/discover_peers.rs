@@ -37,7 +37,7 @@ impl State for DiscoverPeers {
                 // Wait for a while to discover peers in the network
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 crate::network::service_discovery::get_peers(
-                    &discovery,
+                    discovery,
                     shared_state.config.group.as_ref(),
                 )
                 .await
