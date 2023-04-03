@@ -60,6 +60,7 @@ impl State for DaemonEventListener {
                         Some((leader_id, NetworkEvents::RequestTransition(Transition::FullSync))) => {
                             return Ok(DaemonEvent::TransitionToFolowerRequest(leader_id))
                         }
+                        Some((_, NetworkEvents::Disconnected)) => {}
                         Some(_) => {
                             log::info!("received random event");
                         }

@@ -94,7 +94,6 @@ impl TransferFiles {
 
             let (transfer_id, sender) =
                 send_file(*shared_state, file, nodes, when_done_tx.clone()).await?;
-            log::debug!("adding active transfer {transfer_id}");
             active_transfers.insert(transfer_id, sender);
         }
 
@@ -111,8 +110,6 @@ impl State for TransferFiles {
         let mut peers_to_wait = self.peers_with_transfers.clone();
         let mut ignore_cache = IgnoredFilesCache::default();
 
-        log::debug!("Starting file transfer");
-
         self.start_new_transfers(shared_state, &mut active_transfers, &when_done_tx)
             .await?;
 
@@ -124,7 +121,7 @@ impl State for TransferFiles {
                 .await?;
 
             tokio::select! {
-                Some((peer_id, event)) = shared_state.connection_handler.next_event() => {
+               Some((peer_id, event)) = shared_state.connection_handler.next_event() => {
                     match event {
                         NetworkEvents::Disconnected => {
                             log::debug!("removing {peer_id} from transfers");
@@ -150,7 +147,6 @@ impl State for TransferFiles {
                                 .await?
                                 {
                                     let sender = receive_file(*shared_state, transfer, transfer_id, when_done_tx.clone()).await?;
-                                    log::debug!("adding active transfer {transfer_id}");
                                     active_transfers.insert(transfer_id, sender);
                                 }
                             }
@@ -177,8 +173,6 @@ impl State for TransferFiles {
                 }
             }
         }
-
-        log::debug!("Finishing file transfer");
 
         Ok(())
     }
@@ -281,7 +275,6 @@ async fn receive_file(
             log::error!("Failed to finalize file {err}");
         }
 
-        log::debug!("Done receiving file");
         Ok(())
     }
 
@@ -325,7 +318,6 @@ async fn send_file(
         while let Some((node_id, event)) = rx.recv().await {
             match event {
                 FileTransfer::ReplyTransferType { transfer_type } => {
-                    log::debug!("{transfer_type:?}");
                     let _ = transfer
                         .set_transfer_type(shared_state.connection_handler, node_id, transfer_type)
                         .await;
@@ -345,11 +337,6 @@ async fn send_file(
                 }
                 FileTransfer::ReplyRequiredBlocks { required_blocks } => {
                     transfer.set_required_blocks(node_id, required_blocks);
-                    log::debug!(
-                        "has participants:{} pending_information: {}",
-                        transfer.has_participant_nodes(),
-                        transfer.pending_information()
-                    );
                     if transfer.has_participant_nodes() && !transfer.pending_information() {
                         if let Err(err) = transfer
                             .transfer_blocks(shared_state.connection_handler)
@@ -369,8 +356,6 @@ async fn send_file(
                 _ => {}
             }
         }
-
-        log::debug!("Done sending file");
 
         Ok(())
     }
