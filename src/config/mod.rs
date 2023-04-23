@@ -17,9 +17,8 @@ pub use path_config::PathConfig;
 #[derive(Debug, Deserialize, Default)]
 pub enum OperationMode {
     #[default]
-    ReadWrite,
-    Write,
-    Read,
+    Auto,
+    Manual,
 }
 
 /// Represents the configuration for the current machine
@@ -224,7 +223,7 @@ mod tests {
 
         [storages]
         str_path = "./tmp"
-        struct_path = { path = "./extended_path", enable_watcher = false, mode = "Read"  }
+        struct_path = { path = "./extended_path", enable_watcher = false }
         "#
         .to_owned();
 

@@ -144,14 +144,14 @@ pub fn match_files(
         }
     }
 
-    clean_moved_files_old_path(&mut consolidated);
+    clear_moved_files_old_path(&mut consolidated);
 
     MatchedFilesIter { consolidated }
 }
 
 /// This function remove all entries for the 'old_path' for the moved files.  
 /// We need to do this in order to prevent the file to be created back
-fn clean_moved_files_old_path(
+fn clear_moved_files_old_path(
     consolidated: &mut BTreeMap<RelativePathBuf, HashMap<u64, FileInfo>>,
 ) {
     let to_remove: HashSet<RelativePathBuf> = consolidated

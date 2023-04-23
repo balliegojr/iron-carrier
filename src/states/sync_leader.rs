@@ -1,6 +1,7 @@
 use std::{collections::HashSet, fmt::Display};
 
 use crate::{
+    config::PathConfig,
     file_transfer::TransferFiles,
     network_events::Transition,
     state_machine::{State, StateComposer},
@@ -26,6 +27,10 @@ impl FullSyncLeader {
     pub fn sync_just(storages_to_sync: HashSet<String>) -> Self {
         Self { storages_to_sync }
     }
+
+    fn storages_to_sync(&self, (storage, _path_config): &(&String, &PathConfig)) -> bool {
+        self.storages_to_sync.is_empty() || self.storages_to_sync.contains(storage.as_str())
+    }
 }
 
 impl Display for FullSyncLeader {
@@ -44,16 +49,15 @@ impl State for FullSyncLeader {
 
         log::info!("full sync starting as initiator....");
 
-        for (storage_name, storage_config) in
-            shared_state.config.storages.iter().filter(|(storage, _)| {
-                self.storages_to_sync.is_empty() || self.storages_to_sync.contains(storage.as_str())
-            })
+        for (storage_name, storage_config) in shared_state
+            .config
+            .storages
+            .iter()
+            .filter(|e| self.storages_to_sync(e))
         {
             let sync_result = BuildMatchingFiles::new(storage_name, storage_config)
                 .and_then(|(peers, matched)| DispatchActions::new(peers, matched))
-                .and_then(|(files_to_send, peers_with_tasks)| {
-                    TransferFiles::new(files_to_send, peers_with_tasks)
-                })
+                .and_then(|files_to_send| TransferFiles::new(None, files_to_send))
                 .execute(shared_state)
                 .await;
 

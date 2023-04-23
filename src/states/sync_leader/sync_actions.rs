@@ -10,6 +10,7 @@ use crate::{
 
 use super::matching_files::MatchedFilesIter;
 
+/// Get the [SyncAction] for the given `file`
 pub fn get_file_sync_action(
     local_node: u64,
     peers: &[u64],
@@ -66,6 +67,7 @@ pub fn get_file_sync_action(
     }
 }
 
+/// Possible actions necessary to synchronize a file
 #[derive(Debug, PartialEq, Eq)]
 pub enum SyncAction {
     Delete {
@@ -103,23 +105,27 @@ impl DispatchActions {
 }
 
 impl State for DispatchActions {
-    type Output = (Vec<(FileInfo, HashSet<u64>)>, HashSet<u64>);
+    type Output = Vec<(FileInfo, HashSet<u64>)>;
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         let actions = self.matched_files_iter.filter_map(|file| {
             get_file_sync_action(shared_state.config.node_id_hashed, &self.peers, file)
         });
 
-        let mut files_to_send = Vec::default();
-        let mut file_transfer_required = false;
+        let mut has_file_transfer = false;
         let mut ignored_files_cache = IgnoredFilesCache::default();
+        let mut files_to_send = Vec::new();
 
         for action in actions {
+            has_file_transfer |= matches!(
+                action,
+                SyncAction::Send { .. } | SyncAction::DelegateSend { .. }
+            );
+
             if let Err(err) = execute_action(
                 action,
                 shared_state,
                 &mut files_to_send,
-                &mut file_transfer_required,
                 &mut ignored_files_cache,
             )
             .await
@@ -128,30 +134,25 @@ impl State for DispatchActions {
             }
         }
 
-        if !file_transfer_required {
+        if !has_file_transfer {
             Err(StateMachineError::Abort)?
         }
 
-        shared_state
-            .connection_handler
-            .broadcast_to(
-                Synchronization::StartTransferingFiles.into(),
-                self.peers.iter(),
-            )
-            .await?;
-
-        Ok((
-            files_to_send,
-            HashSet::from_iter(self.peers.iter().copied()),
-        ))
+        Ok(files_to_send)
     }
 }
 
+/// Execute the given `action`
+///
+/// `Delete` and `Move` actions are executed immediately (or sent for all required nodes)
+/// `Send` is actions just add the file `files_to_send`, these actions are handled by the file
+/// transfer module
+/// `DeletegateSend` are sent to other nodes, so they can transfer their files to nodes that need
+/// it
 pub async fn execute_action(
     action: SyncAction,
     shared_state: &SharedState,
     files_to_send: &mut Vec<(FileInfo, HashSet<u64>)>,
-    file_transfer_required: &mut bool,
     ignored_files_cache: &mut IgnoredFilesCache,
 ) -> crate::Result<()> {
     match action {
@@ -194,16 +195,12 @@ pub async fn execute_action(
                 )
                 .await?;
         }
-        SyncAction::Send { file, nodes } => {
-            *file_transfer_required = true;
-            files_to_send.push((file, nodes));
-        }
+        SyncAction::Send { file, nodes } => files_to_send.push((file, nodes)),
         SyncAction::DelegateSend {
             delegate_to,
             file,
             nodes,
         } => {
-            *file_transfer_required = true;
             log::trace!(
                 "Requesting {delegate_to} to send {:?} to {nodes:?}",
                 file.path
