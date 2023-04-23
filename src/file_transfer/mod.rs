@@ -64,17 +64,14 @@ pub enum TransferType {
 #[derive(Debug)]
 pub struct TransferFiles {
     files_to_send: Vec<(FileInfo, HashSet<u64>)>,
-    peers_with_transfers: HashSet<u64>,
+    sync_leader: Option<u64>,
 }
 
 impl TransferFiles {
-    pub fn new(
-        files_to_send: Vec<(FileInfo, HashSet<u64>)>,
-        peers_with_transfers: HashSet<u64>,
-    ) -> Self {
+    pub fn new(sync_leader: Option<u64>, files_to_send: Vec<(FileInfo, HashSet<u64>)>) -> Self {
         Self {
             files_to_send,
-            peers_with_transfers,
+            sync_leader,
         }
     }
 
@@ -105,18 +102,24 @@ impl State for TransferFiles {
     type Output = ();
 
     async fn execute(mut self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+        let mut nodes = if self.sync_leader.is_none() {
+            shared_state
+                .connection_handler
+                .broadcast(Synchronization::StartTransferingFiles.into())
+                .await?
+        } else {
+            1
+        };
+
         let (when_done_tx, mut when_done) = tokio::sync::mpsc::channel(1);
         let mut active_transfers = HashMap::new();
-        let mut peers_to_wait = self.peers_with_transfers.clone();
+        // let mut peers_to_wait = self.peers_with_transfers.clone();
         let mut ignore_cache = IgnoredFilesCache::default();
 
         self.start_new_transfers(shared_state, &mut active_transfers, &when_done_tx)
             .await?;
 
-        while !peers_to_wait.is_empty()
-            || !active_transfers.is_empty()
-            || !self.files_to_send.is_empty()
-        {
+        while nodes > 0 || !active_transfers.is_empty() || !self.files_to_send.is_empty() {
             self.start_new_transfers(shared_state, &mut active_transfers, &when_done_tx)
                 .await?;
 
@@ -125,14 +128,14 @@ impl State for TransferFiles {
                     match event {
                         NetworkEvents::Disconnected => {
                             log::debug!("removing {peer_id} from transfers");
-                            peers_to_wait.remove(&peer_id);
+                            nodes -= 1;
                             for transfer in active_transfers.values() {
                                 let _ = transfer.send((peer_id, FileTransfer::RemovePeer)).await;
                             }
                         }
                         NetworkEvents::Synchronization(Synchronization::DoneTransferingFiles) => {
                             log::debug!("removing {peer_id} from transfers");
-                            peers_to_wait.remove(&peer_id);
+                            nodes -= 1;
                         }
                         NetworkEvents::FileTransfer(transfer_id, file_transfer) => match file_transfer {
                             FileTransfer::QueryTransferType { file, block_size } => {
@@ -164,14 +167,21 @@ impl State for TransferFiles {
                 Some(transfer_id) = when_done.recv() => {
                     log::debug!("removing active transfer {transfer_id}");
                     active_transfers.remove(&transfer_id);
-                    if active_transfers.is_empty() {
-                        shared_state.connection_handler.broadcast_to(
+                    if let Some(leader) = self.sync_leader && active_transfers.is_empty() {
+                        shared_state.connection_handler.send_to(
                             Synchronization::DoneTransferingFiles.into(),
-                            self.peers_with_transfers.iter()
+                            leader
                         ).await?;
                     }
                 }
             }
+        }
+
+        if self.sync_leader.is_none() {
+            shared_state
+                .connection_handler
+                .broadcast(Synchronization::DoneTransferingFiles.into())
+                .await?;
         }
 
         Ok(())

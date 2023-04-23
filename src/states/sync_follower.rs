@@ -117,7 +117,7 @@ async fn execute_event(
                 .await?;
         }
         NetworkEvents::Synchronization(Synchronization::SendFileTo { file, nodes }) => {
-            files_to_send.push((file, nodes));
+            files_to_send.push((file, nodes))
         }
         NetworkEvents::Synchronization(Synchronization::DeleteFile { file }) => {
             crate::storage::file_operations::delete_file(
@@ -138,7 +138,7 @@ async fn execute_event(
             .await?;
         }
         NetworkEvents::Synchronization(Synchronization::StartTransferingFiles) => {
-            TransferFiles::new(std::mem::take(files_to_send), HashSet::from([sync_leader]))
+            TransferFiles::new(Some(sync_leader), std::mem::take(files_to_send))
                 .execute(shared_state)
                 .await?;
         }
