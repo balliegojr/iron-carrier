@@ -14,11 +14,11 @@ mod matching_files;
 mod sync_actions;
 
 #[derive(Debug, Default)]
-pub struct FullSyncLeader {
+pub struct SyncLeader {
     storages_to_sync: HashSet<String>,
 }
 
-impl FullSyncLeader {
+impl SyncLeader {
     pub fn sync_everything() -> Self {
         Self {
             storages_to_sync: Default::default(),
@@ -33,13 +33,13 @@ impl FullSyncLeader {
     }
 }
 
-impl Display for FullSyncLeader {
+impl Display for SyncLeader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FullSyncLeader")
     }
 }
 
-impl State for FullSyncLeader {
+impl State for SyncLeader {
     type Output = ();
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         shared_state

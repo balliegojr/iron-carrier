@@ -10,23 +10,23 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct FullSyncFollower {
+pub struct SyncFollower {
     sync_leader: u64,
 }
 
-impl Display for FullSyncFollower {
+impl Display for SyncFollower {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FullSyncFollower")
     }
 }
 
-impl FullSyncFollower {
+impl SyncFollower {
     pub fn new(sync_leader: u64) -> Self {
         Self { sync_leader }
     }
 }
 
-impl State for FullSyncFollower {
+impl State for SyncFollower {
     type Output = ();
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
