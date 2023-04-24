@@ -1,6 +1,6 @@
 use crate::state_machine::State;
 
-use super::{FullSyncFollower, FullSyncLeader};
+use super::{SyncFollower, SyncLeader};
 
 #[derive(Debug)]
 pub struct FullSync {
@@ -18,11 +18,9 @@ impl State for FullSync {
 
     async fn execute(self, shared_state: &crate::SharedState) -> crate::Result<Self::Output> {
         if self.leader_node_id == shared_state.config.node_id_hashed {
-            (FullSyncLeader::sync_everything())
-                .execute(shared_state)
-                .await
+            (SyncLeader::sync_everything()).execute(shared_state).await
         } else {
-            FullSyncFollower::new(self.leader_node_id)
+            SyncFollower::new(self.leader_node_id)
                 .execute(shared_state)
                 .await
         }

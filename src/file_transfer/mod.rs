@@ -113,7 +113,6 @@ impl State for TransferFiles {
 
         let (when_done_tx, mut when_done) = tokio::sync::mpsc::channel(1);
         let mut active_transfers = HashMap::new();
-        // let mut peers_to_wait = self.peers_with_transfers.clone();
         let mut ignore_cache = IgnoredFilesCache::default();
 
         self.start_new_transfers(shared_state, &mut active_transfers, &when_done_tx)

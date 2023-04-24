@@ -8,7 +8,7 @@ use crate::{
     stream, SharedState,
 };
 
-use super::{ConnectAllPeers, Consensus, DiscoverPeers, FullSyncFollower, FullSyncLeader};
+use super::{ConnectAllPeers, Consensus, DiscoverPeers, SyncFollower, SyncLeader};
 
 #[derive(Default, Debug)]
 pub struct Daemon {}
@@ -61,8 +61,8 @@ impl State for DaemonEventListener {
                             return Ok(DaemonEvent::TransitionToFolowerRequest(leader_id))
                         }
                         Some((_, NetworkEvents::Disconnected)) => {}
-                        Some(_) => {
-                            log::info!("received random event");
+                        Some(ev) => {
+                            log::error!("[daemon] received unexpected event {ev:?}");
                         }
                         None =>  Err(StateMachineError::Abort)?
                     }
@@ -94,14 +94,14 @@ impl State for DaemonEvent {
             DaemonEvent::ScheduledSync => {
                 DiscoverPeers::default()
                     .and_then(ConnectAllPeers::new)
-                    .and_then(|_| FullSyncLeader::sync_everything())
+                    .and_then(|_| SyncLeader::sync_everything())
                     .execute(shared_state)
                     .await
             }
             DaemonEvent::Watcher(to_sync) => {
                 DiscoverPeers::default()
                     .and_then(ConnectAllPeers::new)
-                    .and_then(|_| FullSyncLeader::sync_just(to_sync))
+                    .and_then(|_| SyncLeader::sync_just(to_sync))
                     .execute(shared_state)
                     .await
             }
@@ -112,7 +112,7 @@ impl State for DaemonEvent {
                     .await
             }
             DaemonEvent::TransitionToFolowerRequest(leader_id) => {
-                FullSyncFollower::new(leader_id).execute(shared_state).await
+                SyncFollower::new(leader_id).execute(shared_state).await
             }
         }
     }
