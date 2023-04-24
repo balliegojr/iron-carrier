@@ -9,6 +9,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    constants::MAX_ELECTION_TERMS,
     network_events::{self, NetworkEvents},
     state_machine::{State, StateMachineError},
     SharedState,
@@ -67,6 +68,13 @@ impl State for Consensus {
         //
         // If the candidate receives "yes" votes from every other peer, it becomes a leader and
         // transition to the next state
+        //
+        // There are two scenarios that can abort an election
+        // 1. If there are no participants. This can happen when the other nodes disconnects before
+        //    the election completes
+        // 2. After reaching a number of terms without reaching a consensus. If this happens it
+        //    means other nodes are stuck at some invalid state or there is a bug in the consensus
+        //    protocol
 
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
         let mut term = ElectionTerm::default();
@@ -79,6 +87,11 @@ impl State for Consensus {
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline), if self.election_state == NodeState::Candidate => {
+                    if term.term > MAX_ELECTION_TERMS {
+                        log::error!("Election reached maximum term of {MAX_ELECTION_TERMS}");
+                        Err(StateMachineError::Abort)?
+                    }
+
                     term = term.next();
                     term.participants = shared_state
                         .connection_handler
@@ -88,6 +101,7 @@ impl State for Consensus {
                         .await?;
 
                     if term.participants == 0 {
+                        log::error!("No participants in the consensus");
                         Err(StateMachineError::Abort)?
                     }
 
