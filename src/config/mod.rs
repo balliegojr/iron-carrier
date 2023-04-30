@@ -7,7 +7,7 @@ use std::{
     str::FromStr,
 };
 
-use crate::{hash_helper, validation::Unvalidated, IronCarrierError};
+use crate::{hash_helper, node_id::NodeId, validation::Unvalidated, IronCarrierError};
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, PickFirst};
 
@@ -29,7 +29,7 @@ pub struct Config {
     pub node_id: String,
 
     #[serde(skip)]
-    pub node_id_hashed: u64,
+    pub node_id_hashed: NodeId,
 
     /// Option group of nodes to sync
     pub group: Option<String>,
@@ -95,7 +95,7 @@ impl Config {
                 .collect();
         }
 
-        self.node_id_hashed = hash_helper::calculate_checksum(self.node_id.as_bytes());
+        self.node_id_hashed = hash_helper::calculate_checksum(self.node_id.as_bytes()).into();
 
         self
     }

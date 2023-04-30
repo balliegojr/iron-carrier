@@ -1,14 +1,14 @@
-use crate::state_machine::State;
+use crate::{node_id::NodeId, state_machine::State};
 
 use super::{SyncFollower, SyncLeader};
 
 #[derive(Debug)]
 pub struct FullSync {
-    leader_node_id: u64,
+    leader_node_id: NodeId,
 }
 
 impl FullSync {
-    pub fn new(leader_node_id: u64) -> Self {
+    pub fn new(leader_node_id: NodeId) -> Self {
         Self { leader_node_id }
     }
 }

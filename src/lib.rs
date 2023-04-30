@@ -25,6 +25,7 @@ pub mod constants;
 mod hash_helper;
 mod ignored_files;
 mod network_events;
+mod node_id;
 pub mod relative_path;
 mod stream;
 

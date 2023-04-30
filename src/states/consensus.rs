@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     constants::MAX_ELECTION_TERMS,
     network_events::{self, NetworkEvents},
+    node_id::NodeId,
     state_machine::{State, StateMachineError},
     SharedState,
 };
@@ -54,7 +55,7 @@ impl Display for Consensus {
 }
 
 impl State for Consensus {
-    type Output = u64;
+    type Output = NodeId;
     async fn execute(mut self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         // This election process repeats until a candidate becomes the leader
         //
@@ -109,7 +110,7 @@ impl State for Consensus {
 
                     deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
                 }
-                Some((peer_id, network_event)) = shared_state.connection_handler.next_event() => {
+                Some((node_id, network_event)) = shared_state.connection_handler.next_event() => {
                     match network_event {
                         NetworkEvents::ConsensusElection(ev) => {
                             match ev {
@@ -117,10 +118,10 @@ impl State for Consensus {
                                     term.term = vote_term;
                                     self.election_state = NodeState::Follower;
 
-                                    shared_state.connection_handler.send_to(ElectionEvents::VoteOnTerm(vote_term, true).into(), peer_id).await?;
+                                    shared_state.connection_handler.send_to(ElectionEvents::VoteOnTerm(vote_term, true).into(), node_id).await?;
                                 }
                                 ElectionEvents::RequestVoteForTerm(vote_term) => {
-                                    shared_state.connection_handler.send_to(ElectionEvents::VoteOnTerm(vote_term, false).into(), peer_id).await?;
+                                    shared_state.connection_handler.send_to(ElectionEvents::VoteOnTerm(vote_term, false).into(), node_id).await?;
                                 }
                                 ElectionEvents::VoteOnTerm(vote_term, vote) if self.election_state == NodeState::Candidate && term.term == vote_term => {
                                     term.compute_vote(vote);
@@ -136,7 +137,7 @@ impl State for Consensus {
                             }
                         }
                         NetworkEvents::RequestTransition(network_events::Transition::FullSync) => if self.election_state == NodeState::Follower {
-                            return Ok(peer_id)
+                            return Ok(node_id)
                         }
                         _ => {}
                     }

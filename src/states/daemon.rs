@@ -3,6 +3,7 @@ use std::{collections::HashSet, future, pin::pin, str::FromStr, time::Duration};
 use crate::{
     config::Config,
     network_events::{NetworkEvents, Transition},
+    node_id::NodeId,
     state_machine::{State, StateComposer, StateMachineError},
     states::FullSync,
     stream, SharedState,
@@ -83,7 +84,7 @@ enum DaemonEvent {
     Watcher(HashSet<String>),
     ScheduledSync,
     ConsensusRequest,
-    TransitionToFolowerRequest(u64),
+    TransitionToFolowerRequest(NodeId),
 }
 
 impl State for DaemonEvent {

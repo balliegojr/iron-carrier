@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::{
     config::PathConfig,
     network_events::{NetworkEvents, StorageIndexStatus, Synchronization},
+    node_id::NodeId,
     relative_path::RelativePathBuf,
     state_machine::{State, StateMachineError},
     storage::{self, FileInfo, Storage},
@@ -27,7 +28,7 @@ impl BuildMatchingFiles {
         &self,
         shared_state: &SharedState,
         storage: &Storage,
-    ) -> crate::Result<HashMap<u64, Vec<FileInfo>>> {
+    ) -> crate::Result<HashMap<NodeId, Vec<FileInfo>>> {
         let mut expected = shared_state
             .connection_handler
             .broadcast(
@@ -66,7 +67,7 @@ impl BuildMatchingFiles {
                     }
                 }
                 e => {
-                    log::error!("Received unexpected event {e:?}");
+                    log::error!("[sync leader] received unexpected event {e:?}");
                 }
             }
         }
@@ -76,7 +77,7 @@ impl BuildMatchingFiles {
 }
 
 impl State for BuildMatchingFiles {
-    type Output = (Vec<u64>, MatchedFilesIter);
+    type Output = (Vec<NodeId>, MatchedFilesIter);
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         let storage = storage::get_storage_info(
@@ -91,7 +92,7 @@ impl State for BuildMatchingFiles {
             Err(StateMachineError::Abort)?
         }
 
-        let peers: Vec<u64> = peers_storages.keys().copied().collect();
+        let peers: Vec<NodeId> = peers_storages.keys().copied().collect();
         log::trace!(
             "Storage {0} to be synchronized with {peers:?}",
             self.storage_name
@@ -105,7 +106,7 @@ impl State for BuildMatchingFiles {
 }
 
 pub struct MatchedFilesIter {
-    consolidated: BTreeMap<RelativePathBuf, HashMap<u64, FileInfo>>,
+    consolidated: BTreeMap<RelativePathBuf, HashMap<NodeId, FileInfo>>,
 }
 
 impl std::fmt::Debug for MatchedFilesIter {
@@ -115,7 +116,7 @@ impl std::fmt::Debug for MatchedFilesIter {
 }
 
 impl Iterator for MatchedFilesIter {
-    type Item = HashMap<u64, FileInfo>;
+    type Item = HashMap<NodeId, FileInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.consolidated.pop_first().map(|(_, v)| v)
@@ -124,10 +125,10 @@ impl Iterator for MatchedFilesIter {
 
 pub fn match_files(
     storage: Storage,
-    peer_files: HashMap<u64, Vec<FileInfo>>,
-    local_node_id: u64,
+    peer_files: HashMap<NodeId, Vec<FileInfo>>,
+    local_node_id: NodeId,
 ) -> MatchedFilesIter {
-    let mut consolidated: BTreeMap<RelativePathBuf, HashMap<u64, FileInfo>> = Default::default();
+    let mut consolidated: BTreeMap<RelativePathBuf, HashMap<NodeId, FileInfo>> = Default::default();
     for file in storage.files.into_iter() {
         consolidated
             .entry(file.path.clone())
@@ -152,7 +153,7 @@ pub fn match_files(
 /// This function remove all entries for the 'old_path' for the moved files.  
 /// We need to do this in order to prevent the file to be created back
 fn clear_moved_files_old_path(
-    consolidated: &mut BTreeMap<RelativePathBuf, HashMap<u64, FileInfo>>,
+    consolidated: &mut BTreeMap<RelativePathBuf, HashMap<NodeId, FileInfo>>,
 ) {
     let to_remove: HashSet<RelativePathBuf> = consolidated
         .values()
@@ -196,20 +197,20 @@ mod tests {
         };
 
         let mut peer_files = HashMap::default();
-        peer_files.insert(1, vec![file_with_name("a"), file_with_name("b")]);
-        peer_files.insert(2, vec![file_with_name("b")]);
+        peer_files.insert(1.into(), vec![file_with_name("a"), file_with_name("b")]);
+        peer_files.insert(2.into(), vec![file_with_name("b")]);
 
-        let mut matched = super::match_files(storage, peer_files, 0);
-
-        let m = matched.next().unwrap();
-        assert!(m.contains_key(&0));
-        assert!(m.contains_key(&1));
-        assert_eq!(m[&0].path, RelativePathBuf::from("a"));
+        let mut matched = super::match_files(storage, peer_files, 0.into());
 
         let m = matched.next().unwrap();
-        assert!(m.contains_key(&1));
-        assert!(m.contains_key(&2));
-        assert_eq!(m[&1].path, RelativePathBuf::from("b"));
+        assert!(m.contains_key(&0.into()));
+        assert!(m.contains_key(&1.into()));
+        assert_eq!(m[&0.into()].path, RelativePathBuf::from("a"));
+
+        let m = matched.next().unwrap();
+        assert!(m.contains_key(&1.into()));
+        assert!(m.contains_key(&2.into()));
+        assert_eq!(m[&1.into()].path, RelativePathBuf::from("b"));
 
         assert!(matched.next().is_none());
     }

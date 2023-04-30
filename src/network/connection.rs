@@ -8,7 +8,9 @@ use tokio::{
 use crate::{
     config::Config,
     constants::{PEER_STALE_CONNECTION, VERSION},
-    hash_helper, IronCarrierError,
+    hash_helper,
+    node_id::NodeId,
+    IronCarrierError,
 };
 
 static CONNECTION_ID_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -19,15 +21,15 @@ pub struct ConnectionId(u32);
 pub struct Connection {
     stream: tokio::net::TcpStream,
     pub connection_id: ConnectionId,
-    pub peer_id: u64,
+    pub node_id: NodeId,
 }
 
 impl Connection {
-    pub fn new(stream: tokio::net::TcpStream, peer_id: u64) -> Self {
+    pub fn new(stream: tokio::net::TcpStream, node_id: NodeId) -> Self {
         let connection_id = CONNECTION_ID_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         Connection {
-            peer_id,
+            node_id,
             connection_id: ConnectionId(connection_id),
             stream,
         }
@@ -40,13 +42,13 @@ impl Connection {
             WriteHalf {
                 inner: Box::pin(write),
                 connection_id: self.connection_id,
-                peer_id: self.peer_id,
+                node_id: self.node_id,
                 last_access: Instant::now(),
             },
             ReadHalf {
                 inner: Box::pin(read),
                 connection_id: self.connection_id,
-                peer_id: self.peer_id,
+                node_id: self.node_id,
             },
         )
     }
@@ -56,7 +58,7 @@ impl std::fmt::Debug for Connection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Connection")
             .field("connection_id", &self.connection_id)
-            .field("peer_id", &self.peer_id)
+            .field("node_id", &self.node_id)
             .finish()
     }
 }
@@ -64,7 +66,7 @@ impl std::fmt::Debug for Connection {
 pub struct WriteHalf {
     inner: Pin<Box<dyn AsyncWrite + Send + Sync>>,
     pub connection_id: ConnectionId,
-    pub peer_id: u64,
+    pub node_id: NodeId,
     last_access: Instant,
 }
 
@@ -105,7 +107,7 @@ impl AsyncWrite for WriteHalf {
 pub struct ReadHalf {
     inner: Pin<Box<dyn AsyncRead + Send + Sync>>,
     pub connection_id: ConnectionId,
-    pub peer_id: u64,
+    pub node_id: NodeId,
 }
 
 impl AsyncRead for ReadHalf {
@@ -137,10 +139,10 @@ pub async fn identify_outgoing_connection(
         return Err(Box::new(IronCarrierError::GroupMismatch));
     }
 
-    stream.write_u64(config.node_id_hashed).await?;
-    let peer_id = stream.read_u64().await?;
+    stream.write_u64(config.node_id_hashed.into()).await?;
+    let node_id = stream.read_u64().await?;
 
-    Ok(Connection::new(stream, peer_id))
+    Ok(Connection::new(stream, node_id.into()))
 }
 
 pub async fn identify_incoming_connection(
@@ -158,10 +160,10 @@ pub async fn identify_incoming_connection(
 
     wait_and_compare(&mut stream, group, || IronCarrierError::GroupMismatch).await?;
 
-    stream.write_u64(config.node_id_hashed).await?;
-    let peer_id = stream.read_u64().await?;
+    stream.write_u64(config.node_id_hashed.into()).await?;
+    let node_id = stream.read_u64().await?;
 
-    Ok(Connection::new(stream, peer_id))
+    Ok(Connection::new(stream, node_id.into()))
 }
 
 async fn round_trip_compare(stream: &mut tokio::net::TcpStream, value: u64) -> crate::Result<bool> {
