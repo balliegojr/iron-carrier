@@ -2,15 +2,15 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 
 use rand::Rng;
 
-use crate::{state_machine::State, SharedState};
+use crate::{node_id::NodeId, state_machine::State, SharedState};
 
 #[derive(Debug)]
 pub struct ConnectAllPeers {
-    addresses_to_connect: HashMap<SocketAddr, Option<u64>>,
+    addresses_to_connect: HashMap<SocketAddr, Option<NodeId>>,
 }
 
 impl ConnectAllPeers {
-    pub fn new(addresses_to_connect: HashMap<SocketAddr, Option<u64>>) -> Self {
+    pub fn new(addresses_to_connect: HashMap<SocketAddr, Option<NodeId>>) -> Self {
         Self {
             addresses_to_connect,
         }

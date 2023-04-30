@@ -4,7 +4,7 @@ use std::{
     net::{IpAddr, SocketAddr},
 };
 
-use crate::{config::Config, constants::VERSION, hash_helper};
+use crate::{config::Config, constants::VERSION, hash_helper, node_id::NodeId};
 use tokio::sync::OnceCell;
 
 static SERVICE_DISCOVERY: OnceCell<ServiceDiscovery> = OnceCell::const_new();
@@ -65,7 +65,7 @@ pub fn get_my_ips() -> crate::Result<Vec<IpAddr>> {
 pub async fn get_peers(
     service_discovery: &ServiceDiscovery,
     group: Option<&String>,
-) -> HashMap<SocketAddr, Option<u64>> {
+) -> HashMap<SocketAddr, Option<NodeId>> {
     let mut addresses = HashMap::new();
     let h_group = group.map(hashed_group);
 
@@ -80,7 +80,7 @@ pub async fn get_peers(
             .attributes
             .remove("id")
             .flatten()
-            .map(hash_helper::hashed_str);
+            .map(|id| hash_helper::hashed_str(id).into());
 
         for addr in instance_info.get_socket_addresses() {
             addresses.insert(addr, id);

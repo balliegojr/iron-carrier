@@ -4,6 +4,7 @@ use crate::{
     file_transfer::TransferFiles,
     ignored_files::IgnoredFilesCache,
     network_events::{NetworkEvents, StorageIndexStatus, Synchronization, Transition},
+    node_id::NodeId,
     state_machine::State,
     storage::FileInfo,
     SharedState,
@@ -11,7 +12,7 @@ use crate::{
 
 #[derive(Debug)]
 pub struct SyncFollower {
-    sync_leader: u64,
+    sync_leader: NodeId,
 }
 
 impl Display for SyncFollower {
@@ -21,7 +22,7 @@ impl Display for SyncFollower {
 }
 
 impl SyncFollower {
-    pub fn new(sync_leader: u64) -> Self {
+    pub fn new(sync_leader: NodeId) -> Self {
         Self { sync_leader }
     }
 }
@@ -71,10 +72,10 @@ impl State for SyncFollower {
 async fn execute_event(
     shared_state: &SharedState,
     ev: NetworkEvents,
-    sync_leader: u64,
+    sync_leader: NodeId,
 
     ignored_files_cache: &mut IgnoredFilesCache,
-    files_to_send: &mut Vec<(FileInfo, HashSet<u64>)>,
+    files_to_send: &mut Vec<(FileInfo, HashSet<NodeId>)>,
 ) -> crate::Result<bool> {
     match ev {
         NetworkEvents::Synchronization(Synchronization::QueryStorageIndex { name, hash }) => {

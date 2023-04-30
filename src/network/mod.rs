@@ -12,7 +12,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     config::Config, constants::PEER_IDENTIFICATION_TIMEOUT, network_events::NetworkEvents,
-    IronCarrierError,
+    node_id::NodeId, IronCarrierError,
 };
 use connection::{Connection, ReadHalf};
 
@@ -30,8 +30,8 @@ where
     config: &'static Config,
     connections: Arc<Mutex<connection_storage::ConnectionStorage>>,
 
-    stream_sender: Sender<(u64, T)>,
-    stream_receiver: Arc<Mutex<Receiver<(u64, T)>>>,
+    stream_sender: Sender<(NodeId, T)>,
+    stream_receiver: Arc<Mutex<Receiver<(NodeId, T)>>>,
 }
 
 impl ConnectionHandler<NetworkEvents> {
@@ -58,11 +58,15 @@ impl ConnectionHandler<NetworkEvents> {
         })
     }
 
-    pub async fn connect(&self, addr: SocketAddr, peer_id: Option<u64>) -> crate::Result<u64> {
-        if let Some(peer_id) = peer_id {
-            if self.connections.lock().await.contains_peer(&peer_id) {
-                log::info!("Already connected to {peer_id}");
-                return Ok(peer_id);
+    pub async fn connect(
+        &self,
+        addr: SocketAddr,
+        node_id: Option<NodeId>,
+    ) -> crate::Result<NodeId> {
+        if let Some(node_id) = node_id {
+            if self.connections.lock().await.contains_peer(&node_id) {
+                log::info!("Already connected to {node_id}");
+                return Ok(node_id);
             }
         }
 
@@ -94,7 +98,7 @@ impl ConnectionHandler<NetworkEvents> {
         .await
         .map_err(|_| IronCarrierError::ConnectionTimeout)??;
 
-        let peer_id = connection.peer_id;
+        let node_id = connection.node_id;
         append_connection(
             self.stream_sender.clone(),
             self.connections.clone(),
@@ -102,11 +106,11 @@ impl ConnectionHandler<NetworkEvents> {
         )
         .await;
 
-        Ok(peer_id)
+        Ok(node_id)
     }
 
-    pub async fn send_to(&self, event: NetworkEvents, peer_id: u64) -> crate::Result<()> {
-        if let Some(connection) = self.connections.lock().await.get_mut(&peer_id) {
+    pub async fn send_to(&self, event: NetworkEvents, node_id: NodeId) -> crate::Result<()> {
+        if let Some(connection) = self.connections.lock().await.get_mut(&node_id) {
             let bytes = bincode::serialize(&event)?;
             connection.write_u8(0).await?;
             connection.write_u32(bytes.len() as u32).await?;
@@ -116,7 +120,7 @@ impl ConnectionHandler<NetworkEvents> {
         Ok(())
     }
 
-    pub async fn next_event(&self) -> Option<(u64, NetworkEvents)> {
+    pub async fn next_event(&self) -> Option<(NodeId, NetworkEvents)> {
         self.stream_receiver.lock().await.recv().await
     }
 
@@ -135,7 +139,7 @@ impl ConnectionHandler<NetworkEvents> {
     pub async fn broadcast_to(
         &self,
         event: NetworkEvents,
-        nodes: impl Iterator<Item = &u64>,
+        nodes: impl Iterator<Item = &NodeId>,
     ) -> crate::Result<()> {
         let bytes = bincode::serialize(&event)?;
         let mut connections = self.connections.lock().await;
@@ -155,7 +159,7 @@ impl ConnectionHandler<NetworkEvents> {
         transfer_id: u64,
         block_index: u64,
         block: &[u8],
-        nodes: impl Iterator<Item = &u64>,
+        nodes: impl Iterator<Item = &NodeId>,
     ) -> crate::Result<()> {
         let mut connections = self.connections.lock().await;
         for node in nodes {
@@ -178,13 +182,13 @@ impl ConnectionHandler<NetworkEvents> {
 }
 
 async fn append_connection(
-    event_stream: Sender<(u64, NetworkEvents)>,
+    event_stream: Sender<(NodeId, NetworkEvents)>,
     connections: Arc<Mutex<ConnectionStorage>>,
     connection: Connection,
 ) {
     let mut connections_guard = connections.lock().await;
-    if connections_guard.contains_peer(&connection.peer_id) {
-        log::info!("Already connected to {}", connection.peer_id);
+    if connections_guard.contains_peer(&connection.node_id) {
+        log::info!("Already connected to {}", connection.node_id);
         return;
     }
 
@@ -195,7 +199,7 @@ async fn append_connection(
         connections.clone(),
     ));
 
-    log::info!("Connected to {}", write.peer_id);
+    log::info!("Connected to {}", write.node_id);
     connections_guard.insert(write);
 }
 
@@ -208,7 +212,7 @@ async fn cleanup_stale_connections(connections: Arc<Mutex<ConnectionStorage>>) {
 
 async fn listen_connections(
     config: &Config,
-    event_stream: Sender<(u64, NetworkEvents)>,
+    event_stream: Sender<(NodeId, NetworkEvents)>,
     connections: Arc<Mutex<ConnectionStorage>>,
 ) -> crate::Result<()> {
     log::debug!("Listening on {}", config.port);
@@ -236,10 +240,10 @@ async fn listen_connections(
 
 async fn read_network_data(
     read_connection: ReadHalf,
-    event_stream: Sender<(u64, NetworkEvents)>,
+    event_stream: Sender<(NodeId, NetworkEvents)>,
     connections: Arc<Mutex<ConnectionStorage>>,
 ) {
-    let peer_id = read_connection.peer_id;
+    let peer_id = read_connection.node_id;
     let connection_id = read_connection.connection_id;
 
     let mut stream = tokio_util::codec::FramedRead::new(read_connection, NetWorkEventDecoder {});

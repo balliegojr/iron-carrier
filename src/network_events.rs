@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{file_transfer::FileTransfer, states::consensus::ElectionEvents, storage};
+use crate::{
+    file_transfer::FileTransfer, node_id::NodeId, states::consensus::ElectionEvents, storage,
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum NetworkEvents {
@@ -56,7 +58,7 @@ pub enum Synchronization {
     },
     SendFileTo {
         file: storage::FileInfo,
-        nodes: HashSet<u64>,
+        nodes: HashSet<NodeId>,
     },
     StartTransferingFiles,
     DoneTransferingFiles,

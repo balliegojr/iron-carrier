@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     ignored_files::IgnoredFilesCache,
     network_events::Synchronization,
+    node_id::NodeId,
     state_machine::{State, StateMachineError},
     storage::{FileInfo, FileInfoType},
     SharedState,
@@ -12,30 +13,30 @@ use super::matching_files::MatchedFilesIter;
 
 /// Get the [SyncAction] for the given `file`
 pub fn get_file_sync_action(
-    local_node: u64,
-    peers: &[u64],
-    mut file: HashMap<u64, FileInfo>,
+    local_node: NodeId,
+    nodes: &[NodeId],
+    mut file: HashMap<NodeId, FileInfo>,
 ) -> Option<SyncAction> {
-    if peers.is_empty() {
+    if nodes.is_empty() {
         return None;
     }
 
     let node_with_most_recent_file = file
         .iter()
         .max_by(|(_, a), (_, b)| a.date_cmp(b))
-        .map(|(peer, _)| *peer)
+        .map(|(node, _)| *node)
         .unwrap();
 
     let is_local_the_most_recent = node_with_most_recent_file == local_node;
 
     let most_recent_file = file.remove(&node_with_most_recent_file).unwrap();
-    let node_out_of_sync: HashSet<u64> = peers
+    let node_out_of_sync: HashSet<NodeId> = nodes
         .iter()
         .chain(&[local_node])
-        .filter(|peer_id| {
-            **peer_id != node_with_most_recent_file
+        .filter(|node_id| {
+            **node_id != node_with_most_recent_file
                 && file
-                    .get(peer_id)
+                    .get(node_id)
                     .map(|f| most_recent_file.is_out_of_sync(f))
                     .unwrap_or_else(|| most_recent_file.is_existent())
         })
@@ -72,44 +73,44 @@ pub fn get_file_sync_action(
 pub enum SyncAction {
     Delete {
         file: FileInfo,
-        nodes: HashSet<u64>,
+        nodes: HashSet<NodeId>,
     },
     Send {
         file: FileInfo,
-        nodes: HashSet<u64>,
+        nodes: HashSet<NodeId>,
     },
     DelegateSend {
-        delegate_to: u64,
+        delegate_to: NodeId,
         file: FileInfo,
-        nodes: HashSet<u64>,
+        nodes: HashSet<NodeId>,
     },
     Move {
         file: FileInfo,
-        nodes: HashSet<u64>,
+        nodes: HashSet<NodeId>,
     },
 }
 
 #[derive(Debug)]
 pub struct DispatchActions {
-    peers: Vec<u64>,
+    nodes: Vec<NodeId>,
     matched_files_iter: MatchedFilesIter,
 }
 
 impl DispatchActions {
-    pub fn new(peers: Vec<u64>, matched_files_iter: MatchedFilesIter) -> Self {
+    pub fn new(nodes: Vec<NodeId>, matched_files_iter: MatchedFilesIter) -> Self {
         Self {
-            peers,
+            nodes,
             matched_files_iter,
         }
     }
 }
 
 impl State for DispatchActions {
-    type Output = Vec<(FileInfo, HashSet<u64>)>;
+    type Output = Vec<(FileInfo, HashSet<NodeId>)>;
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         let actions = self.matched_files_iter.filter_map(|file| {
-            get_file_sync_action(shared_state.config.node_id_hashed, &self.peers, file)
+            get_file_sync_action(shared_state.config.node_id_hashed, &self.nodes, file)
         });
 
         let mut has_file_transfer = false;
@@ -152,7 +153,7 @@ impl State for DispatchActions {
 pub async fn execute_action(
     action: SyncAction,
     shared_state: &SharedState,
-    files_to_send: &mut Vec<(FileInfo, HashSet<u64>)>,
+    files_to_send: &mut Vec<(FileInfo, HashSet<NodeId>)>,
     ignored_files_cache: &mut IgnoredFilesCache,
 ) -> crate::Result<()> {
     match action {
@@ -233,9 +234,12 @@ mod tests {
     #[test]
     fn test_generate_delete_actions() {
         let mut files = HashMap::default();
-        files.insert(0, with_file_type(FileInfoType::Deleted { deleted_at: 10 }));
         files.insert(
-            1,
+            0.into(),
+            with_file_type(FileInfoType::Deleted { deleted_at: 10 }),
+        );
+        files.insert(
+            1.into(),
             with_file_type(FileInfoType::Existent {
                 modified_at: 0,
                 created_at: 0,
@@ -246,46 +250,57 @@ mod tests {
         // File deletion should generate actions only for nodes that have the file, all the cases
         // bellow will generate the deletion action for node 1
 
-        match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
+        match get_file_sync_action(0.into(), &[1.into(), 2.into(), 3.into()], files.clone())
+            .unwrap()
+        {
+            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1.into()])),
             _ => panic!(),
         }
 
-        match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
+        match get_file_sync_action(0.into(), &[1.into()], files.clone()).unwrap() {
+            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1.into()])),
             _ => panic!(),
         }
 
-        match get_file_sync_action(1, &[0], files.clone()).unwrap() {
-            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
+        match get_file_sync_action(1.into(), &[0.into()], files.clone()).unwrap() {
+            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1.into()])),
             _ => panic!(),
         }
 
         // This should not happen, but lets guarantee no action is generated where there are no
         // peers to delete the file
-        assert!(get_file_sync_action(0, &[], files).is_none());
+        assert!(get_file_sync_action(0.into(), &[], files).is_none());
 
         // All nodes have the file registered as deleted, no action should be performed
         let mut files = HashMap::default();
-        files.insert(0, with_file_type(FileInfoType::Deleted { deleted_at: 10 }));
-        files.insert(1, with_file_type(FileInfoType::Deleted { deleted_at: 10 }));
+        files.insert(
+            0.into(),
+            with_file_type(FileInfoType::Deleted { deleted_at: 10 }),
+        );
+        files.insert(
+            1.into(),
+            with_file_type(FileInfoType::Deleted { deleted_at: 10 }),
+        );
 
-        assert!(get_file_sync_action(0, &[1,], files.clone()).is_none());
-        assert!(get_file_sync_action(0, &[1, 2, 3], files).is_none());
+        assert!(get_file_sync_action(0.into(), &[1.into(),], files.clone()).is_none());
+        assert!(get_file_sync_action(0.into(), &[1.into(), 2.into(), 3.into()], files).is_none());
 
         // One node has the file moved, but most recent has the file deleted
         let mut files = HashMap::default();
-        files.insert(0, with_file_type(FileInfoType::Deleted { deleted_at: 10 }));
         files.insert(
-            1,
+            0.into(),
+            with_file_type(FileInfoType::Deleted { deleted_at: 10 }),
+        );
+        files.insert(
+            1.into(),
             with_file_type(FileInfoType::Moved {
                 old_path: "olde_path".into(),
                 moved_at: 0,
             }),
         );
 
-        match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
+        match get_file_sync_action(0.into(), &[1.into()], files.clone()).unwrap() {
+            SyncAction::Delete { file: _, nodes } => assert_eq!(nodes, HashSet::from([1.into()])),
             _ => panic!(),
         }
     }
@@ -294,36 +309,43 @@ mod tests {
     fn test_generate_send_actions() {
         let mut files = HashMap::default();
         files.insert(
-            0,
+            0.into(),
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
                 created_at: 0,
                 size: 0,
             }),
         );
-        files.insert(1, with_file_type(FileInfoType::Deleted { deleted_at: 0 }));
+        files.insert(
+            1.into(),
+            with_file_type(FileInfoType::Deleted { deleted_at: 0 }),
+        );
 
         // Most recent file exists for local node, every other have the file as deleted or no
         // records of the file, all other nodes should receive the file
 
-        match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([1, 2, 3])),
+        match get_file_sync_action(0.into(), &[1.into(), 2.into(), 3.into()], files.clone())
+            .unwrap()
+        {
+            SyncAction::Send { file: _, nodes } => {
+                assert_eq!(nodes, HashSet::from([1.into(), 2.into(), 3.into()]))
+            }
             _ => panic!(),
         }
 
-        match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
+        match get_file_sync_action(0.into(), &[1.into()], files.clone()).unwrap() {
+            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([1.into()])),
             _ => panic!(),
         }
 
         // This should not happen, but lets guarantee no action is generated where there are no
         // peers to delete the file
-        assert!(get_file_sync_action(0, &[], files).is_none());
+        assert!(get_file_sync_action(0.into(), &[], files).is_none());
 
         // Two nodes have the file, the others should receive the file
         let mut files = HashMap::default();
         files.insert(
-            1,
+            1.into(),
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
                 created_at: 0,
@@ -331,7 +353,7 @@ mod tests {
             }),
         );
         files.insert(
-            0,
+            0.into(),
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
                 created_at: 0,
@@ -339,16 +361,20 @@ mod tests {
             }),
         );
 
-        assert!(get_file_sync_action(0, &[1,], files.clone()).is_none());
-        match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([2, 3])),
+        assert!(get_file_sync_action(0.into(), &[1.into(),], files.clone()).is_none());
+        match get_file_sync_action(0.into(), &[1.into(), 2.into(), 3.into()], files.clone())
+            .unwrap()
+        {
+            SyncAction::Send { file: _, nodes } => {
+                assert_eq!(nodes, HashSet::from([2.into(), 3.into()]))
+            }
             SyncAction::DelegateSend {
                 file: _,
                 nodes,
                 delegate_to,
             } => {
-                assert_eq!(delegate_to, 1);
-                assert_eq!(nodes, HashSet::from([2, 3]));
+                assert_eq!(delegate_to, 1.into());
+                assert_eq!(nodes, HashSet::from([2.into(), 3.into()]));
             }
             _ => panic!(),
         }
@@ -356,7 +382,7 @@ mod tests {
         // One node has the file as moved, but another node has more recent Write
         let mut files = HashMap::default();
         files.insert(
-            0,
+            0.into(),
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
                 created_at: 0,
@@ -364,15 +390,15 @@ mod tests {
             }),
         );
         files.insert(
-            1,
+            1.into(),
             with_file_type(FileInfoType::Moved {
                 old_path: "old_path".into(),
                 moved_at: 0,
             }),
         );
 
-        match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
+        match get_file_sync_action(0.into(), &[1.into()], files.clone()).unwrap() {
+            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([1.into()])),
             _ => panic!(),
         }
     }
@@ -381,50 +407,55 @@ mod tests {
     fn test_generate_delegate_send_actions() {
         let mut files = HashMap::default();
         files.insert(
-            1,
+            1.into(),
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
                 created_at: 0,
                 size: 0,
             }),
         );
-        files.insert(0, with_file_type(FileInfoType::Deleted { deleted_at: 0 }));
+        files.insert(
+            0.into(),
+            with_file_type(FileInfoType::Deleted { deleted_at: 0 }),
+        );
 
         // Most recent file exists for some other node, local node have the file deleted, other
         // nodes have no records of the file, node 1 should send the files for all other nodes,
         // including local node
-        match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
+        match get_file_sync_action(0.into(), &[1.into(), 2.into(), 3.into()], files.clone())
+            .unwrap()
+        {
             SyncAction::DelegateSend {
                 file: _,
                 nodes,
                 delegate_to,
             } => {
-                assert_eq!(delegate_to, 1);
-                assert_eq!(nodes, HashSet::from([0, 2, 3]));
+                assert_eq!(delegate_to, 1.into());
+                assert_eq!(nodes, HashSet::from([0.into(), 2.into(), 3.into()]));
             }
             _ => panic!(),
         }
 
-        match get_file_sync_action(0, &[1], files.clone()).unwrap() {
+        match get_file_sync_action(0.into(), &[1.into()], files.clone()).unwrap() {
             SyncAction::DelegateSend {
                 file: _,
                 nodes,
                 delegate_to,
             } => {
-                assert_eq!(delegate_to, 1);
-                assert_eq!(nodes, HashSet::from([0]));
+                assert_eq!(delegate_to, 1.into());
+                assert_eq!(nodes, HashSet::from([0.into()]));
             }
             _ => panic!(),
         }
 
         // This should not happen, but lets guarantee no action is generated where there are no
         // peers to delete the file
-        assert!(get_file_sync_action(0, &[], files).is_none());
+        assert!(get_file_sync_action(0.into(), &[], files).is_none());
 
         // Two nodes have the file, the others should receive the file
         let mut files = HashMap::default();
         files.insert(
-            1,
+            1.into(),
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
                 created_at: 0,
@@ -432,7 +463,7 @@ mod tests {
             }),
         );
         files.insert(
-            0,
+            0.into(),
             with_file_type(FileInfoType::Existent {
                 modified_at: 10,
                 created_at: 0,
@@ -440,16 +471,20 @@ mod tests {
             }),
         );
 
-        assert!(get_file_sync_action(0, &[1,], files.clone()).is_none());
-        match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Send { file: _, nodes } => assert_eq!(nodes, HashSet::from([2, 3])),
+        assert!(get_file_sync_action(0.into(), &[1.into(),], files.clone()).is_none());
+        match get_file_sync_action(0.into(), &[1.into(), 2.into(), 3.into()], files.clone())
+            .unwrap()
+        {
+            SyncAction::Send { file: _, nodes } => {
+                assert_eq!(nodes, HashSet::from([2.into(), 3.into()]))
+            }
             SyncAction::DelegateSend {
                 file: _,
                 nodes,
                 delegate_to,
             } => {
-                assert_eq!(delegate_to, 1);
-                assert_eq!(nodes, HashSet::from([2, 3]));
+                assert_eq!(delegate_to, 1.into());
+                assert_eq!(nodes, HashSet::from([2.into(), 3.into()]));
             }
             _ => panic!(),
         }
@@ -459,7 +494,7 @@ mod tests {
     pub fn test_generate_move_action() {
         let mut files = HashMap::default();
         files.insert(
-            0,
+            0.into(),
             with_file_type(FileInfoType::Moved {
                 old_path: "old_path".into(),
                 moved_at: 10,
@@ -468,45 +503,56 @@ mod tests {
         // FIXME: this node should not appear in the action
         // It is necessary to add a special case to handle this scenario
         files.insert(
-            1,
+            1.into(),
             with_file_type(FileInfoType::Existent {
                 modified_at: 0,
                 created_at: 0,
                 size: 0,
             }),
         );
-        files.insert(2, with_file_type(FileInfoType::Deleted { deleted_at: 0 }));
+        files.insert(
+            2.into(),
+            with_file_type(FileInfoType::Deleted { deleted_at: 0 }),
+        );
 
         // File moving should generate actions only for nodes that do not have the file
-        match get_file_sync_action(0, &[1, 2, 3], files.clone()).unwrap() {
-            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, HashSet::from([1, 2, 3])),
+        match get_file_sync_action(0.into(), &[1.into(), 2.into(), 3.into()], files.clone())
+            .unwrap()
+        {
+            SyncAction::Move { file: _, nodes } => {
+                assert_eq!(nodes, HashSet::from([1.into(), 2.into(), 3.into()]))
+            }
             _ => panic!(),
         }
-        match get_file_sync_action(2, &[0, 1, 3], files.clone()).unwrap() {
-            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, HashSet::from([1, 2, 3])),
+        match get_file_sync_action(2.into(), &[0.into(), 1.into(), 3.into()], files.clone())
+            .unwrap()
+        {
+            SyncAction::Move { file: _, nodes } => {
+                assert_eq!(nodes, HashSet::from([1.into(), 2.into(), 3.into()]))
+            }
             _ => panic!(),
         }
 
         files.insert(
-            1,
+            1.into(),
             with_file_type(FileInfoType::Moved {
                 old_path: "old_path".into(),
                 moved_at: 0,
             }),
         );
 
-        assert!(get_file_sync_action(0, &[1], files.clone()).is_none());
+        assert!(get_file_sync_action(0.into(), &[1.into()], files.clone()).is_none());
 
         files.insert(
-            1,
+            1.into(),
             with_file_type(FileInfoType::Moved {
                 old_path: "other_path".into(),
                 moved_at: 0,
             }),
         );
 
-        match get_file_sync_action(0, &[1], files.clone()).unwrap() {
-            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, HashSet::from([1])),
+        match get_file_sync_action(0.into(), &[1.into()], files.clone()).unwrap() {
+            SyncAction::Move { file: _, nodes } => assert_eq!(nodes, HashSet::from([1.into()])),
             _ => panic!(),
         }
     }

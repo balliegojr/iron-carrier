@@ -4,6 +4,15 @@ use thiserror::Error;
 
 use crate::SharedState;
 
+macro_rules! debug {
+    ($lit:literal, $arg:expr) => {
+        let debug_message = format!("{:?}", $arg);
+        if !debug_message.is_empty() {
+            log::debug!($lit, debug_message)
+        }
+    };
+}
+
 #[derive(Error, Debug)]
 pub enum StateMachineError {
     #[error("Execution aborted")]
@@ -67,10 +76,8 @@ impl<T, U, F> std::fmt::Debug for AndThen<T, U, F>
 where
     T: std::fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AndThen")
-            .field("previous", &self.previous)
-            .finish()
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Ok(())
     }
 }
 
@@ -86,15 +93,14 @@ where
     where
         Self: Sized,
     {
-        log::debug!("Executing {:?}", self.previous);
+        debug!("Executing {:?}", self.previous);
         let previous_output = self.previous.execute(shared_state).await?;
         let next_task = (self.map_fn)(previous_output);
-        log::debug!("Executing {next_task:?}");
+        debug!("Executing {:?}", next_task);
         next_task.execute(shared_state).await
     }
 }
 
-#[derive(Debug)]
 pub struct And<T, U> {
     previous: T,
     _next: PhantomData<U>,
@@ -111,12 +117,18 @@ where
     where
         Self: Sized,
     {
-        log::debug!("Executing {:?}", self.previous);
+        debug!("Executing {:?}", self.previous);
         self.previous.execute(shared_state).await?;
 
         let next = U::default();
-        log::debug!("Executing {next:?}");
+        debug!("Executing {:?}", next);
         next.execute(shared_state).await
+    }
+}
+
+impl<T, U> std::fmt::Debug for And<T, U> {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Ok(())
     }
 }
 
@@ -129,10 +141,8 @@ impl<T, F> std::fmt::Debug for ThenDefault<T, F>
 where
     T: std::fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ThenDefault")
-            .field("previous", &self.previous)
-            .finish()
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Ok(())
     }
 }
 
@@ -145,7 +155,7 @@ where
     type Output = U::Output;
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        log::debug!("Executing {:?}", self.previous);
+        debug!("Executing {:?}", self.previous);
         if let Err(err) = self.previous.execute(shared_state).await {
             if !err.is::<StateMachineError>() {
                 log::error!("{err}");
@@ -153,7 +163,7 @@ where
         };
 
         let next = (self.loop_fn)();
-        log::debug!("Executing {next:?}");
+        debug!("Executing {:?}", next);
         next.execute(shared_state).await
     }
 }
