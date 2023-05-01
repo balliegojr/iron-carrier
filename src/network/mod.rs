@@ -11,8 +11,12 @@ use tokio::{
 use tokio_stream::StreamExt;
 
 use crate::{
-    config::Config, constants::PEER_IDENTIFICATION_TIMEOUT, network_events::NetworkEvents,
-    node_id::NodeId, IronCarrierError,
+    config::Config,
+    constants::PEER_IDENTIFICATION_TIMEOUT,
+    file_transfer::{BlockIndexPosition, TransferId},
+    network_events::NetworkEvents,
+    node_id::NodeId,
+    IronCarrierError,
 };
 use connection::{Connection, ReadHalf};
 
@@ -156,8 +160,8 @@ impl ConnectionHandler<NetworkEvents> {
 
     pub async fn stream_to(
         &self,
-        transfer_id: u64,
-        block_index: u64,
+        transfer_id: TransferId,
+        block_index: BlockIndexPosition,
         block: &[u8],
         nodes: impl Iterator<Item = &NodeId>,
     ) -> crate::Result<()> {
@@ -165,8 +169,8 @@ impl ConnectionHandler<NetworkEvents> {
         for node in nodes {
             if let Some(connection) = connections.get_mut(node) {
                 connection.write_u8(1).await?;
-                connection.write_u64(transfer_id).await?;
-                connection.write_u64(block_index).await?;
+                connection.write_u64(transfer_id.into()).await?;
+                connection.write_u64(block_index.into()).await?;
                 connection.write_u32(block.len() as u32).await?;
                 connection.write_all(block).await?;
             }

@@ -3,11 +3,17 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::{
-    config::Config, hash_helper, ignored_files::IgnoredFilesCache, network_events::NetworkEvents,
-    node_id::NodeId, state_machine::State, storage::FileInfo, StateMachineError,
+    config::Config,
+    file_transfer::{FileTransferEvent, Transfer, TransferRecv, TransferType},
+    hash_helper,
+    ignored_files::IgnoredFilesCache,
+    network_events::NetworkEvents,
+    node_id::NodeId,
+    state_machine::State,
+    storage::FileInfo,
+    StateMachineError,
 };
 
-use super::{FileTransfer, Transfer, TransferRecv, TransferType};
 pub struct ReplyTransfer {
     transfer_chan: TransferRecv,
     transfer: Transfer,
@@ -46,7 +52,7 @@ impl State for ReplyTransfer {
     async fn execute(mut self, shared_state: &crate::SharedState) -> crate::Result<Self::Output> {
         while let Some((node_id, ev)) = self.transfer_chan.recv().await {
             match ev {
-                FileTransfer::QueryTransferType { .. } => {
+                FileTransferEvent::QueryTransferType { .. } => {
                     let mut ignored_files_cache = self.ignored_files_cache.lock().await;
                     let transfer_type = get_transfer_type(
                         &self.transfer.file,
@@ -59,7 +65,7 @@ impl State for ReplyTransfer {
                         .send_to(
                             NetworkEvents::FileTransfer(
                                 self.transfer.transfer_id,
-                                FileTransfer::ReplyTransferType { transfer_type },
+                                FileTransferEvent::ReplyTransferType { transfer_type },
                             ),
                             node_id,
                         )
@@ -72,7 +78,7 @@ impl State for ReplyTransfer {
                         transfer_type,
                     ));
                 }
-                FileTransfer::RemovePeer if node_id == self.source_node => {
+                FileTransferEvent::RemovePeer if node_id == self.source_node => {
                     Err(StateMachineError::Abort)?
                 }
                 _ => {

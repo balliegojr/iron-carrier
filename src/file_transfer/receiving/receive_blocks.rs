@@ -1,4 +1,4 @@
-use std::io::SeekFrom;
+use std::{collections::BTreeSet, io::SeekFrom};
 
 use tokio::{
     fs::File,
@@ -6,29 +6,31 @@ use tokio::{
 };
 
 use crate::{
-    network_events::NetworkEvents, node_id::NodeId, state_machine::State, StateMachineError,
+    file_transfer::{block_index::BlockIndexPosition, FileTransferEvent, Transfer, TransferRecv},
+    network_events::NetworkEvents,
+    node_id::NodeId,
+    state_machine::State,
+    StateMachineError,
 };
-
-use super::{BlockIndex, FileTransfer, Transfer, TransferRecv};
 
 pub struct ReceiveBlocks {
     transfer: Transfer,
     transfer_chan: TransferRecv,
-    expected_blocks: u64,
     source_node: NodeId,
+    required_blocks: BTreeSet<BlockIndexPosition>,
 }
 
 impl State for ReceiveBlocks {
     type Output = ();
 
     async fn execute(mut self, shared_state: &crate::SharedState) -> crate::Result<Self::Output> {
-        if self.expected_blocks == 0 {
+        if self.required_blocks.is_empty() {
             shared_state
                 .connection_handler
                 .send_to(
                     NetworkEvents::FileTransfer(
                         self.transfer.transfer_id,
-                        FileTransfer::TransferSucceeded,
+                        FileTransferEvent::TransferSucceeded,
                     ),
                     self.source_node,
                 )
@@ -45,15 +47,14 @@ impl State for ReceiveBlocks {
         self.adjust_file_size(&mut file_handle).await?;
 
         log::trace!("waiting blocks");
-        let mut received_blocks = 0;
         while let Some((node_id, ev)) = self.transfer_chan.recv().await {
             match ev {
-                FileTransfer::TransferBlock { block_index, block } => {
+                FileTransferEvent::TransferBlock { block_index, block } => {
                     self.write_block(block_index, &block, &mut file_handle)
                         .await?;
-                    received_blocks += 1;
+                    self.required_blocks.remove(&block_index);
                 }
-                FileTransfer::TransferComplete if received_blocks == self.expected_blocks => {
+                FileTransferEvent::TransferComplete if self.required_blocks.is_empty() => {
                     log::trace!("Success");
                     file_handle.sync_all().await?;
                     crate::storage::fix_times_and_permissions(
@@ -66,7 +67,7 @@ impl State for ReceiveBlocks {
                         .send_to(
                             NetworkEvents::FileTransfer(
                                 self.transfer.transfer_id,
-                                FileTransfer::TransferSucceeded,
+                                FileTransferEvent::TransferSucceeded,
                             ),
                             self.source_node,
                         )
@@ -74,15 +75,14 @@ impl State for ReceiveBlocks {
 
                     return Ok(());
                 }
-                FileTransfer::TransferComplete if received_blocks != self.expected_blocks => {
-                    // FIXME: handle 'received blocks'
+                FileTransferEvent::TransferComplete => {
                     shared_state
                         .connection_handler
                         .send_to(
                             NetworkEvents::FileTransfer(
                                 self.transfer.transfer_id,
-                                FileTransfer::TransferFailed {
-                                    received_blocks: Vec::default(),
+                                FileTransferEvent::TransferFailed {
+                                    required_blocks: self.required_blocks.clone(),
                                 },
                             ),
                             self.source_node,
@@ -90,7 +90,7 @@ impl State for ReceiveBlocks {
                         .await?;
                 }
 
-                FileTransfer::RemovePeer if self.source_node == node_id => {
+                FileTransferEvent::RemovePeer if self.source_node == node_id => {
                     Err(StateMachineError::Abort)?
                 }
                 _ => {}
@@ -105,13 +105,13 @@ impl ReceiveBlocks {
     pub fn new(
         transfer: Transfer,
         transfer_chan: TransferRecv,
-        expected_blocks: u64,
+        required_blocks: BTreeSet<BlockIndexPosition>,
         source_node: NodeId,
     ) -> Self {
         Self {
             transfer,
             transfer_chan,
-            expected_blocks,
+            required_blocks,
             source_node,
         }
     }
@@ -127,11 +127,11 @@ impl ReceiveBlocks {
     }
     pub async fn write_block(
         &mut self,
-        block_index: BlockIndex,
+        block_index: BlockIndexPosition,
         block: &[u8],
         file_handle: &mut File,
     ) -> crate::Result<()> {
-        let position = block_index * self.transfer.block_size;
+        let position = block_index.get_position(self.transfer.block_size);
 
         if file_handle.seek(SeekFrom::Start(position)).await? == position {
             file_handle.write_all(block).await?;
@@ -145,8 +145,8 @@ impl std::fmt::Debug for ReceiveBlocks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReceiveBlocks")
             .field("transfer", &self.transfer)
-            .field("expected_blocks", &self.expected_blocks)
             .field("source_node", &self.source_node)
+            .field("required_blocks", &self.required_blocks)
             .finish()
     }
 }

@@ -54,14 +54,14 @@ fn decode_stream(
         return Ok(None);
     }
 
-    let transfer_id = u64::from_be_bytes(src[1..9].try_into()?);
-    let block_index = u64::from_be_bytes(src[9..17].try_into()?);
+    let transfer_id = u64::from_be_bytes(src[1..9].try_into()?).into();
+    let block_index = u64::from_be_bytes(src[9..17].try_into()?).into();
     let block = std::sync::Arc::new(src[21..21 + length].to_vec());
     src.advance(STREAM_HEADER + length);
 
     Ok(Some(NetworkEvents::FileTransfer(
         transfer_id,
-        crate::file_transfer::FileTransfer::TransferBlock { block_index, block },
+        crate::file_transfer::FileTransferEvent::TransferBlock { block_index, block },
     )))
 }
 fn decode_event(src: &mut BytesMut) -> Result<Option<NetworkEvents>, Box<dyn Error + Send + Sync>> {

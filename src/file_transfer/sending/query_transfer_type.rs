@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    network_events::NetworkEvents, node_id::NodeId, state_machine::State, StateMachineError,
+    file_transfer::{FileTransferEvent, Transfer, TransferRecv, TransferType},
+    network_events::NetworkEvents,
+    node_id::NodeId,
+    state_machine::State,
+    StateMachineError,
 };
-
-use super::{FileTransfer, Transfer, TransferRecv, TransferType};
 
 #[derive(Debug)]
 pub struct QueryTransfer {
@@ -32,7 +34,7 @@ impl State for QueryTransfer {
             .broadcast_to(
                 NetworkEvents::FileTransfer(
                     self.transfer.transfer_id,
-                    FileTransfer::QueryTransferType {
+                    FileTransferEvent::QueryTransferType {
                         file: self.transfer.file.clone(),
                     },
                 ),
@@ -43,10 +45,10 @@ impl State for QueryTransfer {
         let mut transfer_types = HashMap::with_capacity(self.nodes.len());
         while let Some((node, ev)) = self.transfer_chan.recv().await {
             match ev {
-                FileTransfer::ReplyTransferType { transfer_type } => {
+                FileTransferEvent::ReplyTransferType { transfer_type } => {
                     transfer_types.insert(node, transfer_type);
                 }
-                FileTransfer::RemovePeer => {
+                FileTransferEvent::RemovePeer => {
                     self.nodes.remove(&node);
                     transfer_types.remove(&node);
                 }

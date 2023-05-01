@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::SeekFrom,
 };
 
@@ -9,16 +9,18 @@ use tokio::{
 };
 
 use crate::{
-    network_events::NetworkEvents, node_id::NodeId, state_machine::State, IronCarrierError,
+    file_transfer::{block_index::BlockIndexPosition, FileTransferEvent, Transfer, TransferRecv},
+    network_events::NetworkEvents,
+    node_id::NodeId,
+    state_machine::State,
+    IronCarrierError,
 };
-
-use super::{FileTransfer, Transfer, TransferRecv};
 
 pub struct TransferBlocks {
     transfer: Transfer,
     transfer_chan: TransferRecv,
     file_handle: File,
-    nodes_blocks: HashMap<NodeId, Vec<u64>>,
+    nodes_blocks: HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
 }
 
 impl State for TransferBlocks {
@@ -38,7 +40,7 @@ impl TransferBlocks {
         transfer: Transfer,
         transfer_chan: TransferRecv,
         file_handle: File,
-        nodes_blocks: HashMap<NodeId, Vec<u64>>,
+        nodes_blocks: HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
     ) -> Self {
         Self {
             transfer,
@@ -49,7 +51,8 @@ impl TransferBlocks {
     }
 
     async fn transfer_blocks(&mut self, shared_state: &crate::SharedState) -> crate::Result<()> {
-        let mut block_nodes: BTreeMap<u64, Vec<NodeId>> = std::collections::BTreeMap::new();
+        let mut block_nodes: BTreeMap<BlockIndexPosition, Vec<NodeId>> =
+            std::collections::BTreeMap::new();
 
         for (node, node_blocks) in self.nodes_blocks.iter() {
             for block in node_blocks {
@@ -60,7 +63,7 @@ impl TransferBlocks {
         let file_size = self.transfer.file.file_size()?;
         let mut block = vec![0u8; file_size as usize];
         for (block_index, nodes) in block_nodes.into_iter() {
-            let position = block_index * self.transfer.block_size;
+            let position = block_index.get_position(self.transfer.block_size);
             let bytes_to_read = self.transfer.block_size.min(file_size - position);
 
             if self.file_handle.seek(SeekFrom::Start(position)).await? != position {
@@ -87,7 +90,7 @@ impl TransferBlocks {
             .broadcast_to(
                 NetworkEvents::FileTransfer(
                     self.transfer.transfer_id,
-                    FileTransfer::TransferComplete,
+                    FileTransferEvent::TransferComplete,
                 ),
                 self.nodes_blocks.keys(),
             )
@@ -98,11 +101,13 @@ impl TransferBlocks {
         let mut failed_transfers = 0;
         while let Some((node_id, ev)) = self.transfer_chan.recv().await {
             match ev {
-                FileTransfer::TransferSucceeded | FileTransfer::RemovePeer => {
+                FileTransferEvent::TransferSucceeded | FileTransferEvent::RemovePeer => {
                     self.nodes_blocks.remove(&node_id);
                 }
-                FileTransfer::TransferFailed { received_blocks } => {
-                    // FIXME: update required blocks and send again
+                FileTransferEvent::TransferFailed { required_blocks } => {
+                    self.nodes_blocks
+                        .entry(node_id)
+                        .and_modify(|e| *e = required_blocks);
                     failed_transfers += 1;
                 }
                 _ => {}
