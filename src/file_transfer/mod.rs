@@ -3,7 +3,6 @@ use std::{
     sync::Arc,
 };
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::{
     mpsc::{Receiver, Sender},
     Mutex,
@@ -20,115 +19,27 @@ use crate::{
 };
 
 mod block_index;
-mod query_required_blocks;
-mod query_transfer_type;
-mod receive_blocks;
-mod reply_required_blocks;
-mod reply_transfer_type;
-mod transfer_blocks;
+pub use block_index::BlockIndexPosition;
 
-type BlockIndex = u64;
-type BlockHash = u64;
+mod transfer;
 
-type TransferRecv = Receiver<(NodeId, FileTransfer)>;
+mod file_transfer_event;
+pub use file_transfer_event::{FileTransferEvent, TransferType};
 
-#[derive(Debug)]
-pub struct Transfer {
-    file: FileInfo,
-    block_size: u64,
-    transfer_id: u64,
-}
+mod sending;
+pub use sending::*;
 
-impl Transfer {
-    pub fn new(file: FileInfo) -> crate::Result<Self> {
-        let block_size = block_index::get_block_size(file.file_size()?);
-        let transfer_id = hash_helper::calculate_file_hash(&file);
+mod receiving;
+pub use receiving::*;
 
-        Ok(Self {
-            file,
-            block_size,
-            transfer_id,
-        })
-    }
-}
+pub use transfer::{Transfer, TransferId};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum FileTransfer {
-    QueryTransferType {
-        file: FileInfo,
-    },
-    ReplyTransferType {
-        transfer_type: TransferType,
-    },
-
-    QueryRequiredBlocks {
-        sender_block_index: Vec<BlockHash>,
-    },
-    ReplyRequiredBlocks {
-        required_blocks: Vec<BlockIndex>,
-    },
-
-    TransferBlock {
-        block_index: BlockIndex,
-        block: Arc<Vec<u8>>,
-    },
-    TransferComplete,
-    TransferSucceeded,
-    TransferFailed {
-        received_blocks: Vec<u64>,
-    },
-    SendFileTo {
-        file: FileInfo,
-        nodes: Vec<u64>,
-    },
-
-    RemovePeer,
-}
-
-#[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
-pub enum TransferType {
-    FullFile,
-    Partial,
-    NoTransfer,
-}
+type TransferRecv = Receiver<(NodeId, FileTransferEvent)>;
 
 #[derive(Debug)]
 pub struct TransferFiles {
     files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
     sync_leader_id: Option<NodeId>,
-}
-
-impl TransferFiles {
-    pub fn new(
-        sync_leader_id: Option<NodeId>,
-        files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
-    ) -> Self {
-        Self {
-            files_to_send,
-            sync_leader_id,
-        }
-    }
-
-    async fn start_new_transfers(
-        &mut self,
-        shared_state: &SharedState,
-        active_transfers: &mut HashMap<u64, Sender<(NodeId, FileTransfer)>>,
-        active_sending: &mut HashSet<u64>,
-        when_done_tx: &Sender<u64>,
-    ) -> crate::Result<()> {
-        while !self.files_to_send.is_empty()
-            && active_transfers.len() < shared_state.config.max_parallel_transfers as usize
-        {
-            let (file, nodes) = self.files_to_send.pop().unwrap();
-
-            let (transfer_id, sender) =
-                send_file(*shared_state, file, nodes, when_done_tx.clone()).await?;
-            active_transfers.insert(transfer_id, sender);
-            active_sending.insert(transfer_id);
-        }
-
-        Ok(())
-    }
 }
 
 impl State for TransferFiles {
@@ -161,9 +72,6 @@ impl State for TransferFiles {
         let ignore_cache = Arc::new(Mutex::new(IgnoredFilesCache::default()));
         let mut sent_done_event = false;
 
-        // self.start_new_transfers(shared_state, &mut active_transfers, &when_done_tx)
-        //     .await?;
-
         while active_nodes > 0 || !active_transfers.is_empty() || !self.files_to_send.is_empty() {
             self.start_new_transfers(
                 shared_state,
@@ -181,7 +89,7 @@ impl State for TransferFiles {
                             active_nodes = active_nodes.saturating_sub(1);
 
                             for transfer in active_transfers.values() {
-                                let _ = transfer.send((node_id, FileTransfer::RemovePeer)).await;
+                                let _ = transfer.send((node_id, FileTransferEvent::RemovePeer)).await;
                             }
                         }
                         NetworkEvents::Synchronization(Synchronization::DoneTransferingFiles) => {
@@ -198,10 +106,10 @@ impl State for TransferFiles {
 
                         }
                         NetworkEvents::FileTransfer(transfer_id, file_transfer) => match file_transfer {
-                            FileTransfer::QueryTransferType { file } => {
+                            FileTransferEvent::QueryTransferType { file } => {
                                 let transfer = Transfer::new(file.clone())?;
                                 let sender = receive_file(*shared_state, node_id, transfer, ignore_cache.clone(), when_done_tx.clone()).await?;
-                                sender.send((node_id, FileTransfer::QueryTransferType { file })).await?;
+                                sender.send((node_id, FileTransferEvent::QueryTransferType { file })).await?;
                                 active_transfers.insert(transfer_id, sender);
                             }
                             event => {
@@ -244,36 +152,58 @@ impl State for TransferFiles {
     }
 }
 
+impl TransferFiles {
+    pub fn new(
+        sync_leader_id: Option<NodeId>,
+        files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
+    ) -> Self {
+        Self {
+            files_to_send,
+            sync_leader_id,
+        }
+    }
+
+    async fn start_new_transfers(
+        &mut self,
+        shared_state: &SharedState,
+        active_transfers: &mut HashMap<TransferId, Sender<(NodeId, FileTransferEvent)>>,
+        active_sending: &mut HashSet<TransferId>,
+        when_done_tx: &Sender<TransferId>,
+    ) -> crate::Result<()> {
+        while !self.files_to_send.is_empty()
+            && active_transfers.len() < shared_state.config.max_parallel_transfers as usize
+        {
+            let (file, nodes) = self.files_to_send.pop().unwrap();
+
+            let (transfer_id, sender) =
+                send_file(*shared_state, file, nodes, when_done_tx.clone()).await?;
+            active_transfers.insert(transfer_id, sender);
+            active_sending.insert(transfer_id);
+        }
+
+        Ok(())
+    }
+}
+
 async fn receive_file(
     shared_state: SharedState,
     source_node: NodeId,
     transfer: Transfer,
     ignored_files_cache: Arc<Mutex<IgnoredFilesCache>>,
-    when_done: Sender<u64>,
-) -> crate::Result<Sender<(NodeId, FileTransfer)>> {
+    when_done: Sender<TransferId>,
+) -> crate::Result<Sender<(NodeId, FileTransferEvent)>> {
     let transfer_id = transfer.transfer_id;
     let (tx, rx) = tokio::sync::mpsc::channel(1);
 
     tokio::spawn(async move {
-        let receive_file_task =
-            reply_transfer_type::ReplyTransfer::new(transfer, rx, ignored_files_cache, source_node)
-                .and_then(|(source_node, transfer, transfer_chan, transfer_type)| {
-                    reply_required_blocks::ReplyRequiredBlocks::new(
-                        transfer_chan,
-                        transfer,
-                        transfer_type,
-                        source_node,
-                    )
-                })
-                .and_then(|(transfer, source_node, transfer_chan, expected_blocks)| {
-                    receive_blocks::ReceiveBlocks::new(
-                        transfer,
-                        transfer_chan,
-                        expected_blocks,
-                        source_node,
-                    )
-                })
-                .execute(&shared_state);
+        let receive_file_task = ReplyTransfer::new(transfer, rx, ignored_files_cache, source_node)
+            .and_then(|(source_node, transfer, transfer_chan, transfer_type)| {
+                ReplyRequiredBlocks::new(transfer_chan, transfer, transfer_type, source_node)
+            })
+            .and_then(|(transfer, source_node, transfer_chan, required_blocks)| {
+                ReceiveBlocks::new(transfer, transfer_chan, required_blocks, source_node)
+            })
+            .execute(&shared_state);
 
         if let Err(err) = receive_file_task.await {
             log::error!("{err}");
@@ -281,7 +211,7 @@ async fn receive_file(
             let _ = shared_state
                 .connection_handler
                 .send_to(
-                    NetworkEvents::FileTransfer(transfer_id, FileTransfer::RemovePeer),
+                    NetworkEvents::FileTransfer(transfer_id, FileTransferEvent::RemovePeer),
                     source_node,
                 )
                 .await;
@@ -297,8 +227,8 @@ async fn send_file(
     shared_state: SharedState,
     file: FileInfo,
     nodes: HashSet<NodeId>,
-    when_done: Sender<u64>,
-) -> crate::Result<(u64, Sender<(NodeId, FileTransfer)>)> {
+    when_done: Sender<TransferId>,
+) -> crate::Result<(TransferId, Sender<(NodeId, FileTransferEvent)>)> {
     log::trace!("Will send {:?} to {nodes:?}", &file.path);
 
     let transfer = Transfer::new(file)?;
@@ -306,21 +236,12 @@ async fn send_file(
 
     let (tx, rx) = tokio::sync::mpsc::channel(nodes.len());
     tokio::spawn(async move {
-        let transfer_task = query_transfer_type::QueryTransfer::new(transfer, nodes.clone(), rx)
+        let transfer_task = QueryTransfer::new(transfer, nodes.clone(), rx)
             .and_then(|(transfer, transfer_chan, transfer_types)| {
-                query_required_blocks::QueryRequiredBlocks::new(
-                    transfer,
-                    transfer_chan,
-                    transfer_types,
-                )
+                QueryRequiredBlocks::new(transfer, transfer_chan, transfer_types)
             })
             .and_then(|(transfer, transfer_chan, file_handle, nodes_blocks)| {
-                transfer_blocks::TransferBlocks::new(
-                    transfer,
-                    transfer_chan,
-                    file_handle,
-                    nodes_blocks,
-                )
+                TransferBlocks::new(transfer, transfer_chan, file_handle, nodes_blocks)
             })
             .execute(&shared_state);
 
@@ -330,7 +251,7 @@ async fn send_file(
             let _ = shared_state
                 .connection_handler
                 .broadcast_to(
-                    NetworkEvents::FileTransfer(transfer_id, FileTransfer::RemovePeer),
+                    NetworkEvents::FileTransfer(transfer_id, FileTransferEvent::RemovePeer),
                     nodes.iter(),
                 )
                 .await;

@@ -1,16 +1,20 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fmt::Debug,
 };
 
 use tokio::fs::File;
 
 use crate::{
-    file_transfer::FileTransfer, network_events::NetworkEvents, node_id::NodeId,
-    state_machine::State, SharedState, StateMachineError,
+    file_transfer::{
+        block_index::{self, BlockIndexPosition, FullIndex},
+        FileTransferEvent, Transfer, TransferRecv, TransferType,
+    },
+    network_events::NetworkEvents,
+    node_id::NodeId,
+    state_machine::State,
+    SharedState, StateMachineError,
 };
-
-use super::{block_index, Transfer, TransferRecv, TransferType};
 
 pub struct QueryRequiredBlocks {
     transfer: Transfer,
@@ -19,7 +23,12 @@ pub struct QueryRequiredBlocks {
 }
 
 impl State for QueryRequiredBlocks {
-    type Output = (Transfer, TransferRecv, File, HashMap<NodeId, Vec<u64>>);
+    type Output = (
+        Transfer,
+        TransferRecv,
+        File,
+        HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
+    );
 
     async fn execute(mut self, shared_state: &crate::SharedState) -> crate::Result<Self::Output> {
         if !self.is_any_transfer_required() {
@@ -33,21 +42,21 @@ impl State for QueryRequiredBlocks {
         )
         .await?;
 
-        let block_hashes = self.get_block_index(&mut file_handle).await?;
+        let full_index = self.get_block_index(&mut file_handle).await?;
         let mut required_blocks = if nodes_to_query.is_empty() {
             Default::default()
         } else {
-            self.query_required_blocks(shared_state, &block_hashes, nodes_to_query)
+            self.query_required_blocks(shared_state, &full_index, nodes_to_query)
                 .await?
         };
 
         for (node_id, transfer_type) in self.transfer_types {
             match transfer_type {
                 TransferType::FullFile => {
-                    required_blocks.insert(node_id, (0..block_hashes.len() as u64).collect());
+                    required_blocks.insert(node_id, full_index.to_partial());
                 }
                 TransferType::NoTransfer => {
-                    required_blocks.insert(node_id, Vec::new());
+                    required_blocks.insert(node_id, Default::default());
                 }
                 TransferType::Partial => {}
             }
@@ -81,7 +90,7 @@ impl QueryRequiredBlocks {
             .any(|t| !matches!(t, TransferType::NoTransfer))
     }
 
-    async fn get_block_index(&self, file_handle: &mut File) -> crate::Result<Vec<u64>> {
+    async fn get_block_index(&self, file_handle: &mut File) -> crate::Result<FullIndex> {
         block_index::get_file_block_index(
             file_handle,
             self.transfer.block_size,
@@ -107,16 +116,16 @@ impl QueryRequiredBlocks {
     async fn query_required_blocks(
         &mut self,
         shared_state: &SharedState,
-        block_hashes: &[u64],
+        block_hashes: &FullIndex,
         mut nodes: HashSet<NodeId>,
-    ) -> crate::Result<HashMap<NodeId, Vec<u64>>> {
+    ) -> crate::Result<HashMap<NodeId, BTreeSet<BlockIndexPosition>>> {
         shared_state
             .connection_handler
             .broadcast_to(
                 NetworkEvents::FileTransfer(
                     self.transfer.transfer_id,
-                    FileTransfer::QueryRequiredBlocks {
-                        sender_block_index: block_hashes.to_vec(),
+                    FileTransferEvent::QueryRequiredBlocks {
+                        sender_block_index: block_hashes.clone(),
                     },
                 ),
                 nodes.iter(),
@@ -126,10 +135,10 @@ impl QueryRequiredBlocks {
         let mut replies = HashMap::with_capacity(nodes.len());
         while let Some((node_id, ev)) = self.transfer_chan.recv().await {
             match ev {
-                FileTransfer::ReplyRequiredBlocks { required_blocks } => {
+                FileTransferEvent::ReplyRequiredBlocks { required_blocks } => {
                     replies.insert(node_id, required_blocks);
                 }
-                FileTransfer::RemovePeer => {
+                FileTransferEvent::RemovePeer => {
                     replies.remove(&node_id);
                     nodes.remove(&node_id);
                     self.transfer_types.remove(&node_id);

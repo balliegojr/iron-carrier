@@ -3,7 +3,10 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    file_transfer::FileTransfer, node_id::NodeId, states::consensus::ElectionEvents, storage,
+    file_transfer::{FileTransferEvent, TransferId},
+    node_id::NodeId,
+    states::consensus::ElectionEvents,
+    storage,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -12,7 +15,7 @@ pub enum NetworkEvents {
     ConsensusElection(ElectionEvents),
     RequestTransition(Transition),
     Synchronization(Synchronization),
-    FileTransfer(u64, FileTransfer),
+    FileTransfer(TransferId, FileTransferEvent),
 }
 
 impl From<Transition> for NetworkEvents {
