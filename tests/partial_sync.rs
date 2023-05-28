@@ -11,7 +11,7 @@ async fn test_partial_sync() -> Result<(), Box<dyn std::error::Error>> {
     common::enable_logs();
 
     let _ = fs::remove_dir_all("/tmp/partial_sync");
-    let configs = common::generate_configs("partial_sync", common::PARTIAL_SYNC_PORT, 3, 2);
+    let configs = common::generate_configs("partial_sync", common::PARTIAL_SYNC_PORT, 3, 2, None);
 
     let compare_all = || {
         for config in configs.iter().skip(1) {

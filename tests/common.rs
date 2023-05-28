@@ -18,11 +18,13 @@ use rand::Rng;
 const FOLDERS: usize = 1;
 const FILES_PER_FOLDER: usize = 2;
 
+// Can't use an atomic for the ports, each test runs in a different process
 pub const FULL_SYNC_PORT: u16 = 8090;
 pub const PARTIAL_SYNC_PORT: u16 = 8095;
 pub const FULL_SYNC_PRE_DELETED_PORT: u16 = 8100;
 pub const TRUNCATE_PORT: u16 = 8105;
 pub const FOLDER_OPERATION_PORT: u16 = 8110;
+pub const FULL_SYNC_PORT_ENCRYPTED: u16 = 8115;
 
 pub fn enable_logs() {
     let verbosity: usize = std::env::var("LOG_LEVEL")
@@ -45,6 +47,7 @@ pub fn generate_configs(
     initial_port: u16,
     nodes: u16,
     storages: usize,
+    encryption_key: Option<&str>,
 ) -> Vec<&'static Validated<Config>> {
     assert!(nodes > 1);
 
@@ -66,6 +69,10 @@ pub fn generate_configs(
             .join("\n")
     };
 
+    let encryption = encryption_key
+        .map(|key| format!(r#"encryption_key = "{key}""#))
+        .unwrap_or_default();
+
     (initial_port..final_port)
         .map(|port| {
             let config = format!(
@@ -76,6 +83,7 @@ port={port}
 log_path = "/tmp/{test_name}/peer_{port}.log"
 delay_watcher_events=1
 enable_service_discovery=false
+{encryption}
 
 peers = [
 {}

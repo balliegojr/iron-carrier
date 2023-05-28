@@ -176,6 +176,13 @@ impl crate::validation::Verifiable for Config {
             }
         }
 
+        if matches!(self.encryption_key.as_deref(), Some("")) {
+            return Err(IronCarrierError::ConfigFileIsInvalid(
+                "Encryption key must be non empty".into(),
+            )
+            .into());
+        }
+
         Ok(())
     }
 }

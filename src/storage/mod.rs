@@ -20,6 +20,7 @@ use crate::{
     hash_helper::{self, HASHER},
     ignored_files::IgnoredFiles,
     relative_path::RelativePathBuf,
+    time::system_time_to_secs,
     transaction_log::TransactionLog,
 };
 
@@ -44,12 +45,6 @@ pub async fn get_storage_info(
         files,
         hash,
     })
-}
-
-fn system_time_to_secs(time: SystemTime) -> u64 {
-    time.duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .expect("failed to get wall time")
 }
 
 /// Returns a sorted vector with the entire folder structure (recursive read) for the given path.  

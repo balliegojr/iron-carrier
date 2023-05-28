@@ -20,10 +20,14 @@ use crate::{
 };
 use connection::{Connection, ReadHalf};
 
-use self::{connection_storage::ConnectionStorage, network_event_decoder::NetWorkEventDecoder};
+use self::{
+    connection::Identified, connection_storage::ConnectionStorage,
+    network_event_decoder::NetWorkEventDecoder,
+};
 
 mod connection;
 mod connection_storage;
+mod crypto_stream;
 mod network_event_decoder;
 pub mod service_discovery;
 
@@ -77,13 +81,12 @@ impl ConnectionHandler<NetworkEvents> {
         async fn connect_inner(
             config: &'static Config,
             addr: SocketAddr,
-        ) -> crate::Result<Connection> {
+        ) -> crate::Result<Identified<Connection>> {
             let backoff = backoff::ExponentialBackoffBuilder::new()
                 .with_max_elapsed_time(Some(Duration::from_secs(3)))
                 .build();
 
             let transport_stream = backoff::future::retry(backoff, || async {
-                // TODO: add transport layer encryption
                 tokio::net::TcpStream::connect(addr)
                     .await
                     .map_err(backoff::Error::from)
@@ -102,7 +105,7 @@ impl ConnectionHandler<NetworkEvents> {
         .await
         .map_err(|_| IronCarrierError::ConnectionTimeout)??;
 
-        let node_id = connection.node_id;
+        let node_id = connection.node_id();
         append_connection(
             self.stream_sender.clone(),
             self.connections.clone(),
@@ -119,6 +122,7 @@ impl ConnectionHandler<NetworkEvents> {
             connection.write_u8(0).await?;
             connection.write_u32(bytes.len() as u32).await?;
             connection.write_all(&bytes).await?;
+            connection.flush().await?;
         }
 
         Ok(())
@@ -135,6 +139,7 @@ impl ConnectionHandler<NetworkEvents> {
             connection.write_u8(0).await?;
             connection.write_u32(bytes.len() as u32).await?;
             connection.write_all(&bytes).await?;
+            connection.flush().await?;
         }
 
         Ok(connections.len())
@@ -152,6 +157,7 @@ impl ConnectionHandler<NetworkEvents> {
                 connection.write_u8(0).await?;
                 connection.write_u32(bytes.len() as u32).await?;
                 connection.write_all(&bytes).await?;
+                connection.flush().await?;
             }
         }
 
@@ -173,6 +179,7 @@ impl ConnectionHandler<NetworkEvents> {
                 connection.write_u64(block_index.into()).await?;
                 connection.write_u32(block.len() as u32).await?;
                 connection.write_all(block).await?;
+                connection.flush().await?;
             }
         }
 
@@ -188,11 +195,11 @@ impl ConnectionHandler<NetworkEvents> {
 async fn append_connection(
     event_stream: Sender<(NodeId, NetworkEvents)>,
     connections: Arc<Mutex<ConnectionStorage>>,
-    connection: Connection,
+    connection: Identified<Connection>,
 ) {
     let mut connections_guard = connections.lock().await;
-    if connections_guard.contains_peer(&connection.node_id) {
-        log::info!("Already connected to {}", connection.node_id);
+    if connections_guard.contains_peer(&connection.node_id()) {
+        log::info!("Already connected to {}", connection.node_id());
         return;
     }
 
@@ -203,7 +210,7 @@ async fn append_connection(
         connections.clone(),
     ));
 
-    log::info!("Connected to {}", write.node_id);
+    log::info!("Connected to {}", write.node_id());
     connections_guard.insert(write);
 }
 
@@ -243,14 +250,15 @@ async fn listen_connections(
 }
 
 async fn read_network_data(
-    read_connection: ReadHalf,
+    read_connection: Identified<ReadHalf>,
     event_stream: Sender<(NodeId, NetworkEvents)>,
     connections: Arc<Mutex<ConnectionStorage>>,
 ) {
-    let peer_id = read_connection.node_id;
+    let peer_id = read_connection.node_id();
     let connection_id = read_connection.connection_id;
 
-    let mut stream = tokio_util::codec::FramedRead::new(read_connection, NetWorkEventDecoder {});
+    let mut stream =
+        tokio_util::codec::FramedRead::new(read_connection.into_inner(), NetWorkEventDecoder {});
     while let Some(event) = stream.next().await {
         match event {
             Ok(event) => {

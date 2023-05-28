@@ -12,7 +12,13 @@ async fn test_file_watcher_folder_operations() -> Result<(), Box<dyn std::error:
     common::enable_logs();
 
     let _ = fs::remove_dir_all("/tmp/folder_operation");
-    let configs = common::generate_configs("folder_operation", common::FOLDER_OPERATION_PORT, 2, 2);
+    let configs = common::generate_configs(
+        "folder_operation",
+        common::FOLDER_OPERATION_PORT,
+        2,
+        2,
+        None,
+    );
 
     let compare_all = || {
         for config in configs.iter().skip(1) {

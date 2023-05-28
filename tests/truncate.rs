@@ -8,7 +8,7 @@ fn test_truncate() -> Result<(), Box<dyn std::error::Error>> {
     common::enable_logs();
 
     let _ = fs::remove_dir_all("/tmp/truncate");
-    let configs = common::generate_configs("truncate", common::TRUNCATE_PORT, 2, 1);
+    let configs = common::generate_configs("truncate", common::TRUNCATE_PORT, 2, 1, None);
 
     let compare_all = || {
         common::tree_compare(
