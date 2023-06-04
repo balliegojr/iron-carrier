@@ -6,7 +6,9 @@ use crate::{
     node_id::NodeId,
     state_machine::{State, StateComposer, StateMachineError},
     states::FullSync,
-    stream, SharedState,
+    stream,
+    sync_options::SyncOptions,
+    SharedState,
 };
 
 use super::{ConnectAllPeers, Consensus, DiscoverPeers, SyncFollower, SyncLeader};
@@ -19,7 +21,7 @@ impl State for Daemon {
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         loop {
-            DaemonEventListener::default()
+            DaemonEventListener
                 .and_then(|event| event)
                 .execute(shared_state)
                 .await?;
@@ -95,20 +97,20 @@ impl State for DaemonEvent {
             DaemonEvent::ScheduledSync => {
                 DiscoverPeers::default()
                     .and_then(ConnectAllPeers::new)
-                    .and_then(|_| SyncLeader::sync_everything())
+                    .and_then(|_| SyncLeader::sync(SyncOptions::auto()))
                     .execute(shared_state)
                     .await
             }
             DaemonEvent::Watcher(to_sync) => {
                 DiscoverPeers::default()
                     .and_then(ConnectAllPeers::new)
-                    .and_then(|_| SyncLeader::sync_just(to_sync))
+                    .and_then(|_| SyncLeader::sync(SyncOptions::auto().with_storages(to_sync)))
                     .execute(shared_state)
                     .await
             }
             DaemonEvent::ConsensusRequest => {
                 Consensus::new()
-                    .and_then(FullSync::new)
+                    .and_then(|leader_id| FullSync::new(leader_id, Default::default()))
                     .execute(shared_state)
                     .await
             }

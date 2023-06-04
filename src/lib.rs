@@ -13,6 +13,7 @@ use network::ConnectionHandler;
 use serde::{Deserialize, Serialize};
 use state_machine::{State, StateComposer};
 use states::FullSync;
+use sync_options::SyncOptions;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use transaction_log::TransactionLog;
@@ -28,6 +29,7 @@ mod network_events;
 mod node_id;
 pub mod relative_path;
 mod stream;
+mod sync_options;
 mod time;
 
 pub mod leak;
@@ -101,7 +103,6 @@ pub struct SharedState {
     after_sync: &'static Option<Sender<()>>,
 }
 
-// TODO: implement operation mode
 // TODO: implement client mode if the daemon is running (basic a cli that shows sync status)
 // TODO: add sync information to the transaction log (when it was last synched and what nodes
 // participated
@@ -122,7 +123,7 @@ pub async fn run_full_sync(config: &'static validation::Validated<config::Config
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(FullSync::new)
+        .and_then(|leader_id| FullSync::new(leader_id, SyncOptions::manual()))
         .execute(&shared_state)
         .await?;
 
@@ -155,7 +156,7 @@ pub async fn start_daemon(
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(FullSync::new)
+        .and_then(|leader_id| FullSync::new(leader_id, SyncOptions::auto()))
         .then_default_to(states::Daemon::default)
         .execute(&shared_state)
         .await?;

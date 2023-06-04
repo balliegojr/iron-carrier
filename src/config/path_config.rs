@@ -11,7 +11,8 @@ use super::OperationMode;
 pub struct PathConfig {
     pub path: PathBuf,
     pub enable_watcher: Option<bool>,
-    pub mode: Option<OperationMode>,
+    #[serde(default)]
+    pub mode: OperationMode,
 }
 
 impl FromStr for PathConfig {
