@@ -59,9 +59,6 @@ pub struct Config {
     #[serde(default = "defaults::service_discovery_enabled")]
     pub enable_service_discovery: bool,
 
-    #[serde(default)]
-    pub operation_mode: OperationMode,
-
     /// path to the log file
     #[serde(default = "defaults::log_path")]
     pub log_path: PathBuf,

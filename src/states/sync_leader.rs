@@ -1,10 +1,11 @@
-use std::{collections::HashSet, fmt::Display};
+use std::fmt::Display;
 
 use crate::{
-    config::PathConfig,
+    config::{OperationMode, PathConfig},
     file_transfer::TransferFiles,
     network_events::Transition,
     state_machine::{State, StateComposer},
+    sync_options::SyncOptions,
     SharedState, StateMachineError,
 };
 use matching_files::BuildMatchingFiles;
@@ -15,21 +16,23 @@ mod sync_actions;
 
 #[derive(Debug, Default)]
 pub struct SyncLeader {
-    storages_to_sync: HashSet<String>,
+    sync_options: SyncOptions,
 }
 
 impl SyncLeader {
-    pub fn sync_everything() -> Self {
-        Self {
-            storages_to_sync: Default::default(),
-        }
-    }
-    pub fn sync_just(storages_to_sync: HashSet<String>) -> Self {
-        Self { storages_to_sync }
+    pub fn sync(sync_options: SyncOptions) -> Self {
+        Self { sync_options }
     }
 
-    fn storages_to_sync(&self, (storage, _path_config): &(&String, &PathConfig)) -> bool {
-        self.storages_to_sync.is_empty() || self.storages_to_sync.contains(storage.as_str())
+    fn storages_to_sync(&self, (storage, path_config): &(&String, &PathConfig)) -> bool {
+        if let (OperationMode::Auto, OperationMode::Manual) =
+            (self.sync_options.sync_mode(), &path_config.mode)
+        {
+            return false;
+        }
+
+        self.sync_options.storages().is_empty()
+            || self.sync_options.storages().contains(storage.as_str())
     }
 }
 
