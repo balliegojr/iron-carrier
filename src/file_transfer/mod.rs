@@ -46,8 +46,6 @@ impl State for TransferFiles {
     type Output = ();
 
     async fn execute(mut self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        // FIXME: control active sending transfers and emit 'done' signal when sending is done
-
         let mut active_nodes = if self.sync_leader_id.is_none() {
             shared_state
                 .connection_handler
@@ -62,9 +60,6 @@ impl State for TransferFiles {
         } else {
             "F"
         };
-
-        log::trace!("[{node_type}] {}", shared_state.config.node_id_hashed);
-        log::debug!("[{node_type}] have {active_nodes} active nodes");
 
         let (when_done_tx, mut when_done) = tokio::sync::mpsc::channel(1);
         let mut active_transfers = HashMap::new();
@@ -128,7 +123,6 @@ impl State for TransferFiles {
                     active_transfers.remove(&transfer_id);
                     active_sending.remove(&transfer_id);
                     if !sent_done_event && active_sending.is_empty() && self.files_to_send.is_empty() && let Some(leader) = self.sync_leader_id {
-                        log::debug!("[{node_type}] done transfering files X");
                         shared_state.connection_handler.send_to(
                             Synchronization::DoneTransferingFiles.into(),
                             leader
@@ -140,14 +134,12 @@ impl State for TransferFiles {
         }
 
         if self.sync_leader_id.is_none() {
-            log::debug!("[{node_type}] done transfering files");
             shared_state
                 .connection_handler
                 .broadcast(Synchronization::DoneTransferingFiles.into())
                 .await?;
         }
 
-        log::debug!("[{node_type}] done",);
         Ok(())
     }
 }

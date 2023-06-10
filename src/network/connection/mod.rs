@@ -11,13 +11,15 @@ use std::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
-    config::Config,
-    constants::{PEER_STALE_CONNECTION, VERSION},
-    hash_helper,
-    node_id::NodeId,
-    time::system_time_to_secs,
+    config::Config, constants::VERSION, hash_helper, node_id::NodeId, time::system_time_to_secs,
     IronCarrierError,
 };
+
+mod read_half;
+pub use read_half::ReadHalf;
+
+mod write_half;
+pub use write_half::WriteHalf;
 
 static CONNECTION_ID_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -85,26 +87,18 @@ impl Connection {
 }
 
 impl Identified<Connection> {
-    pub fn split(self) -> (Identified<WriteHalf>, Identified<ReadHalf>) {
+    pub fn split(self) -> (Identified<WriteHalf>, Identified<read_half::ReadHalf>) {
         let node_id = self.node_id;
         let connection_id = self.connection_id;
         let last_access = Arc::new(AtomicU64::new(system_time_to_secs(SystemTime::now())));
 
         (
             Identified::new(
-                WriteHalf {
-                    inner: self.inner.write_half,
-                    connection_id,
-                    last_access: last_access.clone(),
-                },
+                WriteHalf::new(self.inner.write_half, connection_id, last_access.clone()),
                 node_id,
             ),
             Identified::new(
-                ReadHalf {
-                    inner: Box::pin(self.inner.read_half),
-                    connection_id,
-                    last_access,
-                },
+                read_half::ReadHalf::new(self.inner.read_half, connection_id, last_access),
                 node_id,
             ),
         )
@@ -116,101 +110,6 @@ impl std::fmt::Debug for Connection {
         f.debug_struct("Connection")
             .field("connection_id", &self.connection_id)
             .finish()
-    }
-}
-
-pin_project_lite::pin_project! {
-    pub struct WriteHalf {
-        #[pin]
-        inner: Pin<Box<dyn AsyncWrite + Send + Sync>>,
-        pub connection_id: ConnectionId,
-        last_access: Arc<AtomicU64>
-    }
-}
-
-impl WriteHalf {
-    fn touch(self: Pin<&mut Self>) {
-        self.last_access.store(
-            system_time_to_secs(SystemTime::now()),
-            std::sync::atomic::Ordering::SeqCst,
-        );
-    }
-
-    pub fn is_stale(&self) -> bool {
-        let last_access = self.last_access.load(std::sync::atomic::Ordering::SeqCst);
-        let now = system_time_to_secs(SystemTime::now());
-        (now - last_access) > PEER_STALE_CONNECTION
-    }
-}
-
-impl AsyncWrite for WriteHalf {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        match self.as_mut().project().inner.poll_write(cx, buf) {
-            ev @ std::task::Poll::Ready(_) => {
-                self.touch();
-                ev
-            }
-            ev => ev,
-        }
-    }
-
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match self.as_mut().project().inner.poll_flush(cx) {
-            ev @ std::task::Poll::Ready(_) => {
-                self.touch();
-                ev
-            }
-            ev => ev,
-        }
-    }
-
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        self.project().inner.poll_shutdown(cx)
-    }
-}
-
-pin_project_lite::pin_project! {
-    pub struct ReadHalf {
-        #[pin]
-        inner: Pin<Box<dyn AsyncRead + Send>>,
-        pub connection_id: ConnectionId,
-        last_access: Arc<AtomicU64>
-    }
-}
-
-impl ReadHalf {
-    fn touch(self: Pin<&mut Self>) {
-        self.last_access.store(
-            system_time_to_secs(SystemTime::now()),
-            std::sync::atomic::Ordering::SeqCst,
-        );
-    }
-}
-
-impl AsyncRead for ReadHalf {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let me = self.as_mut().project();
-        match me.inner.poll_read(cx, buf) {
-            ev @ std::task::Poll::Ready(_) => {
-                self.touch();
-                ev
-            }
-            ev => ev,
-        }
     }
 }
 
