@@ -168,7 +168,9 @@ fn clear_moved_files_old_path(
         })
         .collect();
 
-    consolidated.drain_filter(|k, _| to_remove.contains(k));
+    consolidated
+        .extract_if(|k, _| to_remove.contains(k))
+        .count();
 }
 
 #[cfg(test)]

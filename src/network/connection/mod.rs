@@ -8,7 +8,16 @@ use std::{
     time::SystemTime,
 };
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use chacha20poly1305::{
+    aead::stream::{DecryptorLE31, EncryptorLE31},
+    XChaCha20Poly1305,
+};
+use pbkdf2::pbkdf2_hmac_array;
+use sha2::Sha256;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::tcp::{OwnedReadHalf, OwnedWriteHalf},
+};
 
 use crate::{
     config::Config, constants::VERSION, hash_helper, node_id::NodeId, time::system_time_to_secs,
@@ -22,6 +31,10 @@ mod write_half;
 pub use write_half::WriteHalf;
 
 static CONNECTION_ID_COUNT: AtomicU32 = AtomicU32::new(0);
+
+type EReadHalf = async_encrypted_stream::ReadHalf<OwnedReadHalf, DecryptorLE31<XChaCha20Poly1305>>;
+type EWriteHalf =
+    async_encrypted_stream::WriteHalf<OwnedWriteHalf, EncryptorLE31<XChaCha20Poly1305>>;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Clone)]
 pub struct ConnectionId(u32);
@@ -117,20 +130,25 @@ pub async fn identify_outgoing_connection(
     config: &Config,
     stream: tokio::net::TcpStream,
 ) -> crate::Result<Identified<Connection>> {
+    let (read, write) = stream.into_split();
     let mut connection = match &config.encryption_key {
         Some(plain_key) => {
             let group_name = config
                 .group
                 .as_deref()
                 .unwrap_or("no group for this session");
-            let (read, write) = super::crypto_stream::crypto_stream(stream, plain_key, group_name);
+
+            let key = get_key(plain_key, group_name);
+            let (read, write): (EReadHalf, EWriteHalf) = async_encrypted_stream::encrypted_stream(
+                read,
+                write,
+                key.as_ref().into(),
+                [0u8; 20].as_ref().into(),
+            );
 
             Connection::new(Box::pin(read), Box::pin(write))
         }
-        None => {
-            let (read, write) = stream.into_split();
-            Connection::new(Box::pin(read), Box::pin(write))
-        }
+        None => Connection::new(Box::pin(read), Box::pin(write)),
     };
 
     let version = hash_helper::hashed_str(VERSION);
@@ -162,20 +180,25 @@ pub async fn identify_incoming_connection(
     config: &Config,
     stream: tokio::net::TcpStream,
 ) -> crate::Result<Identified<Connection>> {
+    let (read, write) = stream.into_split();
     let mut connection = match &config.encryption_key {
         Some(plain_key) => {
             let group_name = config
                 .group
                 .as_deref()
                 .unwrap_or("no group for this session");
-            let (read, write) = super::crypto_stream::crypto_stream(stream, plain_key, group_name);
+
+            let key = get_key(plain_key, group_name);
+            let (read, write): (EReadHalf, EWriteHalf) = async_encrypted_stream::encrypted_stream(
+                read,
+                write,
+                key.as_ref().into(),
+                [0u8; 20].as_ref().into(),
+            );
 
             Connection::new(Box::pin(read), Box::pin(write))
         }
-        None => {
-            let (read, write) = stream.into_split();
-            Connection::new(Box::pin(read), Box::pin(write))
-        }
+        None => Connection::new(Box::pin(read), Box::pin(write)),
     };
     let version = hash_helper::hashed_str(VERSION);
 
@@ -224,4 +247,9 @@ async fn wait_and_compare(
     } else {
         Err(Box::new(err()))
     }
+}
+
+fn get_key(plain_key: &str, salt: &str) -> [u8; 32] {
+    const ITERATIONS: u32 = 4096;
+    pbkdf2_hmac_array::<Sha256, 32>(plain_key.as_bytes(), salt.as_bytes(), ITERATIONS)
 }

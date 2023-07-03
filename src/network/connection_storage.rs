@@ -60,7 +60,7 @@ impl ConnectionStorage {
 
     pub fn remove_stale(&mut self) {
         self.connections
-            .drain_filter(|_, connection| connection.is_stale())
+            .extract_if(|_, connection| connection.is_stale())
             .for_each(|(_, connection)| {
                 self.node_to_connection.remove(&connection.node_id());
             });

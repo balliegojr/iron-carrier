@@ -27,7 +27,6 @@ use self::{
 
 mod connection;
 mod connection_storage;
-mod crypto_stream;
 mod network_event_decoder;
 pub mod service_discovery;
 
