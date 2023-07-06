@@ -97,14 +97,14 @@ impl State for DaemonEvent {
             DaemonEvent::ScheduledSync => {
                 DiscoverPeers::default()
                     .and_then(ConnectAllPeers::new)
-                    .and_then(|_| SyncLeader::sync(SyncOptions::auto()))
+                    .and_then(|_| SyncLeader::sync(SyncOptions::default()))
                     .execute(shared_state)
                     .await
             }
             DaemonEvent::Watcher(to_sync) => {
                 DiscoverPeers::default()
                     .and_then(ConnectAllPeers::new)
-                    .and_then(|_| SyncLeader::sync(SyncOptions::auto().with_storages(to_sync)))
+                    .and_then(|_| SyncLeader::sync(SyncOptions::new(to_sync)))
                     .execute(shared_state)
                     .await
             }

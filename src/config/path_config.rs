@@ -4,15 +4,11 @@ use serde::Deserialize;
 
 use crate::relative_path::RelativePathBuf;
 
-use super::OperationMode;
-
 /// Represents the configuration of a storage path
 #[derive(Debug, Deserialize, Default)]
 pub struct PathConfig {
     pub path: PathBuf,
     pub enable_watcher: Option<bool>,
-    #[serde(default)]
-    pub mode: OperationMode,
 }
 
 impl FromStr for PathConfig {

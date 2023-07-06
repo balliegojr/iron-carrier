@@ -123,7 +123,7 @@ pub async fn run_full_sync(config: &'static validation::Validated<config::Config
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(|leader_id| FullSync::new(leader_id, SyncOptions::manual()))
+        .and_then(|leader_id| FullSync::new(leader_id, SyncOptions::default()))
         .execute(&shared_state)
         .await?;
 
@@ -156,7 +156,7 @@ pub async fn start_daemon(
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(|leader_id| FullSync::new(leader_id, SyncOptions::auto()))
+        .and_then(|leader_id| FullSync::new(leader_id, SyncOptions::default()))
         .then_default_to(states::Daemon::default)
         .execute(&shared_state)
         .await?;
