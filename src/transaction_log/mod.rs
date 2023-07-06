@@ -111,7 +111,7 @@ impl TransactionLog {
             .map(|row| row.get::<&str, &str>("path").into())
             .fetch_all(&self.storage)
             .await
-            .map(|files| HashSet::from_iter(files.into_iter()))
+            .map(HashSet::from_iter)
             .map_err(Box::from)
     }
 }

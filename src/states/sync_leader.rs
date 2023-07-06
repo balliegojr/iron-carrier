@@ -1,7 +1,6 @@
 use std::fmt::Display;
 
 use crate::{
-    config::{OperationMode, PathConfig},
     file_transfer::TransferFiles,
     network_events::Transition,
     state_machine::{State, StateComposer},
@@ -24,15 +23,8 @@ impl SyncLeader {
         Self { sync_options }
     }
 
-    fn storages_to_sync(&self, (storage, path_config): &(&String, &PathConfig)) -> bool {
-        if let (OperationMode::Auto, OperationMode::Manual) =
-            (self.sync_options.sync_mode(), &path_config.mode)
-        {
-            return false;
-        }
-
-        self.sync_options.storages().is_empty()
-            || self.sync_options.storages().contains(storage.as_str())
+    fn storages_to_sync(&self, storage: &str) -> bool {
+        self.sync_options.storages().is_empty() || self.sync_options.storages().contains(storage)
     }
 }
 
@@ -56,7 +48,7 @@ impl State for SyncLeader {
             .config
             .storages
             .iter()
-            .filter(|e| self.storages_to_sync(e))
+            .filter(|(key, _)| self.storages_to_sync(key.as_str()))
         {
             let sync_result = BuildMatchingFiles::new(storage_name, storage_config)
                 .and_then(|(peers, matched)| DispatchActions::new(peers, matched))

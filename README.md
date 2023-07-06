@@ -73,11 +73,6 @@ max_parallel_transfers = 4
 
   # Override the default config
   enable_watcher = true,
-
-  # Choses when to synchronize this storage
-  # Auto -> Synchronized by watcher events or cron schedule, or manual execution
-  # Manual -> Only synchronized by manual execution
-  mode = "Auto" 
 }
 ```
 
@@ -117,18 +112,6 @@ Now it is time to send file contents to other nodes.
 
 - If it is a new file, the node that has the file will open the file in reading mode and send the file in chunks simultaneously to all the nodes that need it.
 - If it is an existing file, each node will build an index of the file, by calculating a hash of every non overlaping chunk, so only the divergent chunks are exchanged between the nodes.
-
-## Manual vs Auto sync
-
-When running the binary without the **--daemon** flag, a **manual** sync will be executed, all the storages will be synchronized with the available peers at this moment.
-
-For processes in daemon mode, the sync process can start when:
-- A file change was detected, if the watcher is enabled
-- The cron schedule was triggered, if the schedule is enabled
-- A request to sync was received
-
-For the first two cases, an **auto** sync will be executed, storages that have **mode = "manual"** will be ignored, 
-in the last case, the type of sync is specified by the initiator.
 
 ## Multiple users in the same network
 Groups are useful when more than one user have iron carrier running in the same network with service discovery enabled.  

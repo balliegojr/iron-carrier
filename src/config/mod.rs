@@ -14,13 +14,6 @@ use serde_with::{serde_as, DisplayFromStr, PickFirst};
 mod path_config;
 pub use path_config::PathConfig;
 
-#[derive(Debug, Deserialize, Default)]
-pub enum OperationMode {
-    #[default]
-    Auto,
-    Manual,
-}
-
 /// Represents the configuration for the current machine
 #[serde_as]
 #[derive(Debug, Deserialize)]

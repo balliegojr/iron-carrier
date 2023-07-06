@@ -80,7 +80,7 @@ impl FullIndex {
 
         self.inner
             .into_iter()
-            .zip(other.inner.into_iter())
+            .zip(other.inner)
             .enumerate()
             .filter_map(|(i, (remote, local))| {
                 if remote != local {
