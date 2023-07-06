@@ -51,7 +51,7 @@ pub struct Config {
     #[serde(default = "defaults::watcher_enabled")]
     pub enable_file_watcher: bool,
 
-    /// Seconds to debounce file events, defaults to 10 seconds
+    /// Seconds to debounce file events
     #[serde(default = "defaults::watcher_debounce")]
     pub delay_watcher_events: u64,
 
