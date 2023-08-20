@@ -41,10 +41,7 @@ fn decode_stream(
     // connection.write_u32(block.len() as u32).await?; 17..21
     // connection.write_all(block).await?;
 
-    let mut length_bytes = [0u8; 4];
-    length_bytes.copy_from_slice(&src[17..21]);
     let length = u32::from_be_bytes(src[17..21].try_into()?) as usize;
-
     if length > MAX {
         return Err(Box::new(IronCarrierError::ParseNetworkMessage));
     }
