@@ -91,14 +91,6 @@ impl State for TransferFiles {
                             log::debug!("[{node_type}] node {node_id} has done transfering files");
                             active_nodes = active_nodes.saturating_sub(1);
                             log::debug!("[{node_type}] have {active_nodes} active nodes");
-
-                            log::debug!(
-                                "[{node_type}] {} {:?} {:?}",
-                                active_nodes,
-                                active_transfers,
-                                self.files_to_send
-                            );
-
                         }
                         NetworkEvents::FileTransfer(transfer_id, file_transfer) => match file_transfer {
                             FileTransferEvent::QueryTransferType { file } => {

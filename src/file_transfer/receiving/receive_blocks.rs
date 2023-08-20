@@ -43,10 +43,8 @@ impl State for ReceiveBlocks {
         )
         .await?;
 
-        log::trace!("Adjusting file size");
-        self.adjust_file_size(&mut file_handle).await?;
+        self.adjust_file_size(&file_handle).await?;
 
-        log::trace!("waiting blocks");
         while let Some((node_id, ev)) = self.transfer_chan.recv().await {
             match ev {
                 FileTransferEvent::TransferBlock { block_index, block } => {
@@ -55,7 +53,6 @@ impl State for ReceiveBlocks {
                     self.required_blocks.remove(&block_index);
                 }
                 FileTransferEvent::TransferComplete if self.required_blocks.is_empty() => {
-                    log::trace!("Success");
                     file_handle.sync_all().await?;
                     crate::storage::fix_times_and_permissions(
                         &self.transfer.file,
@@ -73,9 +70,15 @@ impl State for ReceiveBlocks {
                         )
                         .await?;
 
+                    log::trace!("Transfer of {:?} finished", self.transfer.file.path);
                     return Ok(());
                 }
                 FileTransferEvent::TransferComplete => {
+                    log::trace!(
+                        "Transfer of {:?} failed, missing {} blocks",
+                        self.transfer.file.path,
+                        self.required_blocks.len()
+                    );
                     shared_state
                         .connection_handler
                         .send_to(
@@ -116,7 +119,7 @@ impl ReceiveBlocks {
         }
     }
 
-    pub async fn adjust_file_size(&mut self, file_handle: &mut File) -> crate::Result<()> {
+    pub async fn adjust_file_size(&mut self, file_handle: &File) -> crate::Result<()> {
         let file_size = self.transfer.file.file_size()?;
         if file_size != file_handle.metadata().await?.len() {
             file_handle.set_len(file_size).await?;

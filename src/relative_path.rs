@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::PathConfig;
 
 /// Represents a relative Path starting from the root of the storage.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RelativePathBuf {
     inner: PathBuf,
 }
@@ -49,5 +49,11 @@ impl From<&str> for RelativePathBuf {
         Self {
             inner: value.into(),
         }
+    }
+}
+
+impl std::fmt::Debug for RelativePathBuf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
     }
 }

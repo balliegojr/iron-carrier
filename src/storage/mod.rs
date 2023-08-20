@@ -177,9 +177,14 @@ pub fn fix_times_and_permissions(file_info: &FileInfo, config: &Config) -> crate
         set_file_permissions(&file_path, file_info.permissions)?;
     }
 
-    let mod_time = SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.get_date());
-    log::trace!("setting {file_path:?} modification time to {mod_time:?}");
-    filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mod_time))?;
+    let mod_time = filetime::FileTime::from_system_time(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.get_date()),
+    );
+    log::trace!(
+        "setting {:?} modification time to {mod_time}",
+        file_info.path
+    );
+    filetime::set_file_mtime(&file_path, mod_time)?;
 
     Ok(())
 }
