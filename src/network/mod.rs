@@ -92,7 +92,7 @@ impl ConnectionHandler<NetworkEvents> {
             })
             .await?;
 
-            connection::identify_outgoing_connection(config, transport_stream)
+            connection::handshake_and_identify_connection(config, transport_stream)
                 .await
                 .map_err(Box::from)
         }
@@ -231,7 +231,7 @@ async fn listen_connections(
     while let Ok((stream, _addr)) = listener.accept().await {
         let connection = match tokio::time::timeout(
             Duration::from_secs(PEER_IDENTIFICATION_TIMEOUT),
-            connection::identify_incoming_connection(config, stream),
+            connection::handshake_and_identify_connection(config, stream),
         )
         .await
         {
