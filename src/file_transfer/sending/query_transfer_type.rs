@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+};
 
 use crate::{
     file_transfer::{FileTransferEvent, Transfer, TransferRecv, TransferType},
@@ -8,7 +11,6 @@ use crate::{
     StateMachineError,
 };
 
-#[derive(Debug)]
 pub struct QueryTransfer {
     transfer: Transfer,
     nodes: HashSet<NodeId>,
@@ -58,13 +60,20 @@ impl State for QueryTransfer {
                 }
             }
 
-            log::trace!("{:?}, {:?}", self.nodes, transfer_types);
-
             if transfer_types.len() == self.nodes.len() {
                 return Ok((self.transfer, self.transfer_chan, transfer_types));
             }
         }
 
         Err(StateMachineError::Abort)?
+    }
+}
+
+impl Debug for QueryTransfer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueryTransfer")
+            .field("transfer", &self.transfer)
+            .field("nodes", &self.nodes)
+            .finish()
     }
 }
