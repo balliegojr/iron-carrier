@@ -33,12 +33,11 @@ pub fn enable_logs() {
         .unwrap();
 
     if verbosity > 0 {
-        stderrlog::new()
+        let _ = stderrlog::new()
             .verbosity(verbosity)
             .modules(["iron_carrier", "iron_carrier_tests"])
             .timestamp(stderrlog::Timestamp::Second)
-            .init()
-            .unwrap();
+            .init();
     }
 }
 
