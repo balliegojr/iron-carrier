@@ -50,8 +50,12 @@ impl ConnectionStorage {
             .map(|connection| connection.deref_mut())
     }
 
-    pub fn contains_peer(&self, node_id: &NodeId) -> bool {
+    pub fn contains_node(&self, node_id: &NodeId) -> bool {
         self.node_to_connection.contains_key(node_id)
+    }
+
+    pub fn connected_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.node_to_connection.keys().copied()
     }
 
     pub fn len(&self) -> usize {

@@ -37,7 +37,7 @@ use crate::{
 /// watcher enabled.
 pub fn get_file_watcher(
     config: &'static Config,
-    transaction_log: &'static TransactionLog,
+    transaction_log: TransactionLog,
     output: tokio::sync::mpsc::Sender<String>,
 ) -> crate::Result<Option<RecommendedWatcher>> {
     let mut storages: HashMap<PathBuf, String> = Default::default();
@@ -75,7 +75,7 @@ pub fn get_file_watcher(
             match register_event(
                 &storages,
                 config,
-                transaction_log,
+                &transaction_log,
                 event,
                 &mut ignored_files_cache,
             )

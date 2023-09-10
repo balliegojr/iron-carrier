@@ -4,68 +4,52 @@ use std::{
 };
 
 use crate::{
-    file_transfer::{FileTransferEvent, Transfer, TransferRecv, TransferType},
-    network_events::NetworkEvents,
+    file_transfer::{
+        events::{QueryTransferType, TransferType},
+        Transfer,
+    },
     node_id::NodeId,
     state_machine::State,
-    StateMachineError,
 };
 
 pub struct QueryTransfer {
     transfer: Transfer,
     nodes: HashSet<NodeId>,
-    transfer_chan: TransferRecv,
 }
 
 impl QueryTransfer {
-    pub fn new(transfer: Transfer, nodes: HashSet<NodeId>, transfer_chan: TransferRecv) -> Self {
-        Self {
-            transfer,
-            nodes,
-            transfer_chan,
-        }
+    pub fn new(transfer: Transfer, nodes: HashSet<NodeId>) -> Self {
+        Self { transfer, nodes }
     }
 }
 
 impl State for QueryTransfer {
-    type Output = (Transfer, TransferRecv, HashMap<NodeId, TransferType>);
+    type Output = (Transfer, HashMap<NodeId, TransferType>);
 
-    async fn execute(mut self, shared_state: &crate::SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &crate::SharedState) -> crate::Result<Self::Output> {
+        //FIXME: remove the NoTransfer nodes
         shared_state
-            .connection_handler
-            .broadcast_to(
-                NetworkEvents::FileTransfer(
-                    self.transfer.transfer_id,
-                    FileTransferEvent::QueryTransferType {
-                        file: self.transfer.file.clone(),
-                    },
-                ),
-                self.nodes.iter(),
+            .rpc
+            .multi_call(
+                QueryTransferType {
+                    // transfer_id: self.transfer.transfer_id,
+                    file: self.transfer.file.clone(),
+                },
+                self.nodes,
             )
-            .await?;
-
-        let mut transfer_types = HashMap::with_capacity(self.nodes.len());
-        while let Some((node, ev)) = self.transfer_chan.recv().await {
-            match ev {
-                FileTransferEvent::ReplyTransferType { transfer_type } => {
-                    transfer_types.insert(node, transfer_type);
-                }
-                FileTransferEvent::RemovePeer => {
-                    self.nodes.remove(&node);
-                    transfer_types.remove(&node);
-                }
-                _ => {
-                    log::error!("Received unexpected event: {ev:?}");
-                    continue;
-                }
-            }
-
-            if transfer_types.len() == self.nodes.len() {
-                return Ok((self.transfer, self.transfer_chan, transfer_types));
-            }
-        }
-
-        Err(StateMachineError::Abort)?
+            .result()
+            .await
+            .and_then(|replies| {
+                replies
+                    .into_iter()
+                    .map(|reply| {
+                        reply
+                            .data()
+                            .map(|transfer_type: TransferType| (reply.node_id(), transfer_type))
+                    })
+                    .collect()
+            })
+            .map(|replies| (self.transfer, replies))
     }
 }
 

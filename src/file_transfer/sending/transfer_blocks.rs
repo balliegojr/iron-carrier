@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::SeekFrom,
 };
 
@@ -9,8 +9,11 @@ use tokio::{
 };
 
 use crate::{
-    file_transfer::{block_index::BlockIndexPosition, FileTransferEvent, Transfer, TransferRecv},
-    network_events::NetworkEvents,
+    file_transfer::{
+        block_index::BlockIndexPosition,
+        events::{TransferBlock, TransferComplete, TransferResult},
+        Transfer,
+    },
     node_id::NodeId,
     state_machine::State,
     IronCarrierError,
@@ -18,7 +21,6 @@ use crate::{
 
 pub struct TransferBlocks {
     transfer: Transfer,
-    transfer_chan: TransferRecv,
     file_handle: File,
     nodes_blocks: HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
 }
@@ -29,7 +31,6 @@ impl State for TransferBlocks {
     async fn execute(mut self, shared_state: &crate::SharedState) -> crate::Result<Self::Output> {
         while !self.nodes_blocks.is_empty() {
             self.transfer_blocks(shared_state).await?;
-            self.wait_confirmation().await?;
         }
         Ok(())
     }
@@ -38,25 +39,23 @@ impl State for TransferBlocks {
 impl TransferBlocks {
     pub fn new(
         transfer: Transfer,
-        transfer_chan: TransferRecv,
         file_handle: File,
         nodes_blocks: HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
     ) -> Self {
         Self {
             transfer,
-            transfer_chan,
             file_handle,
             nodes_blocks,
         }
     }
 
     async fn transfer_blocks(&mut self, shared_state: &crate::SharedState) -> crate::Result<()> {
-        let mut block_nodes: BTreeMap<BlockIndexPosition, Vec<NodeId>> =
+        let mut block_nodes: BTreeMap<BlockIndexPosition, HashSet<NodeId>> =
             std::collections::BTreeMap::new();
 
         for (node, node_blocks) in self.nodes_blocks.iter() {
             for block in node_blocks {
-                block_nodes.entry(*block).or_default().push(*node);
+                block_nodes.entry(*block).or_default().insert(*node);
             }
         }
 
@@ -74,47 +73,43 @@ impl TransferBlocks {
                 .read_exact(&mut block[..bytes_to_read as usize])
                 .await?;
 
+            // FIXME: remove nodes missing ack
+            // FIXME: back to stream...
             shared_state
-                .connection_handler
-                .stream_to(
-                    self.transfer.transfer_id,
-                    block_index,
-                    &block[..bytes_to_read as usize],
-                    nodes.iter(),
+                .rpc
+                .multi_call(
+                    TransferBlock {
+                        transfer_id: self.transfer.transfer_id,
+                        block_index,
+                        block: &block[..bytes_to_read as usize],
+                    },
+                    nodes,
                 )
+                .ack()
                 .await?;
         }
 
-        shared_state
-            .connection_handler
-            .broadcast_to(
-                NetworkEvents::FileTransfer(
-                    self.transfer.transfer_id,
-                    FileTransferEvent::TransferComplete,
-                ),
-                self.nodes_blocks.keys(),
+        let results = shared_state
+            .rpc
+            .multi_call(
+                TransferComplete {
+                    transfer_id: self.transfer.transfer_id,
+                },
+                self.nodes_blocks.keys().cloned().collect(),
             )
-            .await
-    }
+            .result()
+            .await?;
 
-    async fn wait_confirmation(&mut self) -> crate::Result<()> {
-        let mut failed_transfers = 0;
-        while let Some((node_id, ev)) = self.transfer_chan.recv().await {
-            match ev {
-                FileTransferEvent::TransferSucceeded | FileTransferEvent::RemovePeer => {
-                    self.nodes_blocks.remove(&node_id);
+        for result in results {
+            match result.data::<TransferResult>()? {
+                TransferResult::Success => {
+                    self.nodes_blocks.remove(&result.node_id());
                 }
-                FileTransferEvent::TransferFailed { required_blocks } => {
+                TransferResult::Failed { required_blocks } => {
                     self.nodes_blocks
-                        .entry(node_id)
+                        .entry(result.node_id())
                         .and_modify(|e| *e = required_blocks);
-                    failed_transfers += 1;
                 }
-                _ => {}
-            }
-
-            if self.nodes_blocks.len() == failed_transfers {
-                break;
             }
         }
 

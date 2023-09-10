@@ -2,23 +2,20 @@ use std::fmt::Display;
 
 use crate::{
     file_transfer::TransferFiles,
-    network_events::Transition,
+    // file_transfer::TransferFiles,
     state_machine::{State, StateComposer},
+    states::sync::{actions::Dispatcher, events::SyncCompleted, files_matcher::FilesMatcher},
     sync_options::SyncOptions,
-    SharedState, StateMachineError,
+    SharedState,
+    StateMachineError,
 };
-use matching_files::BuildMatchingFiles;
-use sync_actions::DispatchActions;
-
-mod matching_files;
-mod sync_actions;
 
 #[derive(Debug, Default)]
-pub struct SyncLeader {
+pub struct Leader {
     sync_options: SyncOptions,
 }
 
-impl SyncLeader {
+impl Leader {
     pub fn sync(sync_options: SyncOptions) -> Self {
         Self { sync_options }
     }
@@ -28,30 +25,24 @@ impl SyncLeader {
     }
 }
 
-impl Display for SyncLeader {
+impl Display for Leader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FullSyncLeader")
     }
 }
 
-impl State for SyncLeader {
+impl State for Leader {
     type Output = ();
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        shared_state
-            .connection_handler
-            .broadcast(Transition::FullSync.into())
-            .await?;
-
-        log::info!("full sync starting as initiator....");
-
+        log::debug!("start sync as leader");
         for (storage_name, storage_config) in shared_state
             .config
             .storages
             .iter()
             .filter(|(key, _)| self.storages_to_sync(key.as_str()))
         {
-            let sync_result = BuildMatchingFiles::new(storage_name, storage_config)
-                .and_then(|(peers, matched)| DispatchActions::new(peers, matched))
+            let sync_result = FilesMatcher::new(storage_name, storage_config)
+                .and_then(|(peers, matched)| Dispatcher::new(peers, matched))
                 .and_then(|files_to_send| TransferFiles::new(None, files_to_send))
                 .execute(shared_state)
                 .await;
@@ -64,17 +55,13 @@ impl State for SyncLeader {
         }
 
         shared_state.transaction_log.flush().await?;
+        shared_state.rpc.broadcast(SyncCompleted).ack().await?;
 
-        log::info!("full sync end....");
-
-        shared_state
-            .connection_handler
-            .broadcast(Transition::Done.into())
-            .await?;
-
-        if let Some(when_sync_done) = shared_state.after_sync {
-            let _ = when_sync_done.send(()).await;
+        if let Some(when_done) = shared_state.when_done.clone().as_mut() {
+            let _ = when_done.send(()).await;
         }
+
+        log::info!("end sync as leader");
 
         Ok(())
     }

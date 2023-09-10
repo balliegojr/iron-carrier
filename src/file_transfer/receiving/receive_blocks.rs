@@ -3,47 +3,55 @@ use std::{collections::BTreeSet, io::SeekFrom};
 use tokio::{
     fs::File,
     io::{AsyncSeekExt, AsyncWriteExt},
+    sync::mpsc::Receiver,
 };
 
 use crate::{
-    file_transfer::{block_index::BlockIndexPosition, FileTransferEvent, Transfer, TransferRecv},
+    file_transfer::{
+        block_index::BlockIndexPosition,
+        file_transfer_event::{TransferBlock, TransferComplete},
+        FileTransferEvent, Transfer, TransferRecv,
+    },
+    network::rpc::RPCMessage,
     network_events::NetworkEvents,
     node_id::NodeId,
     state_machine::State,
     StateMachineError,
 };
 
+use super::ReceivingTransfer;
+
 pub struct ReceiveBlocks {
-    transfer: Transfer,
-    transfer_chan: TransferRecv,
-    source_node: NodeId,
-    required_blocks: BTreeSet<BlockIndexPosition>,
+    receiving: ReceivingTransfer,
+    data_input: Receiver<RPCMessage>,
 }
 
 impl State for ReceiveBlocks {
     type Output = ();
 
     async fn execute(mut self, shared_state: &crate::SharedState) -> crate::Result<Self::Output> {
-        if self.required_blocks.is_empty() {
-            shared_state
-                .connection_handler
-                .send_to(
-                    NetworkEvents::FileTransfer(
-                        self.transfer.transfer_id,
-                        FileTransferEvent::TransferSucceeded,
-                    ),
-                    self.source_node,
-                )
-                .await?;
+        self.adjust_file_size(&self.receiving.handle).await?;
+
+        while let Some(message) = self.data_input.recv().await {
+            if message.is_type::<TransferBlock>() {
+                let data: TransferBlock = message.data()?;
+
+                self.write_block(data.block_index, &data.block, &mut self.receiving.handle)
+                    .await?;
+                self.receiving.block_index.remove(&data.block_index);
+                message.ack().await;
+            } else {
+                let data: TransferComplete = message.data()?;
+                if self.receiving.block_index.is_empty() {
+                    file_handle.sync_all().await?;
+                    crate::storage::fix_times_and_permissions(
+                        &self.transfer.file,
+                        shared_state.config,
+                    )?;
+                } else {
+                }
+            }
         }
-
-        let mut file_handle = crate::storage::file_operations::open_file_for_writing(
-            shared_state.config,
-            &self.transfer.file,
-        )
-        .await?;
-
-        self.adjust_file_size(&file_handle).await?;
 
         while let Some((node_id, ev)) = self.transfer_chan.recv().await {
             match ev {
@@ -93,9 +101,6 @@ impl State for ReceiveBlocks {
                         .await?;
                 }
 
-                FileTransferEvent::RemovePeer if self.source_node == node_id => {
-                    Err(StateMachineError::Abort)?
-                }
                 _ => {}
             }
         }

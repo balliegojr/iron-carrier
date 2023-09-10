@@ -18,6 +18,7 @@ use crate::relative_path::RelativePathBuf;
 
 const TRANSACTION_KEEP_LIMIT_SECS: u64 = 30 * 24 * 60 * 60;
 
+#[derive(Debug, Clone)]
 pub struct TransactionLog {
     storage: SqlitePool,
 }

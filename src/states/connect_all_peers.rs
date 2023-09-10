@@ -35,13 +35,13 @@ impl State for ConnectAllPeers {
         // this is an issue when running the tests, unlikely to be an issue for normal operation
         tokio::time::sleep(std::time::Duration::from_millis(random_wait_time())).await;
 
-        let connection_handler = shared_state.connection_handler;
         let handles = self
             .addresses_to_connect
-            .into_iter()
-            .map(|(addr, peer_id)| {
+            .into_keys()
+            .map(|addr| {
+                let connection_handler = shared_state.connection_handler.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = connection_handler.connect(addr, peer_id).await {
+                    if let Err(err) = connection_handler.connect(addr).await {
                         log::error!("Failed to connect to {addr}: {err}");
                     }
                 })

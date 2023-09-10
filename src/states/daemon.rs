@@ -1,17 +1,20 @@
-use std::{collections::HashSet, future, pin::pin, str::FromStr, time::Duration};
+use std::{future, pin::pin, str::FromStr, time::Duration};
+
+use tokio_stream::StreamExt;
 
 use crate::{
     config::Config,
-    network_events::{NetworkEvents, Transition},
     node_id::NodeId,
     state_machine::{State, StateComposer, StateMachineError},
-    states::FullSync,
     stream,
     sync_options::SyncOptions,
     SharedState,
 };
 
-use super::{ConnectAllPeers, Consensus, DiscoverPeers, SyncFollower, SyncLeader};
+use super::{
+    consensus::{ConsensusReached, StartConsensus},
+    ConnectAllPeers, Consensus, DiscoverPeers, SetSyncRole,
+};
 
 #[derive(Default, Debug)]
 pub struct Daemon {}
@@ -21,105 +24,149 @@ impl State for Daemon {
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         loop {
-            DaemonEventListener
-                .and_then(|event| event)
-                .execute(shared_state)
-                .await?;
+            let event = wait_event(shared_state).await?;
+            if let Err(err) = execute_event(shared_state, event).await {
+                log::error!("{err}")
+            }
         }
     }
 }
 
-#[derive(Debug, Default)]
-struct DaemonEventListener;
-impl State for DaemonEventListener {
-    type Output = DaemonEvent;
+async fn wait_event(shared_state: &SharedState) -> crate::Result<DaemonEvent> {
+    let _service_discovery =
+        crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        let _service_discovery =
-            crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
+    let (watcher_events_sender, watcher_events) = tokio::sync::mpsc::channel(1);
+    let _watcher = crate::storage::file_watcher::get_file_watcher(
+        shared_state.config,
+        shared_state.transaction_log.clone(),
+        watcher_events_sender,
+    )?;
 
-        let (watcher_events_sender, watcher_events) = tokio::sync::mpsc::channel(1);
-        let _watcher = crate::storage::file_watcher::get_file_watcher(
-            shared_state.config,
-            shared_state.transaction_log,
-            watcher_events_sender,
-        )?;
+    let mut watcher_events = stream::fold_timeout(
+        watcher_events,
+        Duration::from_secs(shared_state.config.delay_watcher_events),
+    );
 
-        let mut watcher_events = stream::fold_timeout(
-            watcher_events,
-            Duration::from_secs(shared_state.config.delay_watcher_events),
-        );
+    let mut full_sync_deadline = pin!(next_cron_schedule(shared_state.config));
 
-        let mut full_sync_deadline = pin!(next_cron_schedule(shared_state.config));
+    let mut start_consensus = shared_state
+        .rpc
+        .consume_events::<StartConsensus>()
+        .await
+        .fuse();
 
-        loop {
-            tokio::select! {
-                stream_event = shared_state.connection_handler.next_event() => {
-                    match stream_event {
-                        Some((_, NetworkEvents::ConsensusElection(_))) |
-                        Some((_, NetworkEvents::RequestTransition(Transition::Consensus))) => {
-                             return Ok(DaemonEvent::ConsensusRequest);
-                        }
-                        Some((leader_id, NetworkEvents::RequestTransition(Transition::FullSync))) => {
-                            return Ok(DaemonEvent::TransitionToFolowerRequest(leader_id))
-                        }
-                        Some((_, NetworkEvents::Disconnected)) => {}
-                        Some(ev) => {
-                            log::error!("[daemon] received unexpected event {ev:?}");
-                        }
-                        None =>  Err(StateMachineError::Abort)?
-                    }
-                }
-                Some(to_sync) = watcher_events.recv() => {
-                     return Ok(DaemonEvent::Watcher(to_sync));
-                }
-                _ = &mut full_sync_deadline => {
-                    return Ok(DaemonEvent::ScheduledSync);
-                }
-            }
+    let mut consensus_reached = shared_state
+        .rpc
+        .consume_events::<ConsensusReached>()
+        .await
+        .fuse();
+
+    tokio::select! {
+        start_consensus_req = start_consensus.next() => {
+            let request = start_consensus_req.ok_or(StateMachineError::Abort)?;
+            request.ack().await?;
+
+            return Ok(DaemonEvent::SyncWithConsensus);
+        }
+
+        consensus_reached_req = consensus_reached.next() => {
+            let request = consensus_reached_req.ok_or(StateMachineError::Abort)?;
+            let leader = request.node_id();
+            request.ack().await?;
+
+            return Ok(DaemonEvent::BecomeFollower(leader));
+        }
+        Some(to_sync) = watcher_events.recv() => {
+             return Ok(DaemonEvent::SyncWithoutConsensus(SyncOptions::new(to_sync)));
+        }
+        _ = &mut full_sync_deadline => {
+            return Ok(DaemonEvent::SyncWithoutConsensus(Default::default()));
         }
     }
 }
 
 #[derive(Debug)]
 enum DaemonEvent {
-    Watcher(HashSet<String>),
-    ScheduledSync,
-    ConsensusRequest,
-    TransitionToFolowerRequest(NodeId),
+    SyncWithoutConsensus(SyncOptions),
+    SyncWithConsensus,
+    BecomeFollower(NodeId),
 }
 
-impl State for DaemonEvent {
-    type Output = ();
+async fn execute_event(shared_state: &SharedState, event: DaemonEvent) -> crate::Result<()> {
+    match event {
+        DaemonEvent::SyncWithConsensus => {
+            DiscoverPeers::default()
+                .and_then(ConnectAllPeers::new)
+                .and::<Consensus>()
+                .and_then(|leader| SetSyncRole::new(leader, Default::default()))
+                .execute(shared_state)
+                .await
+        }
+        DaemonEvent::SyncWithoutConsensus(sync_options) => {
+            DiscoverPeers::default()
+                .and_then(ConnectAllPeers::new)
+                .and_then(|_| BypassConsensus)
+                .and_then(|leader_id| SetSyncRole::new(leader_id, sync_options))
+                .execute(shared_state)
+                .await
+        }
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        match self {
-            DaemonEvent::ScheduledSync => {
-                DiscoverPeers::default()
-                    .and_then(ConnectAllPeers::new)
-                    .and_then(|_| SyncLeader::sync(SyncOptions::default()))
-                    .execute(shared_state)
-                    .await
-            }
-            DaemonEvent::Watcher(to_sync) => {
-                DiscoverPeers::default()
-                    .and_then(ConnectAllPeers::new)
-                    .and_then(|_| SyncLeader::sync(SyncOptions::new(to_sync)))
-                    .execute(shared_state)
-                    .await
-            }
-            DaemonEvent::ConsensusRequest => {
-                Consensus::new()
-                    .and_then(|leader_id| FullSync::new(leader_id, Default::default()))
-                    .execute(shared_state)
-                    .await
-            }
-            DaemonEvent::TransitionToFolowerRequest(leader_id) => {
-                SyncFollower::new(leader_id).execute(shared_state).await
-            }
+        DaemonEvent::BecomeFollower(leader_id) => {
+            DiscoverPeers::default()
+                .and_then(ConnectAllPeers::new)
+                .and_then(|_| SetSyncRole::new(leader_id, Default::default()))
+                .execute(shared_state)
+                .await
         }
     }
 }
+
+#[derive(Debug)]
+struct BypassConsensus;
+
+impl State for BypassConsensus {
+    type Output = NodeId;
+
+    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+        shared_state.rpc.broadcast(ConsensusReached).ack().await?;
+        Ok(shared_state.config.node_id_hashed)
+    }
+}
+
+// impl State for DaemonEvent {
+//     type Output = ();
+//
+//     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+//         match self {
+//             DaemonEvent::ScheduledSync => {
+//                 DiscoverPeers::default()
+//                     .and_then(ConnectAllPeers::new)
+//                     .and_then(|_| SyncLeader::sync(SyncOptions::default()))
+//                     .execute(shared_state)
+//                     .await
+//             }
+//             DaemonEvent::Watcher(to_sync) => {
+//                 DiscoverPeers::default()
+//                     .and_then(ConnectAllPeers::new)
+//                     .and_then(|_| SetSyncRole::sync(SyncOptions::new(to_sync)))
+//                     .execute(shared_state)
+//                     .await
+//             }
+//             DaemonEvent::ConsensusRequest => {
+//                 Consensus::new()
+//                     .and_then(|leader_id| SetSyncRole::new(leader_id, Default::default()))
+//                     .execute(shared_state)
+//                     .await
+//             }
+//             DaemonEvent::TransitionToFolowerRequest(leader_id) => {
+//                 SetSyncRole::new(leader_id, Default::default())
+//                     .execute(shared_state)
+//                     .await
+//             }
+//         }
+//     }
+// }
 
 async fn next_cron_schedule(config: &Config) {
     let cron_deadline = config.schedule_sync.as_ref().and_then(|schedule_cron| {
