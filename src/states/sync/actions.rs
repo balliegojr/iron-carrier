@@ -2,14 +2,14 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     ignored_files::IgnoredFilesCache,
-    network_events::Synchronization,
     node_id::NodeId,
-    state_machine::{State, StateMachineError},
+    state_machine::State,
+    states::sync::events::{DeleteFile, MoveFile, SendFileTo},
     storage::{FileInfo, FileInfoType},
     SharedState,
 };
 
-use super::matching_files::MatchedFilesIter;
+use super::files_matcher::MatchedFilesIter;
 
 /// Get the [SyncAction] for the given `file`
 pub fn get_file_sync_action(
@@ -91,12 +91,12 @@ pub enum SyncAction {
 }
 
 #[derive(Debug)]
-pub struct DispatchActions {
+pub struct Dispatcher {
     nodes: Vec<NodeId>,
     matched_files_iter: MatchedFilesIter,
 }
 
-impl DispatchActions {
+impl Dispatcher {
     pub fn new(nodes: Vec<NodeId>, matched_files_iter: MatchedFilesIter) -> Self {
         Self {
             nodes,
@@ -105,7 +105,7 @@ impl DispatchActions {
     }
 }
 
-impl State for DispatchActions {
+impl State for Dispatcher {
     type Output = Vec<(FileInfo, HashSet<NodeId>)>;
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
@@ -113,20 +113,16 @@ impl State for DispatchActions {
             get_file_sync_action(shared_state.config.node_id_hashed, &self.nodes, file)
         });
 
-        let mut has_file_transfer = false;
         let mut ignored_files_cache = IgnoredFilesCache::default();
         let mut files_to_send = Vec::new();
+        let mut receive_files_from = HashMap::new();
 
         for action in actions {
-            has_file_transfer |= matches!(
-                action,
-                SyncAction::Send { .. } | SyncAction::DelegateSend { .. }
-            );
-
             if let Err(err) = execute_action(
                 action,
                 shared_state,
                 &mut files_to_send,
+                &mut receive_files_from,
                 &mut ignored_files_cache,
             )
             .await
@@ -135,14 +131,9 @@ impl State for DispatchActions {
             }
         }
 
-        if !has_file_transfer {
-            Err(StateMachineError::Abort)?
-        }
-
         Ok(files_to_send)
     }
 }
-
 /// Execute the given `action`
 ///
 /// `Delete` and `Move` actions are executed immediately (or sent for all required nodes)
@@ -154,6 +145,7 @@ pub async fn execute_action(
     action: SyncAction,
     shared_state: &SharedState,
     files_to_send: &mut Vec<(FileInfo, HashSet<NodeId>)>,
+    receive_files_from: &mut HashMap<NodeId, HashSet<NodeId>>,
     ignored_files_cache: &mut IgnoredFilesCache,
 ) -> crate::Result<()> {
     match action {
@@ -161,42 +153,47 @@ pub async fn execute_action(
             if nodes.contains(&shared_state.config.node_id_hashed) {
                 crate::storage::file_operations::delete_file(
                     shared_state.config,
-                    shared_state.transaction_log,
+                    &shared_state.transaction_log,
                     &file,
                     ignored_files_cache,
                 )
                 .await?;
             }
 
-            log::trace!("Requesting {nodes:?} to delete {:?} ", file.path);
+            log::info!("Delete {:?} on {nodes:?}", file.path);
             shared_state
-                .connection_handler
-                .broadcast_to(
-                    Synchronization::DeleteFile { file: file.clone() }.into(),
-                    nodes.iter(),
-                )
+                .rpc
+                .multi_call(DeleteFile { file }, nodes)
+                .ack()
                 .await?;
         }
         SyncAction::Move { file, nodes } => {
             if nodes.contains(&shared_state.config.node_id_hashed) {
                 crate::storage::file_operations::move_file(
                     shared_state.config,
-                    shared_state.transaction_log,
+                    &shared_state.transaction_log,
                     &file,
                     ignored_files_cache,
                 )
                 .await?;
             }
 
+            log::info!("Move {:?} on {nodes:?}", file.path);
             shared_state
-                .connection_handler
-                .broadcast_to(
-                    Synchronization::MoveFile { file: file.clone() }.into(),
-                    nodes.iter(),
-                )
+                .rpc
+                .multi_call(MoveFile { file }, nodes)
+                .ack()
                 .await?;
         }
-        SyncAction::Send { file, nodes } => files_to_send.push((file, nodes)),
+        SyncAction::Send { file, nodes } => {
+            for node in nodes.iter() {
+                receive_files_from
+                    .entry(*node)
+                    .or_default()
+                    .insert(shared_state.config.node_id_hashed);
+            }
+            files_to_send.push((file, nodes));
+        }
         SyncAction::DelegateSend {
             delegate_to,
             file,
@@ -207,12 +204,17 @@ pub async fn execute_action(
                 file.path
             );
 
+            for node in nodes.iter() {
+                receive_files_from
+                    .entry(*node)
+                    .or_default()
+                    .insert(delegate_to);
+            }
+
             shared_state
-                .connection_handler
-                .send_to(
-                    Synchronization::SendFileTo { file, nodes }.into(),
-                    delegate_to,
-                )
+                .rpc
+                .call(SendFileTo { file, nodes }, delegate_to)
+                .ack()
                 .await?
         }
     }

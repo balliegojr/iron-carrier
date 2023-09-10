@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
     config::PathConfig,
-    network_events::{NetworkEvents, StorageIndexStatus, Synchronization},
     node_id::NodeId,
     relative_path::RelativePathBuf,
     state_machine::{State, StateMachineError},
@@ -10,13 +9,14 @@ use crate::{
     SharedState,
 };
 
+use super::events::{QueryStorageIndex, StorageIndex, StorageIndexStatus};
+
 #[derive(Debug)]
-pub struct BuildMatchingFiles {
+pub struct FilesMatcher {
     storage_name: &'static str,
     storage_config: &'static PathConfig,
 }
-
-impl BuildMatchingFiles {
+impl FilesMatcher {
     pub fn new(storage_name: &'static str, storage_config: &'static PathConfig) -> Self {
         Self {
             storage_name,
@@ -24,69 +24,55 @@ impl BuildMatchingFiles {
         }
     }
 
-    async fn wait_storage_from_peers(
+    async fn get_storage_from_nodes(
         &self,
         shared_state: &SharedState,
         storage: &Storage,
     ) -> crate::Result<HashMap<NodeId, Vec<FileInfo>>> {
-        let mut expected = shared_state
-            .connection_handler
-            .broadcast(
-                Synchronization::QueryStorageIndex {
-                    name: self.storage_name.to_string(),
-                    hash: storage.hash,
-                }
-                .into(),
-            )
+        let peer_storages = shared_state
+            .rpc
+            .broadcast(QueryStorageIndex {
+                name: self.storage_name.to_string(),
+                hash: storage.hash,
+            })
+            .result()
             .await?;
 
-        log::debug!("Expecting reply from {expected} nodes");
+        Ok(peer_storages
+            .iter()
+            .filter_map(|reply| {
+                let node = reply.node_id();
+                let node_storage = reply.data::<StorageIndex>().ok()?;
 
-        let mut peer_storages = HashMap::default();
-        while let Some((peer, event)) = shared_state.connection_handler.next_event().await {
-            match event {
-                NetworkEvents::Synchronization(Synchronization::ReplyStorageIndex {
-                    name,
-                    storage_index,
-                }) if name == self.storage_name => {
-                    expected -= 1;
-                    match storage_index {
-                        StorageIndexStatus::StorageMissing => {
-                            // peer doesn't have the storage...
-                        }
-                        StorageIndexStatus::StorageInSync => {
-                            peer_storages.insert(peer, storage.files.clone());
-                        }
-                        StorageIndexStatus::SyncNecessary(files) => {
-                            peer_storages.insert(peer, files);
-                        }
-                    }
-
-                    if expected == 0 {
-                        break;
-                    }
+                if node_storage.name != self.storage_name {
+                    return None;
                 }
-                e => {
-                    log::error!("[sync leader] received unexpected event {e:?}");
-                }
-            }
-        }
 
-        Ok(peer_storages)
+                match node_storage.storage_index {
+                    StorageIndexStatus::StorageMissing => {
+                        // peer doesn't have the storage...
+                        None
+                    }
+                    StorageIndexStatus::StorageInSync => Some((node, storage.files.clone())),
+                    StorageIndexStatus::SyncNecessary(files) => Some((node, files)),
+                }
+            })
+            .collect())
     }
 }
 
-impl State for BuildMatchingFiles {
+impl State for FilesMatcher {
     type Output = (Vec<NodeId>, MatchedFilesIter);
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
         let storage = storage::get_storage_info(
             self.storage_name,
             self.storage_config,
-            shared_state.transaction_log,
+            &shared_state.transaction_log,
         )
         .await?;
-        let peers_storages = self.wait_storage_from_peers(shared_state, &storage).await?;
+
+        let peers_storages = self.get_storage_from_nodes(shared_state, &storage).await?;
         if peers_storages.is_empty() {
             log::trace!("Storage already in sync with all peers");
             Err(StateMachineError::Abort)?

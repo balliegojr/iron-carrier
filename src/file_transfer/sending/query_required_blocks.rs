@@ -8,9 +8,9 @@ use tokio::fs::File;
 use crate::{
     file_transfer::{
         block_index::{self, BlockIndexPosition, FullIndex},
-        FileTransferEvent, Transfer, TransferRecv, TransferType,
+        events::{self, RequiredBlocks, TransferType},
+        Transfer,
     },
-    network_events::NetworkEvents,
     node_id::NodeId,
     state_machine::State,
     SharedState, StateMachineError,
@@ -18,14 +18,12 @@ use crate::{
 
 pub struct QueryRequiredBlocks {
     transfer: Transfer,
-    transfer_chan: TransferRecv,
     transfer_types: HashMap<NodeId, TransferType>,
 }
 
 impl State for QueryRequiredBlocks {
     type Output = (
         Transfer,
-        TransferRecv,
         File,
         HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
     );
@@ -62,24 +60,14 @@ impl State for QueryRequiredBlocks {
             }
         }
 
-        Ok((
-            self.transfer,
-            self.transfer_chan,
-            file_handle,
-            required_blocks,
-        ))
+        Ok((self.transfer, file_handle, required_blocks))
     }
 }
 
 impl QueryRequiredBlocks {
-    pub fn new(
-        transfer: Transfer,
-        transfer_chan: TransferRecv,
-        transfer_types: HashMap<NodeId, TransferType>,
-    ) -> Self {
+    pub fn new(transfer: Transfer, transfer_types: HashMap<NodeId, TransferType>) -> Self {
         Self {
             transfer,
-            transfer_chan,
             transfer_types,
         }
     }
@@ -117,43 +105,29 @@ impl QueryRequiredBlocks {
         &mut self,
         shared_state: &SharedState,
         block_hashes: &FullIndex,
-        mut nodes: HashSet<NodeId>,
+        nodes: HashSet<NodeId>,
     ) -> crate::Result<HashMap<NodeId, BTreeSet<BlockIndexPosition>>> {
         shared_state
-            .connection_handler
-            .broadcast_to(
-                NetworkEvents::FileTransfer(
-                    self.transfer.transfer_id,
-                    FileTransferEvent::QueryRequiredBlocks {
-                        sender_block_index: block_hashes.clone(),
-                    },
-                ),
-                nodes.iter(),
+            .rpc
+            .multi_call(
+                events::QueryRequiredBlocks {
+                    transfer_id: self.transfer.transfer_id,
+                    sender_block_index: block_hashes.clone(),
+                },
+                nodes,
             )
-            .await?;
-
-        let mut replies = HashMap::with_capacity(nodes.len());
-        while let Some((node_id, ev)) = self.transfer_chan.recv().await {
-            match ev {
-                FileTransferEvent::ReplyRequiredBlocks { required_blocks } => {
-                    replies.insert(node_id, required_blocks);
-                }
-                FileTransferEvent::RemovePeer => {
-                    replies.remove(&node_id);
-                    nodes.remove(&node_id);
-                    self.transfer_types.remove(&node_id);
-                }
-                _ => {
-                    log::error!("Received unexpected event: {ev:?}");
-                }
-            }
-
-            if replies.len() == nodes.len() {
-                return Ok(replies);
-            }
-        }
-
-        Err(StateMachineError::Abort)?
+            .result()
+            .await
+            .and_then(|replies| {
+                replies
+                    .into_iter()
+                    .map(|reply| {
+                        reply.data().map(|required_blocks: RequiredBlocks| {
+                            (reply.node_id(), required_blocks.required_blocks)
+                        })
+                    })
+                    .collect()
+            })
     }
 }
 

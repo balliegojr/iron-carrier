@@ -55,7 +55,7 @@ pub trait StateComposer {
     where
         Self: State + Sized,
         T: State,
-        F: Fn() -> T,
+        F: FnOnce() -> T,
     {
         ThenDefault {
             previous: self,

@@ -10,11 +10,5 @@ pub use daemon::Daemon;
 mod discover_peers;
 pub use discover_peers::DiscoverPeers;
 
-mod full_sync;
-pub use full_sync::FullSync;
-
-mod sync_leader;
-pub use sync_leader::SyncLeader;
-
-mod sync_follower;
-pub use sync_follower::SyncFollower;
+mod sync;
+pub use sync::SetSyncRole;

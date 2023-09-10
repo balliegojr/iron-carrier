@@ -40,7 +40,7 @@ pub async fn move_file<'b>(
     let src_path_abs = src_path.absolute(path_config)?;
 
     if dest_path_abs.exists() || !src_path_abs.exists() {
-        log::error!("failed to move {src_path_abs:?} to {dest_path_abs:?}");
+        log::warn!("{src_path_abs:?} cannot be moved to {dest_path_abs:?}");
         return Err(Box::new(IronCarrierError::InvalidOperation));
     }
 
@@ -51,9 +51,10 @@ pub async fn move_file<'b>(
         }
     }
 
-    log::debug!("moving file {src_path_abs:?} to {dest_path_abs:?}");
     tokio::fs::rename(&src_path_abs, &dest_path_abs).await?;
     fix_times_and_permissions(file, config)?;
+
+    log::info!("{src_path_abs:?} moved to {dest_path_abs:?}");
 
     // It is necessary to add two entries in the log, one for the new path as moved, one for the
     // old path as deleted
@@ -104,17 +105,15 @@ pub async fn delete_file(
 
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
-        log::debug!("delete_file: given path doesn't exist ({:?})", path);
+        log::warn!("{:?} path does not exist", path);
         return Err(Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)));
     } else if path.is_dir() {
-        log::debug!("delete_file: {:?} is dir, removing whole dir", path);
         tokio::fs::remove_dir_all(&path).await?;
     } else {
-        log::debug!("delete_file: removing file {:?}", path);
         tokio::fs::remove_file(&path).await?;
     }
 
-    log::debug!("{:?} removed", path);
+    log::info!("{:?} deleted", path);
     transaction_log
         .append_entry(
             &file_info.storage,

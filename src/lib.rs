@@ -9,13 +9,14 @@
 #![feature(is_sorted)]
 #![feature(async_fn_in_trait)]
 
-use network::ConnectionHandler;
+use network::{rpc::RPCHandler, ConnectionHandler};
+use node_id::NodeId;
 use serde::{Deserialize, Serialize};
 use state_machine::{State, StateComposer};
-use states::FullSync;
+use states::SetSyncRole;
 use sync_options::SyncOptions;
 use thiserror::Error;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc::Sender, oneshot::Receiver};
 use transaction_log::TransactionLog;
 use validation::Validated;
 
@@ -25,7 +26,6 @@ use config::Config;
 pub mod constants;
 mod hash_helper;
 mod ignored_files;
-mod network_events;
 mod node_id;
 pub mod relative_path;
 mod stream;
@@ -33,7 +33,6 @@ mod sync_options;
 mod time;
 
 pub mod leak;
-use leak::Leak;
 
 mod network;
 mod storage;
@@ -87,6 +86,15 @@ pub enum IronCarrierError {
 
     #[error("Node Connection Timeout")]
     ConnectionTimeout,
+
+    #[error("Node {0} is not connected")]
+    UnknownNode(NodeId),
+
+    #[error("Reply for the message did not arrive in time")]
+    ReplyTimeOut,
+
+    #[error("Received an invalid reply")]
+    InvalidReply,
 }
 
 impl From<bincode::Error> for IronCarrierError {
@@ -95,12 +103,13 @@ impl From<bincode::Error> for IronCarrierError {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct SharedState {
     config: &'static Validated<Config>,
-    connection_handler: &'static ConnectionHandler<network_events::NetworkEvents>,
-    transaction_log: &'static TransactionLog,
-    after_sync: &'static Option<Sender<()>>,
+    connection_handler: ConnectionHandler,
+    rpc: RPCHandler,
+    transaction_log: TransactionLog,
+    when_done: Option<Sender<()>>,
 }
 
 // TODO: implement client mode if the daemon is running (basic a cli that shows sync status)
@@ -108,28 +117,22 @@ pub struct SharedState {
 // participated
 
 pub async fn run_full_sync(config: &'static validation::Validated<config::Config>) -> Result<()> {
-    let connection_handler = network::ConnectionHandler::new(config).await?.leak();
-    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)
-        .await?
-        .leak();
+    let (connection_handler, rpc) = network::start_network_service(config).await?;
+    let transaction_log = transaction_log::TransactionLog::load(&config.log_path).await?;
 
     let shared_state = SharedState {
         config,
         connection_handler,
+        rpc,
         transaction_log,
-        after_sync: &None,
+        when_done: None,
     };
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(|leader_id| FullSync::new(leader_id, SyncOptions::default()))
+        .and_then(|leader_id| SetSyncRole::new(leader_id, SyncOptions::default()))
         .execute(&shared_state)
-        .await?;
-
-    shared_state
-        .connection_handler
-        .close_all_connections()
         .await?;
 
     Ok(())
@@ -137,26 +140,25 @@ pub async fn run_full_sync(config: &'static validation::Validated<config::Config
 
 pub async fn start_daemon(
     config: &'static validation::Validated<config::Config>,
-    when_sync_done: Option<Sender<()>>,
+    when_done: Option<Sender<()>>,
 ) -> Result<()> {
     log::trace!("My id is {}", config.node_id);
 
-    let connection_handler = network::ConnectionHandler::new(config).await?.leak();
-    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)
-        .await?
-        .leak();
+    let (connection_handler, rpc) = network::start_network_service(config).await?;
+    let transaction_log = transaction_log::TransactionLog::load(&config.log_path).await?;
 
     let shared_state = SharedState {
         config,
         connection_handler,
+        rpc,
         transaction_log,
-        after_sync: when_sync_done.leak(),
+        when_done,
     };
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
-        .and_then(|leader_id| FullSync::new(leader_id, SyncOptions::default()))
+        .and_then(|leader_id| SetSyncRole::new(leader_id, SyncOptions::default()))
         .then_default_to(states::Daemon::default)
         .execute(&shared_state)
         .await?;

@@ -5,12 +5,13 @@
 //! This protocol also expects absolute voting instead of majority
 use std::{fmt::Display, time::Duration};
 
+use hash_type_id_derive::HashTypeId;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
 
 use crate::{
     constants::MAX_ELECTION_TERMS,
-    network_events::{self, NetworkEvents},
     node_id::NodeId,
     state_machine::{State, StateMachineError},
     SharedState,
@@ -78,102 +79,98 @@ impl State for Consensus {
         //    protocol
 
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
-        let mut term = ElectionTerm::default();
+        let mut term = 0u32;
 
-        shared_state
-            .connection_handler
-            .broadcast(network_events::Transition::Consensus.into())
-            .await?;
+        let mut start_consensus_request = shared_state
+            .rpc
+            .consume_events::<StartConsensus>()
+            .await
+            .fuse();
+        let mut vote_requested = shared_state
+            .rpc
+            .consume_events::<RequestVote>()
+            .await
+            .fuse();
+        let mut consensus_reached = shared_state
+            .rpc
+            .consume_events::<ConsensusReached>()
+            .await
+            .fuse();
+
+        tokio::spawn(shared_state.rpc.broadcast(StartConsensus).ack());
 
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline), if self.election_state == NodeState::Candidate => {
-                    if term.term > MAX_ELECTION_TERMS {
+                    if term > MAX_ELECTION_TERMS {
                         log::error!("Election reached maximum term of {MAX_ELECTION_TERMS}");
                         Err(StateMachineError::Abort)?
                     }
 
-                    term = term.next();
-                    term.participants = shared_state
-                        .connection_handler
-                        .broadcast(
-                            ElectionEvents::RequestVoteForTerm(term.term).into(),
-                        )
+                    term += 1;
+                    let replies = shared_state
+                        .rpc
+                        .broadcast
+                        (RequestVote { term })
+                        .result()
                         .await?;
 
-                    if term.participants == 0 {
+                    if replies.is_empty() {
                         log::error!("No participants in the consensus");
                         Err(StateMachineError::Abort)?
                     }
 
-                    log::debug!("Requested vote for {}", term.participants);
+                    if replies.iter().all(|v| v.data::<TermVote>().map(|v| v.vote).unwrap_or_default()) {
+                        log::debug!("Node wins election");
+                        self.election_state = NodeState::Leader;
+                        shared_state.rpc.broadcast(ConsensusReached).ack().await?;
+
+                        return Ok(shared_state.config.node_id_hashed)
+                    }
 
                     deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
                 }
-                Some((node_id, network_event)) = shared_state.connection_handler.next_event() => {
-                    match network_event {
-                        NetworkEvents::ConsensusElection(ev) => {
-                            match ev {
-                                ElectionEvents::RequestVoteForTerm(vote_term) if term.term < vote_term => {
-                                    term.term = vote_term;
-                                    self.election_state = NodeState::Follower;
+                vote_request = vote_requested.next() => {
+                    let request = vote_request.ok_or(StateMachineError::Abort)?;
+                    let data = request.data::<RequestVote>()?;
+                    if term < data.term {
+                        term = data.term;
+                        self.election_state = NodeState::Follower;
 
-                                    shared_state.connection_handler.send_to(ElectionEvents::VoteOnTerm(vote_term, true).into(), node_id).await?;
-                                }
-                                ElectionEvents::RequestVoteForTerm(vote_term) => {
-                                    shared_state.connection_handler.send_to(ElectionEvents::VoteOnTerm(vote_term, false).into(), node_id).await?;
-                                }
-                                ElectionEvents::VoteOnTerm(vote_term, vote) if self.election_state == NodeState::Candidate && term.term == vote_term => {
-                                    term.compute_vote(vote);
-
-                                    if term.absolute_win() {
-                                        log::debug!("Node wins election");
-                                        self.election_state = NodeState::Leader;
-
-                                        return Ok(shared_state.config.node_id_hashed)
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        NetworkEvents::RequestTransition(network_events::Transition::FullSync) => if self.election_state == NodeState::Follower {
-                            return Ok(node_id)
-                        }
-                        _ => {}
+                        request.reply(TermVote { vote: true }).await?;
+                    } else {
+                        request.reply(TermVote { vote: false }).await?;
                     }
+                }
+
+                consensus_reached_req = consensus_reached.next() => {
+                    let request = consensus_reached_req.ok_or(StateMachineError::Abort)?;
+                    let leader = request.node_id();
+                    request.ack().await?;
+                    return Ok(leader);
+                }
+
+                Some(start_consensus) = start_consensus_request.next() => {
+                    let _ = start_consensus.ack().await;
                 }
             }
         }
     }
 }
 
-#[derive(Debug, Default)]
-struct ElectionTerm {
-    term: u32,
-    participants: usize,
-    voted_yes: usize,
-    voted_no: usize,
+#[derive(Debug, Serialize, Deserialize, HashTypeId)]
+pub struct StartConsensus;
+#[derive(Debug, Serialize, Deserialize, HashTypeId)]
+pub struct ConsensusReached;
+
+#[derive(Debug, Serialize, Deserialize, HashTypeId)]
+struct RequestVote {
+    pub term: u32,
 }
 
-impl ElectionTerm {
-    pub fn next(self) -> Self {
-        Self {
-            term: self.term + 1,
-            ..Default::default()
-        }
-    }
-
-    fn compute_vote(&mut self, vote: bool) {
-        if vote {
-            self.voted_yes += 1;
-        } else {
-            self.voted_no += 1;
-        }
-    }
-
-    fn absolute_win(&self) -> bool {
-        self.voted_yes == self.participants
-    }
+#[derive(Debug, Serialize, Deserialize, HashTypeId)]
+struct TermVote {
+    pub vote: bool,
 }
 
 fn random_wait_time() -> u64 {
