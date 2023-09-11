@@ -94,7 +94,7 @@ impl Config {
     }
 
     fn with_correct_log_path(mut self) -> Self {
-        if self.log_path.exists() && self.log_path.is_dir() {
+        if self.log_path.is_dir() {
             self.log_path.push("iron-carrier.log");
         }
 
@@ -219,7 +219,7 @@ mod tests {
         ]
 
         group = ""
-        log_path = "./tmp"
+        log_path = "./"
 
         [storages]
         str_path = "./tmp"
@@ -240,10 +240,7 @@ mod tests {
 
         assert!(!config.node_id.is_empty());
         assert!(config.group.is_none());
-        assert_eq!(
-            config.log_path,
-            PathBuf::from_str("./tmp/iron-carrier.log")?
-        );
+        assert_eq!(config.log_path, PathBuf::from_str("./iron-carrier.log")?);
 
         Ok(())
     }
