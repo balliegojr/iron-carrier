@@ -5,7 +5,7 @@
 //! This protocol also expects absolute voting instead of majority
 use std::{fmt::Display, time::Duration};
 
-use hash_type_id_derive::HashTypeId;
+use iron_carrier_macros::HashTypeId;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;

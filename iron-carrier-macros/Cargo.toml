@@ -1,0 +1,15 @@
+[package]
+name = "iron-carrier-macros"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { version = "1.0.66", features = ["span-locations"] }
+quote = "1.0.33"
+siphasher = { version = "1.0.0", default-features = false }
+syn = { version = "2.0.29", features = ["extra-traits"] }

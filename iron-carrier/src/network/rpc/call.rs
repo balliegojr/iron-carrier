@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use hash_type_id::HashTypeId;
+use crate::hash_type_id::HashTypeId;
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 

@@ -16,12 +16,14 @@ use state_machine::{State, StateComposer};
 use states::SetSyncRole;
 use sync_options::SyncOptions;
 use thiserror::Error;
-use tokio::sync::{mpsc::Sender, oneshot::Receiver};
+use tokio::sync::mpsc::Sender;
 use transaction_log::TransactionLog;
 use validation::Validated;
 
 pub mod config;
 use config::Config;
+
+pub mod hash_type_id;
 
 pub mod constants;
 mod hash_helper;

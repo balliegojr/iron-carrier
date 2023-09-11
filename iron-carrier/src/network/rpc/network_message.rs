@@ -1,7 +1,7 @@
 use std::{sync::atomic::AtomicU16, vec};
 
+use crate::hash_type_id::{HashTypeId, TypeId};
 use bytes::{Buf, BytesMut};
-use hash_type_id::{HashTypeId, TypeId};
 use serde::{de::Deserialize, Serialize};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -135,7 +135,7 @@ impl NetworkMessage {
 #[cfg(test)]
 mod tests {
     use bytes::BufMut;
-    use hash_type_id_derive::HashTypeId;
+    use iron_carrier_macros::HashTypeId;
     use serde::Deserialize;
 
     use super::*;

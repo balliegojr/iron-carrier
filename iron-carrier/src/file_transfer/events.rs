@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use hash_type_id_derive::HashTypeId;
+use iron_carrier_macros::HashTypeId;
 use serde::{Deserialize, Serialize};
 
 use crate::storage::FileInfo;

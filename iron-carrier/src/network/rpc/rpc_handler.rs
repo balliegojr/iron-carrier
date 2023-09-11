@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use hash_type_id::{HashTypeId, TypeId};
+use crate::hash_type_id::{HashTypeId, TypeId};
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 

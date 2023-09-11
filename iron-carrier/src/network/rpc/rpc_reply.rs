@@ -1,4 +1,4 @@
-use hash_type_id::HashTypeId;
+use crate::hash_type_id::HashTypeId;
 use serde::de::Deserialize;
 
 use crate::node_id::NodeId;

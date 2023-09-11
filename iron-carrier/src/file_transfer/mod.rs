@@ -40,10 +40,9 @@ impl State for TransferFiles {
             wait_complete_from,
         ));
 
-        if let Err(err) = sending::send_files(&shared_state, self.files_to_send).await {
+        if let Err(err) = sending::send_files(shared_state, self.files_to_send).await {
             log::error!("{err}")
         }
-
         match leader_id {
             Some(leader_id) => {
                 let _ = shared_state
@@ -51,10 +50,15 @@ impl State for TransferFiles {
                     .call(TransferFilesCompleted, leader_id)
                     .ack()
                     .await;
-                receive_task.await;
+
+                if let Err(err) = receive_task.await {
+                    log::error!("{err}")
+                }
             }
             None => {
-                receive_task.await;
+                if let Err(err) = receive_task.await {
+                    log::error!("{err}")
+                }
                 let _ = shared_state
                     .rpc
                     .broadcast(TransferFilesCompleted)
