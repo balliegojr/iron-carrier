@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use hash_type_id_derive::HashTypeId;
+use iron_carrier_macros::HashTypeId;
 use serde::{Deserialize, Serialize};
 
 use crate::{node_id::NodeId, storage::FileInfo};
