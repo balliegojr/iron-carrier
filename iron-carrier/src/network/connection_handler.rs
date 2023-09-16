@@ -65,7 +65,7 @@ impl ConnectionHandler {
 }
 
 async fn listen_connections(
-    config: &Config,
+    config: &'static Config,
     on_connect: Sender<Identified<Connection>>,
 ) -> crate::Result<()> {
     log::debug!("Listening on {}", config.port);

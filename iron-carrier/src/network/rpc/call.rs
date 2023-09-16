@@ -38,13 +38,6 @@ where
         }
     }
 
-    pub async fn result(self) -> crate::Result<RPCReply> {
-        match self.wait_reply().await? {
-            Some(reply) if !reply.is_ack() => Ok(reply),
-            _ => Err(IronCarrierError::InvalidReply.into()),
-        }
-    }
-
     async fn wait_reply(self) -> crate::Result<Option<RPCReply>> {
         let message = NetworkMessage::encode(self.data)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);

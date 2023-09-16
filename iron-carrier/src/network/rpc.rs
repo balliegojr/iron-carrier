@@ -25,28 +25,33 @@ use rpc_reply::RPCReply;
 
 mod call;
 mod group_call;
+mod subscriber;
+
 mod rpc_handler;
 pub use rpc_handler::RPCHandler;
 
 pub fn rpc_service(new_connection: Receiver<Identified<Connection>>) -> RPCHandler {
     let (net_out_tx, net_out_rx) = tokio::sync::mpsc::channel(10);
-    let (consumer_tx, consumer_rx) = tokio::sync::mpsc::channel(10);
+    let (add_consumer_tx, add_consumer_rx) = tokio::sync::mpsc::channel(10);
+    let (remove_consumer_tx, remove_consumer_rx) = tokio::sync::mpsc::channel(10);
 
     tokio::spawn(rpc_loop(
         net_out_rx,
         net_out_tx.clone(),
         new_connection,
-        consumer_rx,
+        add_consumer_rx,
+        remove_consumer_rx,
     ));
 
-    RPCHandler::new(net_out_tx, consumer_tx)
+    RPCHandler::new(net_out_tx, add_consumer_tx, remove_consumer_tx)
 }
 
 async fn rpc_loop(
     mut net_out: Receiver<(NetworkMessage, OutputMessageType)>,
     net_out_sender: Sender<(NetworkMessage, OutputMessageType)>,
     mut new_connection: Receiver<Identified<Connection>>,
-    mut new_consumer: Receiver<(TypeId, Sender<RPCMessage>)>,
+    mut add_consumers: Receiver<(Vec<TypeId>, Sender<RPCMessage>)>,
+    mut remove_consumers: Receiver<Vec<TypeId>>,
 ) {
     let (net_in_tx, mut net_in_rx) = tokio::sync::mpsc::channel::<(NodeId, NetworkMessage)>(10);
     let mut received_messages: HashMap<TypeId, VecDeque<(NodeId, NetworkMessage)>> =
@@ -58,7 +63,10 @@ async fn rpc_loop(
     loop {
         tokio::select! {
              request = net_in_rx.recv() => {
-                let Some((node_id, message)) = request else { break; };
+                let Some((node_id, message)) = request else {
+                    break;
+                };
+
                 if message.is_reply() {
                     process_reply(message, node_id, &mut waiting_reply).await;
                 } else {
@@ -74,9 +82,11 @@ async fn rpc_loop(
             }
 
             request = new_connection.recv() =>  {
-                let Some(connection) = request else { break; };
+                let Some(connection) = request else {
+                    break;
+                };
                 if connections.contains_node(&connection.node_id()) {
-                    log::warn!("Already connected to {}", connection.node_id());
+                    log::trace!("Already connected to {}", connection.node_id());
                 } else {
                     // TODO: send unsent messages to this node
                     let (write, read) = connection.split();
@@ -90,22 +100,38 @@ async fn rpc_loop(
                 send_output_message(message, send_type, &mut connections, &mut waiting_reply).await;
             }
 
-            request = new_consumer.recv() => {
-                let Some((consumer_type, consumer)) = request else { break; };
+            request = add_consumers.recv() => {
+                let Some((consumer_types, consumer_channel)) = request else {
+                    break;
+                };
                 add_new_consumer(
-                    consumer_type,
-                    consumer,
+                    consumer_types,
+                    consumer_channel,
                     &mut received_messages,
                     &mut consumers,
                     &net_out_sender,
                 )
                 .await;
+            }
 
+            request = remove_consumers.recv() => {
+                let Some(consumer_types) = request else {
+                    break;
+                };
+                for consumer_type in consumer_types {
+                    consumers.remove(&consumer_type);
+                }
             }
         }
     }
+
+    // It is necessary to ensure that all output messages are sent before exiting
+    while let Some((message, send_type)) = net_out.recv().await {
+        send_output_message(message, send_type, &mut connections, &mut waiting_reply).await;
+    }
 }
 
+#[derive(Debug)]
 pub enum OutputMessageType {
     Reply(NodeId),
     SingleNode(NodeId, Sender<RPCReply>),
@@ -121,21 +147,24 @@ async fn process_rpc_call(
     net_out_sender: &Sender<(NetworkMessage, OutputMessageType)>,
 ) {
     if let Entry::Occupied(mut entry) = consumers.entry(message.type_id()) {
-        let consumer = entry.get_mut();
-        if consumer.is_closed() {
+        if let Err(err) = entry
+            .get_mut()
+            .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
+            .await
+        {
+            let message: NetworkMessage = err.0.into();
+            received_messages
+                .entry(message.type_id())
+                .or_default()
+                .push_back((node_id, message));
             entry.remove_entry();
-        } else {
-            consumer
-                .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
-                .await;
-            return;
         }
+    } else {
+        received_messages
+            .entry(message.type_id())
+            .or_default()
+            .push_back((node_id, message));
     }
-
-    received_messages
-        .entry(message.type_id())
-        .or_default()
-        .push_back((node_id, message));
 }
 
 async fn process_reply(
@@ -156,7 +185,9 @@ async fn process_reply(
         return;
     }
 
-    sent_handler.send(RPCReply::new(message, node_id)).await;
+    if let Err(err) = sent_handler.send(RPCReply::new(message, node_id)).await {
+        log::error!("Failed to send reply {err}");
+    }
 }
 
 async fn send_output_message(
@@ -185,10 +216,18 @@ async fn send_output_message(
         Ok(())
     }
 
+    if message.is_reply() {
+        log::warn!("Sending reply {:?}", message.id());
+    } else {
+        log::warn!("Sending message {:?}", message.id());
+    }
+
     // TODO: keep track of unsent replies
     match send_type {
         OutputMessageType::Reply(node_id) => {
-            let _ = send_to(&message, node_id, connections).await;
+            if let Err(err) = send_to(&message, node_id, connections).await {
+                log::error!("Failed to send reply {err}");
+            }
         }
         OutputMessageType::SingleNode(node_id, callback) => {
             if send_to(&message, node_id, connections).await.is_ok() {
@@ -213,29 +252,29 @@ async fn send_output_message(
 }
 
 async fn add_new_consumer(
-    consumer_type: TypeId,
+    consumer_types: Vec<TypeId>,
     consumer: Sender<RPCMessage>,
     received_messages: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage)>>,
     consumers: &mut HashMap<TypeId, tokio::sync::mpsc::Sender<RPCMessage>>,
     net_out_sender: &Sender<(NetworkMessage, OutputMessageType)>,
 ) {
-    if let Entry::Occupied(mut entry) = received_messages.entry(consumer_type) {
-        while let Some((node_id, message)) = entry.get_mut().pop_front() {
-            if consumer
-                .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
-                .await
-                .is_err()
-            {
-                // TODO: add message back
-                // entry.get_mut().push_front((node_id, message));
-                return;
+    for consumer_type in consumer_types {
+        if let Entry::Occupied(mut entry) = received_messages.entry(consumer_type) {
+            while let Some((node_id, message)) = entry.get_mut().pop_front() {
+                if let Err(err) = consumer
+                    .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
+                    .await
+                {
+                    entry.get_mut().push_front((node_id, err.0.into()));
+                    return;
+                }
             }
+
+            entry.remove_entry();
         }
 
-        entry.remove_entry();
+        consumers.insert(consumer_type, consumer.clone());
     }
-
-    consumers.insert(consumer_type, consumer);
 }
 
 async fn read_network_data(

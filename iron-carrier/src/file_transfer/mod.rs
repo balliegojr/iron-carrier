@@ -6,13 +6,9 @@ mod block_index;
 pub use block_index::BlockIndexPosition;
 
 mod events;
+mod receiver;
+mod sender;
 mod transfer;
-
-mod sending;
-pub use sending::*;
-
-mod receiving;
-pub use receiving::*;
 
 pub use events::TransferFilesStart;
 pub use transfer::{Transfer, TransferId};
@@ -35,14 +31,15 @@ impl State for TransferFiles {
             None => shared_state.rpc.broadcast(TransferFilesStart).ack().await?,
         };
 
-        let receive_task = tokio::spawn(receiving::receive_files(
+        let receive_task = tokio::spawn(receiver::receive_files(
             shared_state.clone(),
             wait_complete_from,
         ));
 
-        if let Err(err) = sending::send_files(shared_state, self.files_to_send).await {
+        if let Err(err) = sender::send_files(shared_state, self.files_to_send).await {
             log::error!("{err}")
         }
+
         match leader_id {
             Some(leader_id) => {
                 let _ = shared_state

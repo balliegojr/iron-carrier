@@ -63,7 +63,7 @@ impl NetworkMessage {
 
         content.extend_from_slice(&id.to_le_bytes());
         content.push(0);
-        content.extend_from_slice(&T::id().to_le_bytes());
+        content.extend_from_slice(&T::ID.to_le_bytes());
         content.extend_from_slice(&(data.len() as u16).to_le_bytes());
         content.extend_from_slice(&data);
 
@@ -87,7 +87,7 @@ impl NetworkMessage {
 
         content.extend_from_slice(&id.to_le_bytes());
         content.push(flags::REPLY);
-        content.extend_from_slice(&T::id().to_le_bytes());
+        content.extend_from_slice(&T::ID.to_le_bytes());
         content.extend_from_slice(&(data.len() as u16).to_le_bytes());
         content.extend_from_slice(&data);
 
@@ -95,7 +95,7 @@ impl NetworkMessage {
     }
 
     pub fn data<'a, T: HashTypeId + Deserialize<'a>>(&'a self) -> crate::Result<T> {
-        if self.is_ack() || self.type_id() != T::id() {
+        if self.is_ack() || self.type_id() != T::ID {
             Err(IronCarrierError::InvalidReply)?;
         }
 
@@ -107,8 +107,7 @@ impl NetworkMessage {
         writer: &mut (impl AsyncWrite + std::marker::Unpin),
     ) -> crate::Result<()> {
         writer.write_all(&self.content).await?;
-        writer.flush().await?;
-        Ok(())
+        writer.flush().await.map_err(Box::from)
     }
 
     pub fn id(&self) -> u16 {
