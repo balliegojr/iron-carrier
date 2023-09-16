@@ -4,6 +4,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     config::Config,
+    hash_type_id::HashTypeId,
     node_id::NodeId,
     state_machine::{State, StateComposer, StateMachineError},
     stream,
@@ -49,41 +50,40 @@ async fn wait_event(shared_state: &SharedState) -> crate::Result<DaemonEvent> {
     );
 
     let mut full_sync_deadline = pin!(next_cron_schedule(shared_state.config));
-
-    let mut start_consensus = shared_state
+    let mut events = shared_state
         .rpc
-        .consume_events::<StartConsensus>()
-        .await
-        .fuse();
+        .subscribe_many(vec![StartConsensus::ID, ConsensusReached::ID])
+        .await?;
 
-    let mut consensus_reached = shared_state
-        .rpc
-        .consume_events::<ConsensusReached>()
-        .await
-        .fuse();
+    let event = tokio::select! {
+        event = events.next() => {
+            let request = event.ok_or(StateMachineError::Abort)?;
+            match request.type_id() {
+                StartConsensus::ID => {
+                    request.ack().await?;
+                    Ok(DaemonEvent::SyncWithConsensus)
 
-    tokio::select! {
-        start_consensus_req = start_consensus.next() => {
-            let request = start_consensus_req.ok_or(StateMachineError::Abort)?;
-            request.ack().await?;
+                }
+                ConsensusReached::ID => {
+                    let leader = request.node_id();
+                    request.ack().await?;
 
-            return Ok(DaemonEvent::SyncWithConsensus);
-        }
-
-        consensus_reached_req = consensus_reached.next() => {
-            let request = consensus_reached_req.ok_or(StateMachineError::Abort)?;
-            let leader = request.node_id();
-            request.ack().await?;
-
-            return Ok(DaemonEvent::BecomeFollower(leader));
+                    Ok(DaemonEvent::BecomeFollower(leader))
+                }
+                _ => unreachable!()
+            }
         }
         Some(to_sync) = watcher_events.recv() => {
-             return Ok(DaemonEvent::SyncWithoutConsensus(SyncOptions::new(to_sync)));
+             Ok(DaemonEvent::SyncWithoutConsensus(SyncOptions::new(to_sync)))
         }
         _ = &mut full_sync_deadline => {
-            return Ok(DaemonEvent::SyncWithoutConsensus(Default::default()));
+            Ok(DaemonEvent::SyncWithoutConsensus(Default::default()))
         }
-    }
+    };
+
+    events.free().await;
+
+    event
 }
 
 #[derive(Debug)]

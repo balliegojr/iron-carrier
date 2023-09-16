@@ -1,3 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["iron-carrier", "iron-carrier-macros"]
+
+
+[profile.release]
+strip = true
+lto = true

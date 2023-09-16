@@ -8,23 +8,26 @@ use crate::node_id::NodeId;
 
 use super::{
     call::Call, group_call::GroupCall, network_message::NetworkMessage, rpc_message::RPCMessage,
-    OutputMessageType,
+    subscriber::Subscriber, OutputMessageType,
 };
 
 #[derive(Debug, Clone)]
 pub struct RPCHandler {
     network_output: Sender<(NetworkMessage, OutputMessageType)>,
-    consumers: Sender<(TypeId, Sender<RPCMessage>)>,
+    consumers: Sender<(Vec<TypeId>, Sender<RPCMessage>)>,
+    remove_consumers: Sender<Vec<TypeId>>,
 }
 
 impl RPCHandler {
     pub fn new(
         network_output: Sender<(NetworkMessage, OutputMessageType)>,
-        consumers: Sender<(TypeId, Sender<RPCMessage>)>,
+        consumers: Sender<(Vec<TypeId>, Sender<RPCMessage>)>,
+        remove_consumers: Sender<Vec<TypeId>>,
     ) -> Self {
         Self {
             network_output,
             consumers,
+            remove_consumers,
         }
     }
 
@@ -49,13 +52,9 @@ impl RPCHandler {
         GroupCall::new(data, self.network_output.clone(), None)
     }
 
-    // TODO: impl event subscriber
-    pub async fn consume_events<T: HashTypeId>(
-        &self,
-    ) -> impl tokio_stream::Stream<Item = RPCMessage> {
-        let (tx, rx) = tokio::sync::mpsc::channel(10);
-        self.consumers.send((T::id(), tx)).await;
-
-        tokio_stream::wrappers::ReceiverStream::new(rx)
+    pub async fn subscribe_many(&self, types: Vec<TypeId>) -> crate::Result<Subscriber> {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        self.consumers.send((types.clone(), tx)).await?;
+        Ok(Subscriber::new(types, rx, self.remove_consumers.clone()))
     }
 }

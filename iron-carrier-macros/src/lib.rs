@@ -19,9 +19,7 @@ pub fn type_id_derive(input: TokenStream) -> TokenStream {
 
     quote!(
         impl #impl_generics crate::hash_type_id::HashTypeId for #name #ty_generics #where_clause {
-            fn id() -> crate::hash_type_id::TypeId {
-                #type_hash_id.into()
-            }
+            const ID: crate::hash_type_id::TypeId = crate::hash_type_id::TypeId(#type_hash_id);
         }
     )
     .into()

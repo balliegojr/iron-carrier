@@ -12,6 +12,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     constants::MAX_ELECTION_TERMS,
+    hash_type_id::HashTypeId,
     node_id::NodeId,
     state_machine::{State, StateMachineError},
     SharedState,
@@ -39,14 +40,6 @@ pub enum ElectionEvents {
 #[derive(Debug, Default)]
 pub struct Consensus {
     election_state: NodeState,
-}
-
-impl Consensus {
-    pub fn new() -> Self {
-        Self {
-            election_state: NodeState::Candidate,
-        }
-    }
 }
 
 impl Display for Consensus {
@@ -81,25 +74,18 @@ impl State for Consensus {
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
         let mut term = 0u32;
 
-        let mut start_consensus_request = shared_state
+        let mut events = shared_state
             .rpc
-            .consume_events::<StartConsensus>()
-            .await
-            .fuse();
-        let mut vote_requested = shared_state
-            .rpc
-            .consume_events::<RequestVote>()
-            .await
-            .fuse();
-        let mut consensus_reached = shared_state
-            .rpc
-            .consume_events::<ConsensusReached>()
-            .await
-            .fuse();
+            .subscribe_many(vec![
+                StartConsensus::ID,
+                RequestVote::ID,
+                ConsensusReached::ID,
+            ])
+            .await?;
 
         tokio::spawn(shared_state.rpc.broadcast(StartConsensus).ack());
 
-        loop {
+        let leader_id = loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline), if self.election_state == NodeState::Candidate => {
                     if term > MAX_ELECTION_TERMS {
@@ -125,36 +111,42 @@ impl State for Consensus {
                         self.election_state = NodeState::Leader;
                         shared_state.rpc.broadcast(ConsensusReached).ack().await?;
 
-                        return Ok(shared_state.config.node_id_hashed)
+                        break shared_state.config.node_id_hashed
                     }
 
                     deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
                 }
-                vote_request = vote_requested.next() => {
-                    let request = vote_request.ok_or(StateMachineError::Abort)?;
-                    let data = request.data::<RequestVote>()?;
-                    if term < data.term {
-                        term = data.term;
-                        self.election_state = NodeState::Follower;
 
-                        request.reply(TermVote { vote: true }).await?;
-                    } else {
-                        request.reply(TermVote { vote: false }).await?;
+                request = events.next() => {
+                    let request = request.ok_or(StateMachineError::Abort)?;
+                    match request.type_id() {
+                        RequestVote::ID => {
+                            let data = request.data::<RequestVote>()?;
+                            if term < data.term {
+                                term = data.term;
+                                self.election_state = NodeState::Follower;
+
+                                request.reply(TermVote { vote: true }).await?;
+                            } else {
+                                request.reply(TermVote { vote: false }).await?;
+                            }
+                        }
+                        ConsensusReached::ID => {
+                            let leader = request.node_id();
+                            request.ack().await?;
+                            break leader;
+                        }
+                        StartConsensus::ID => {
+                            let _ = request.ack().await;
+                        }
+                        _ => { unreachable!() }
                     }
                 }
-
-                consensus_reached_req = consensus_reached.next() => {
-                    let request = consensus_reached_req.ok_or(StateMachineError::Abort)?;
-                    let leader = request.node_id();
-                    request.ack().await?;
-                    return Ok(leader);
-                }
-
-                Some(start_consensus) = start_consensus_request.next() => {
-                    let _ = start_consensus.ack().await;
-                }
             }
-        }
+        };
+
+        events.free().await;
+        Ok(leader_id)
     }
 }
 

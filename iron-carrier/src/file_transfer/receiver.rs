@@ -1,4 +1,3 @@
-// mod receive_blocks;
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     io::SeekFrom,
@@ -13,8 +12,8 @@ use tokio::{
 use tokio_stream::StreamExt;
 
 use crate::{
-    config::Config, hash_helper, ignored_files::IgnoredFilesCache, network::rpc::RPCMessage,
-    node_id::NodeId, storage::FileInfo, SharedState, StateMachineError,
+    config::Config, hash_helper, hash_type_id::HashTypeId, ignored_files::IgnoredFilesCache,
+    network::rpc::RPCMessage, node_id::NodeId, storage::FileInfo, SharedState, StateMachineError,
 };
 
 use super::{
@@ -39,77 +38,62 @@ pub async fn receive_files(
 
     let (add_current_transfer_tx, mut add_current_transfer_rx) = tokio::sync::mpsc::channel(1);
 
-    let mut query_transfer_type = shared_state
+    let mut events = shared_state
         .rpc
-        .consume_events::<QueryTransferType>()
-        .await
-        .fuse();
-
-    let mut query_required_blocks = shared_state
-        .rpc
-        .consume_events::<QueryRequiredBlocks>()
-        .await
-        .fuse();
-
-    let mut transfer_blocks = shared_state
-        .rpc
-        .consume_events::<TransferBlock>()
-        .await
-        .fuse();
-
-    let mut transfer_complete = shared_state
-        .rpc
-        .consume_events::<TransferComplete>()
-        .await
-        .fuse();
-
-    let mut transfer_files_completed = shared_state
-        .rpc
-        .consume_events::<TransferFilesCompleted>()
-        .await
-        .fuse();
+        .subscribe_many(vec![
+            QueryTransferType::ID,
+            QueryRequiredBlocks::ID,
+            TransferBlock::ID,
+            TransferComplete::ID,
+            TransferFilesCompleted::ID,
+        ])
+        .await?;
 
     while !wait_complete_signal_from.is_empty() || !current_transfers.is_empty() {
         tokio::select! {
-            query_transfer_type_req = query_transfer_type.next() => {
-                let request = query_transfer_type_req.ok_or(StateMachineError::Abort)?;
-                if let Err(err) = process_query_transfer_type(shared_state.config, &mut ignored_files_cache, &add_current_transfer_tx, transfers_semaphore.clone(), request).await {
-                    log::error!("{err}")
+            request = events.next() => {
+                let request = request.ok_or(StateMachineError::Abort)?;
+                match request.type_id() {
+                    QueryTransferType::ID => {
+                        if let Err(err) = process_query_transfer_type(
+                            shared_state.config,
+                            &mut ignored_files_cache,
+                            &add_current_transfer_tx,
+                            transfers_semaphore.clone(),
+                            request
+                        ).await {
+                            log::error!("{err}")
+                        }
+                    }
+                    QueryRequiredBlocks::ID => {
+                        if let Err(err) = process_query_required_blocks(&mut current_transfers, request).await {
+                            log::error!("{err}")
+                        }
+                    }
+                    TransferBlock::ID => {
+                        if let Err(err) = process_transfer_block(&mut current_transfers, request).await {
+                            log::error!("{err}")
+                        }
+                    }
+                    TransferComplete::ID => {
+                        if let Err(err) = process_transfer_complete(shared_state.config, &mut current_transfers, request).await {
+                            log::error!("{err}")
+                        }
+                    }
+                    TransferFilesCompleted::ID => {
+                        wait_complete_signal_from.remove(&request.node_id());
+                        request.ack().await?;
+                    }
+                    _ => unreachable!()
                 }
             }
-
             Some(current_transfer) = add_current_transfer_rx.recv() => {
                 current_transfers.insert(current_transfer.transfer.transfer_id, current_transfer);
             }
-
-            query_required_blocks_req = query_required_blocks.next() => {
-                let request = query_required_blocks_req.ok_or(StateMachineError::Abort)?;
-                if let Err(err) = process_query_required_blocks(&mut current_transfers, request).await {
-                    log::error!("{err}")
-                }
-            }
-
-            transfer_block_req = transfer_blocks.next() => {
-                let request = transfer_block_req.ok_or(StateMachineError::Abort)?;
-                if let Err(err) = process_transfer_block(&mut current_transfers, request).await {
-                    log::error!("{err}")
-                }
-            }
-
-            transfer_complete_req = transfer_complete.next() => {
-                let request = transfer_complete_req.ok_or(StateMachineError::Abort)?;
-                if let Err(err) = process_transfer_complete(shared_state.config, &mut current_transfers, request).await {
-                    log::error!("{err}")
-                }
-            }
-
-            transfer_files_req = transfer_files_completed.next() => {
-                let request = transfer_files_req.ok_or(StateMachineError::Abort)?;
-                wait_complete_signal_from.remove(&request.node_id());
-                request.ack().await?;
-            }
         }
     }
+
+    events.free().await;
 
     Ok(())
 }

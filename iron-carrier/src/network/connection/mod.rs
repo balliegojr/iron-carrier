@@ -6,10 +6,7 @@ use chacha20poly1305::{
 };
 use pbkdf2::pbkdf2_hmac_array;
 use sha2::Sha256;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::tcp::{OwnedReadHalf, OwnedWriteHalf},
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{config::Config, constants::VERSION, hash_helper, node_id::NodeId, IronCarrierError};
 
@@ -23,10 +20,6 @@ mod identified;
 pub use identified::Identified;
 
 static CONNECTION_ID_COUNT: AtomicU32 = AtomicU32::new(0);
-
-type EReadHalf = async_encrypted_stream::ReadHalf<OwnedReadHalf, DecryptorLE31<XChaCha20Poly1305>>;
-type EWriteHalf =
-    async_encrypted_stream::WriteHalf<OwnedWriteHalf, EncryptorLE31<XChaCha20Poly1305>>;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Clone)]
 pub struct ConnectionId(u32);
@@ -67,7 +60,7 @@ impl std::fmt::Debug for Connection {
 }
 
 pub async fn handshake_and_identify_connection(
-    config: &Config,
+    config: &'static Config,
     stream: tokio::net::TcpStream,
 ) -> crate::Result<Identified<Connection>> {
     let (read, write) = stream.into_split();
@@ -113,11 +106,15 @@ async fn round_trip_compare(connection: &mut Connection, value: u64) -> crate::R
         .map_err(Box::from)
 }
 
-async fn get_encrypted_connection(
-    mut read: OwnedReadHalf,
-    mut write: OwnedWriteHalf,
-    config: &Config,
-) -> crate::Result<Connection> {
+async fn get_encrypted_connection<R, W>(
+    mut read: R,
+    mut write: W,
+    config: &'static Config,
+) -> crate::Result<Connection>
+where
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + Sync + 'static,
+{
     use rand_core::OsRng;
     use x25519_dalek::{EphemeralSecret, PublicKey};
     let secret_key = EphemeralSecret::random_from_rng(OsRng);
@@ -138,7 +135,10 @@ async fn get_encrypted_connection(
         None => shared_key.to_bytes(),
     };
 
-    let (read, write): (EReadHalf, EWriteHalf) = async_encrypted_stream::encrypted_stream(
+    let (read, write): (
+        async_encrypted_stream::ReadHalf<R, DecryptorLE31<XChaCha20Poly1305>>,
+        async_encrypted_stream::WriteHalf<W, EncryptorLE31<XChaCha20Poly1305>>,
+    ) = async_encrypted_stream::encrypted_stream(
         read,
         write,
         shared_key.as_ref().into(),

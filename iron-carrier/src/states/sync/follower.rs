@@ -4,6 +4,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     file_transfer::{TransferFiles, TransferFilesStart},
+    hash_type_id::HashTypeId,
     ignored_files::IgnoredFilesCache,
     network::rpc::RPCMessage,
     node_id::NodeId,
@@ -41,66 +42,74 @@ impl State for Follower {
         log::debug!("start sync as follower");
 
         let mut ignored_files_cache = IgnoredFilesCache::default();
-        let mut query_index = shared_state
+        let mut events = shared_state
             .rpc
-            .consume_events::<QueryStorageIndex>()
-            .await
-            .fuse();
-
-        let mut sync_completed = shared_state
-            .rpc
-            .consume_events::<SyncCompleted>()
-            .await
-            .fuse();
-        let mut delete_file = shared_state.rpc.consume_events::<DeleteFile>().await.fuse();
-        let mut move_file = shared_state.rpc.consume_events::<MoveFile>().await.fuse();
-        let mut send_file = shared_state.rpc.consume_events::<SendFileTo>().await.fuse();
-        let mut start_file_transfer = shared_state
-            .rpc
-            .consume_events::<TransferFilesStart>()
-            .await
-            .fuse();
+            .subscribe_many(vec![
+                QueryStorageIndex::ID,
+                SyncCompleted::ID,
+                DeleteFile::ID,
+                MoveFile::ID,
+                SendFileTo::ID,
+                TransferFilesStart::ID,
+            ])
+            .await?;
 
         let mut files_to_send: Vec<(FileInfo, HashSet<NodeId>)> = Default::default();
 
         loop {
-            tokio::select! {
-                query_index_req = query_index.next() => {
-                    let request = query_index_req.ok_or(StateMachineError::Abort)?;
+            let request = events.next().await.ok_or(StateMachineError::Abort)?;
+            match request.type_id() {
+                QueryStorageIndex::ID => {
                     if let Err(err) = process_query_index_request(shared_state, request).await {
                         log::error!("{err}")
                     }
                 }
-                delete_file_req = delete_file.next() => {
-                    let request = delete_file_req.ok_or(StateMachineError::Abort)?;
-                    if let Err(err) = process_delete_file_request(shared_state, &mut ignored_files_cache, request).await {
-                        log::error!("{err}")
-                    }
-                }
-                move_file_req = move_file.next() => {
-                    let request = move_file_req.ok_or(StateMachineError::Abort)?;
-                    if let Err(err) = process_move_file_request(shared_state, &mut ignored_files_cache, request).await {
-                        log::error!("{err}")
-                    }
-                }
-                send_file_req = send_file.next() => {
-                    let request = send_file_req.ok_or(StateMachineError::Abort)?;
-                    if let Err(err) = process_send_file_to_request(&mut files_to_send, request).await {
-                        log::error!("{err}")
-                    }
-                }
-                start_file_transfer_req = start_file_transfer.next() => {
-                    start_file_transfer_req.ok_or(StateMachineError::Abort)?.ack().await?;
-                    TransferFiles::new(Some(self.sync_leader), std::mem::take(&mut files_to_send)).execute(shared_state).await?;
-                }
-                sync_completed_req = sync_completed.next() => {
-                    sync_completed_req.ok_or(StateMachineError::Abort)?.ack().await?;
+                SyncCompleted::ID => {
+                    request.ack().await?;
                     break;
                 }
+                DeleteFile::ID => {
+                    if let Err(err) =
+                        process_delete_file_request(shared_state, &mut ignored_files_cache, request)
+                            .await
+                    {
+                        log::error!("{err}")
+                    }
+                }
+                MoveFile::ID => {
+                    if let Err(err) =
+                        process_move_file_request(shared_state, &mut ignored_files_cache, request)
+                            .await
+                    {
+                        log::error!("{err}")
+                    }
+                }
+                SendFileTo::ID => {
+                    if let Err(err) =
+                        process_send_file_to_request(&mut files_to_send, request).await
+                    {
+                        log::error!("{err}")
+                    }
+                }
+                TransferFilesStart::ID => {
+                    request.ack().await?;
+                    if let Err(err) = TransferFiles::new(
+                        Some(self.sync_leader),
+                        std::mem::take(&mut files_to_send),
+                    )
+                    .execute(shared_state)
+                    .await
+                    {
+                        log::error!("{err}")
+                    }
+                }
+                _ => unreachable!(),
             }
         }
 
         log::info!("end sync as follower");
+
+        events.free().await;
 
         Ok(())
     }

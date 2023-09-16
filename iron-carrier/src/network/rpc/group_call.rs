@@ -49,8 +49,8 @@ where
     async fn wait_replies(self) -> crate::Result<Vec<RPCReply>> {
         let message = NetworkMessage::encode(self.data)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let output_type = match self.targets.as_ref() {
-            Some(nodes) => OutputMessageType::MultiNode(nodes.clone(), tx),
+        let output_type = match self.targets {
+            Some(nodes) => OutputMessageType::MultiNode(nodes, tx),
             None => OutputMessageType::Broadcast(tx),
         };
 

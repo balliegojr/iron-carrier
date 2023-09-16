@@ -35,6 +35,7 @@ impl RPCMessage {
     }
     pub async fn ack(self) -> crate::Result<()> {
         let reply = NetworkMessage::ack_message(self.inner.id());
+
         self.reply_sender
             .send((reply, OutputMessageType::Reply(self.node_id)))
             .await?;
@@ -49,5 +50,11 @@ impl RPCMessage {
             .await?;
 
         Ok(())
+    }
+}
+
+impl From<RPCMessage> for NetworkMessage {
+    fn from(value: RPCMessage) -> Self {
+        value.inner
     }
 }
