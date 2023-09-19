@@ -7,7 +7,7 @@ use tokio_stream::StreamExt;
 use crate::{node_id::NodeId, IronCarrierError};
 
 use super::{
-    connection::{Connection, Identified, ReadHalf},
+    connection::{Connection, ReadHalf},
     connection_storage::ConnectionStorage,
 };
 
@@ -30,7 +30,7 @@ mod subscriber;
 mod rpc_handler;
 pub use rpc_handler::RPCHandler;
 
-pub fn rpc_service(new_connection: Receiver<Identified<Connection>>) -> RPCHandler {
+pub fn rpc_service(new_connection: Receiver<Connection>) -> RPCHandler {
     let (net_out_tx, net_out_rx) = tokio::sync::mpsc::channel(10);
     let (add_consumer_tx, add_consumer_rx) = tokio::sync::mpsc::channel(10);
     let (remove_consumer_tx, remove_consumer_rx) = tokio::sync::mpsc::channel(10);
@@ -49,7 +49,7 @@ pub fn rpc_service(new_connection: Receiver<Identified<Connection>>) -> RPCHandl
 async fn rpc_loop(
     mut net_out: Receiver<(NetworkMessage, OutputMessageType)>,
     net_out_sender: Sender<(NetworkMessage, OutputMessageType)>,
-    mut new_connection: Receiver<Identified<Connection>>,
+    mut new_connection: Receiver<Connection>,
     mut add_consumers: Receiver<(Vec<TypeId>, Sender<RPCMessage>)>,
     mut remove_consumers: Receiver<Vec<TypeId>>,
 ) {
@@ -85,12 +85,9 @@ async fn rpc_loop(
                 let Some(connection) = request else {
                     break;
                 };
-                if connections.contains_node(&connection.node_id()) {
-                    log::trace!("Already connected to {}", connection.node_id());
-                } else {
-                    // TODO: send unsent messages to this node
-                    let (write, read) = connection.split();
-                    connections.insert(write);
+
+                // TODO: send unsent messages to this node
+                if let Some(read) = connections.insert(connection) {
                     tokio::spawn(read_network_data(read, net_in_tx.clone()));
                 }
             }
@@ -201,25 +198,20 @@ async fn send_output_message(
         node_id: NodeId,
         connections: &mut ConnectionStorage,
     ) -> crate::Result<()> {
-        match connections.get_mut(&node_id) {
-            Some(connection) => {
-                message.write_into(connection).await.inspect_err(|err| {
-                    log::error!("Failed to write to connection {err}");
-                })?;
-            }
+        let write_result = match connections.get_mut(&node_id) {
+            Some(connection) => message.write_into(connection).await,
             None => {
                 log::error!("Not connected to node {node_id}");
                 return Err(IronCarrierError::UnknownNode(node_id).into());
             }
+        };
+
+        if let Err(err) = write_result {
+            log::error!("Failed to write to connection {err}");
+            connections.remove(&node_id);
         }
 
         Ok(())
-    }
-
-    if message.is_reply() {
-        log::warn!("Sending reply {:?}", message.id());
-    } else {
-        log::warn!("Sending message {:?}", message.id());
     }
 
     // TODO: keep track of unsent replies
@@ -278,13 +270,12 @@ async fn add_new_consumer(
 }
 
 async fn read_network_data(
-    read_connection: Identified<ReadHalf>,
+    read_connection: ReadHalf,
     event_stream: Sender<(NodeId, NetworkMessage)>,
 ) {
     let peer_id = read_connection.node_id();
 
-    let mut stream =
-        tokio_util::codec::FramedRead::new(read_connection.into_inner(), NetWorkEventDecoder {});
+    let mut stream = tokio_util::codec::FramedRead::new(read_connection, NetWorkEventDecoder {});
     while let Some(event) = stream.next().await {
         match event {
             Ok(event) => {

@@ -6,29 +6,30 @@ use std::{
 
 use tokio::io::AsyncWrite;
 
-use crate::{
-    constants::PEER_STALE_CONNECTION, network::connection::ConnectionId, time::system_time_to_secs,
-};
+use crate::{constants::PEER_STALE_CONNECTION, node_id::NodeId, time::system_time_to_secs};
 
 pin_project_lite::pin_project! {
     pub struct WriteHalf {
         #[pin]
         inner: Pin<Box<dyn AsyncWrite + Send + Sync>>,
-        pub connection_id: ConnectionId,
-        last_access: Arc<AtomicU64>
+        node_id: NodeId,
+        last_access: Arc<AtomicU64>,
+        dedup_control: u8
     }
 }
 
 impl WriteHalf {
     pub fn new(
         inner: Pin<Box<dyn AsyncWrite + Send + Sync>>,
-        connection_id: ConnectionId,
+        node_id: NodeId,
         last_access: Arc<AtomicU64>,
+        dedup_control: u8,
     ) -> Self {
         Self {
             inner,
-            connection_id,
+            node_id,
             last_access,
+            dedup_control,
         }
     }
 
@@ -43,6 +44,16 @@ impl WriteHalf {
         let last_access = self.last_access.load(std::sync::atomic::Ordering::SeqCst);
         let now = system_time_to_secs(SystemTime::now());
         (now - last_access) > PEER_STALE_CONNECTION
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    /// Dedup control is used to decide which connection will be dropped
+    /// when a duplicated connection is found
+    pub fn dedup_control(&self) -> u8 {
+        self.dedup_control
     }
 }
 

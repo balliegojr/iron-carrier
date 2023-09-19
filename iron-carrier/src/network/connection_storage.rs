@@ -1,77 +1,65 @@
-use std::{collections::HashMap, ops::DerefMut};
+use std::collections::HashMap;
 
 use crate::node_id::NodeId;
 
-use super::connection::{ConnectionId, Identified, WriteHalf};
+use super::connection::{Connection, ReadHalf, WriteHalf};
 
 #[derive(Default)]
 pub struct ConnectionStorage {
-    connections: HashMap<ConnectionId, Identified<WriteHalf>>,
-    node_to_connection: HashMap<NodeId, ConnectionId>,
+    connections: HashMap<NodeId, WriteHalf>,
 }
 
 impl ConnectionStorage {
-    pub fn insert(&mut self, connection: Identified<WriteHalf>) {
-        self.node_to_connection
-            .insert(connection.node_id(), connection.connection_id);
+    pub fn insert(&mut self, connection: Connection) -> Option<ReadHalf> {
+        let (write, read) = connection.split();
 
-        self.connections
-            .insert(connection.connection_id, connection);
-    }
-    pub fn get_mut(&mut self, node_id: &NodeId) -> Option<&mut WriteHalf> {
-        self.node_to_connection
-            .get(node_id)
-            .and_then(|connection_id| self.connections.get_mut(connection_id))
-            .map(|connection| connection.deref_mut())
-    }
+        match self.connections.entry(write.node_id()) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if entry.get().dedup_control() <= write.dedup_control() {
+                    log::trace!("Already connected to {}", write.node_id());
+                    return None;
+                }
 
-    pub fn remove(&mut self, connection_id: &ConnectionId) -> Option<Identified<WriteHalf>> {
-        let connection = self.connections.remove(connection_id);
-        log::info!("Removing connection {:?}", connection_id);
-
-        if let Some(c) = connection.as_ref() {
-            if self
-                .node_to_connection
-                .get(&c.node_id())
-                .map(|connection_id| *connection_id == c.connection_id)
-                .unwrap_or_default()
-            {
-                log::info!("Removing connection to {}", c.node_id());
-                self.node_to_connection.remove(&c.node_id());
+                entry.insert(write);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(write);
             }
         }
 
-        connection
+        Some(read)
+    }
+    pub fn get_mut(&mut self, node_id: &NodeId) -> Option<&mut WriteHalf> {
+        self.connections.get_mut(node_id)
+    }
+
+    pub fn remove(&mut self, node_id: &NodeId) -> Option<WriteHalf> {
+        log::trace!("Removing connection {:?}", node_id);
+        self.connections.remove(node_id)
     }
 
     pub fn connections_mut(&mut self) -> impl Iterator<Item = &mut WriteHalf> {
-        self.connections
-            .values_mut()
-            .map(|connection| connection.deref_mut())
+        self.connections.values_mut()
     }
 
     pub fn contains_node(&self, node_id: &NodeId) -> bool {
-        self.node_to_connection.contains_key(node_id)
+        self.connections.contains_key(node_id)
     }
 
     pub fn connected_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.node_to_connection.keys().copied()
+        self.connections.keys().copied()
     }
 
     pub fn len(&self) -> usize {
-        self.node_to_connection.len()
+        self.connections.len()
     }
 
     pub fn remove_stale(&mut self) {
         self.connections
-            .extract_if(|_, connection| connection.is_stale())
-            .for_each(|(_, connection)| {
-                self.node_to_connection.remove(&connection.node_id());
-            });
+            .extract_if(|_, connection| connection.is_stale());
     }
 
     pub fn clear(&mut self) {
         self.connections.clear();
-        self.node_to_connection.clear();
     }
 }
