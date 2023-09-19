@@ -6,13 +6,13 @@ use std::{
 
 use tokio::io::AsyncRead;
 
-use crate::{network::connection::ConnectionId, time::system_time_to_secs};
+use crate::{node_id::NodeId, time::system_time_to_secs};
 
 pin_project_lite::pin_project! {
     pub struct ReadHalf {
         #[pin]
         inner: Pin<Box<dyn AsyncRead + Send>>,
-        pub connection_id: ConnectionId,
+        node_id: NodeId,
         last_access: Arc<AtomicU64>
     }
 }
@@ -20,15 +20,20 @@ pin_project_lite::pin_project! {
 impl ReadHalf {
     pub fn new(
         inner: Pin<Box<dyn AsyncRead + Send>>,
-        connection_id: ConnectionId,
+        node_id: NodeId,
         last_access: Arc<AtomicU64>,
     ) -> Self {
         Self {
             inner,
-            connection_id,
+            node_id,
             last_access,
         }
     }
+
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
     fn touch(self: Pin<&mut Self>) {
         self.last_access.store(
             system_time_to_secs(SystemTime::now()),

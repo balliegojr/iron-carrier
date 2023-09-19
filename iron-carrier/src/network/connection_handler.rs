@@ -5,7 +5,7 @@ use tokio::sync::mpsc::Sender;
 use crate::{
     config::Config,
     constants::PEER_IDENTIFICATION_TIMEOUT,
-    network::connection::{self, Connection, Identified},
+    network::connection::{self, Connection},
     node_id::NodeId,
     IronCarrierError,
 };
@@ -13,13 +13,13 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct ConnectionHandler {
     config: &'static Config,
-    on_connect: Sender<Identified<Connection>>,
+    on_connect: Sender<Connection>,
 }
 
 impl ConnectionHandler {
     pub async fn new(
         config: &'static Config,
-        on_connect: Sender<Identified<Connection>>,
+        on_connect: Sender<Connection>,
     ) -> crate::Result<Self> {
         let inbound_fut = listen_connections(config, on_connect.clone());
 
@@ -66,7 +66,7 @@ impl ConnectionHandler {
 
 async fn listen_connections(
     config: &'static Config,
-    on_connect: Sender<Identified<Connection>>,
+    on_connect: Sender<Connection>,
 ) -> crate::Result<()> {
     log::debug!("Listening on {}", config.port);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;

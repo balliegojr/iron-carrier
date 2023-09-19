@@ -1,4 +1,11 @@
-use std::{pin::Pin, sync::atomic::AtomicU32};
+use std::{
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU64, AtomicU8},
+        Arc,
+    },
+    time::SystemTime,
+};
 
 use chacha20poly1305::{
     aead::stream::{DecryptorLE31, EncryptorLE31},
@@ -6,7 +13,7 @@ use chacha20poly1305::{
 };
 use pbkdf2::pbkdf2_hmac_array;
 use sha2::Sha256;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::{config::Config, constants::VERSION, hash_helper, node_id::NodeId, IronCarrierError};
 
@@ -16,45 +23,64 @@ pub use read_half::ReadHalf;
 mod write_half;
 pub use write_half::WriteHalf;
 
-mod identified;
-pub use identified::Identified;
-
-static CONNECTION_ID_COUNT: AtomicU32 = AtomicU32::new(0);
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Clone)]
-pub struct ConnectionId(u32);
+/// Counter used for connection deduplication.
+///
+/// Each connection will receive a number. When two connections between
+/// the same nodes are found, the connection dedup number will be used
+/// to decide which connection will be dropped, since the number is shared
+/// between nodes, the same connection will be dropped by both nodes
+static CONNECTION_DEDUP_CONTROL: AtomicU8 = AtomicU8::new(0);
 
 pub struct Connection {
     read_half: Pin<Box<dyn AsyncRead + Send>>,
     write_half: Pin<Box<dyn AsyncWrite + Send + Sync>>,
-    pub connection_id: ConnectionId,
+    node_id: NodeId,
+    /// Dedup control is used to decide which connection will be dropped
+    /// when a duplicated connection is found
+    dedup_control: u8,
 }
 
 impl Connection {
     pub fn new(
         read_half: Pin<Box<dyn AsyncRead + Send>>,
         write_half: Pin<Box<dyn AsyncWrite + Send + Sync>>,
+        node_id: NodeId,
+        dedup_control: u8,
     ) -> Self {
-        let read_half = tokio::io::BufReader::new(read_half);
-        let write_half = tokio::io::BufWriter::new(write_half);
-
-        let connection_id = CONNECTION_ID_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Connection {
-            connection_id: ConnectionId(connection_id),
-            read_half: Box::pin(read_half),
-            write_half: Box::pin(write_half),
+            read_half,
+            write_half,
+            node_id,
+            dedup_control,
         }
     }
 
-    pub fn into_identified(self, node_id: NodeId) -> Identified<Self> {
-        Identified::new(self, node_id)
+    pub fn split(self) -> (WriteHalf, ReadHalf) {
+        let node_id = self.node_id;
+        let last_access = Arc::new(AtomicU64::new(crate::time::system_time_to_secs(
+            SystemTime::now(),
+        )));
+
+        (
+            WriteHalf::new(
+                self.write_half,
+                node_id,
+                last_access.clone(),
+                self.dedup_control,
+            ),
+            ReadHalf::new(self.read_half, node_id, last_access),
+        )
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
     }
 }
 
 impl std::fmt::Debug for Connection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Connection")
-            .field("connection_id", &self.connection_id)
+            .field("node_id", &self.node_id)
             .finish()
     }
 }
@@ -62,55 +88,70 @@ impl std::fmt::Debug for Connection {
 pub async fn handshake_and_identify_connection(
     config: &'static Config,
     stream: tokio::net::TcpStream,
-) -> crate::Result<Identified<Connection>> {
+) -> crate::Result<Connection> {
     let (read, write) = stream.into_split();
-    let mut connection = if config.encryption_key.is_some() {
+    let (mut read, mut write): (
+        Pin<Box<dyn AsyncRead + Send>>,
+        Pin<Box<dyn AsyncWrite + Send + Sync>>,
+    ) = if config.encryption_key.is_some() {
         get_encrypted_connection(read, write, config).await?
     } else {
-        Connection::new(Box::pin(read), Box::pin(write))
+        (
+            Box::pin(BufReader::new(read)),
+            Box::pin(BufWriter::new(write)),
+        )
     };
 
-    let version = hash_helper::hashed_str(VERSION);
-    if !round_trip_compare(&mut connection, version).await? {
-        return Err(Box::new(IronCarrierError::VersionMismatch));
-    }
-
+    let version = hash_helper::hashed_str(VERSION).to_be_bytes();
     let group = config
         .group
         .as_ref()
         .map(hash_helper::hashed_str)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_be_bytes();
 
-    if !round_trip_compare(&mut connection, group).await? {
+    write.write_all(&version).await?;
+    write.write_all(&group).await?;
+    write
+        .write_all(&u64::from(config.node_id_hashed).to_be_bytes())
+        .await?;
+    write.flush().await?;
+
+    let mut buf = [0u8; 24];
+    read.read_exact(&mut buf).await?;
+
+    if version.ne(&buf[..8]) {
+        return Err(Box::new(IronCarrierError::VersionMismatch));
+    }
+
+    if group.ne(&buf[8..16]) {
         return Err(Box::new(IronCarrierError::GroupMismatch));
     }
 
-    connection
-        .write_half
-        .write_u64(config.node_id_hashed.into())
-        .await?;
-    connection.write_half.flush().await?;
-    let node_id = connection.read_half.read_u64().await?;
+    let node_id = NodeId::from(u64::from_be_bytes(buf[16..].try_into()?));
+    let control = match config.node_id_hashed.cmp(&node_id) {
+        std::cmp::Ordering::Less | std::cmp::Ordering::Equal => {
+            let control =
+                CONNECTION_DEDUP_CONTROL.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            write.write_u8(control.to_be()).await?;
+            write.flush().await?;
 
-    Ok(connection.into_identified(node_id.into()))
-}
+            control
+        }
+        std::cmp::Ordering::Greater => u8::from_be(read.read_u8().await?),
+    };
 
-async fn round_trip_compare(connection: &mut Connection, value: u64) -> crate::Result<bool> {
-    connection.write_half.write_u64(value).await?;
-    connection.write_half.flush().await?;
-    connection
-        .read_half
-        .read_u64()
-        .await
-        .map(|result| result == value)
-        .map_err(Box::from)
+    Ok(Connection::new(read, write, node_id, control))
 }
 
 async fn get_encrypted_connection<R, W>(
     mut read: R,
     mut write: W,
     config: &'static Config,
-) -> crate::Result<Connection>
+) -> crate::Result<(
+    Pin<Box<dyn AsyncRead + Send>>,
+    Pin<Box<dyn AsyncWrite + Send + Sync>>,
+)>
 where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + Sync + 'static,
@@ -145,7 +186,7 @@ where
         [0u8; 20].as_ref().into(),
     );
 
-    Ok(Connection::new(Box::pin(read), Box::pin(write)))
+    Ok((Box::pin(BufReader::new(read)), Box::pin(write)))
 }
 
 fn get_key(plain_key: &[u8], salt: &[u8]) -> [u8; 32] {
