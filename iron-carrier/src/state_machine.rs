@@ -5,10 +5,10 @@ use thiserror::Error;
 use crate::SharedState;
 
 macro_rules! debug {
-    ($lit:literal, $arg:expr) => {
+    ($arg:expr, $node_id:expr) => {
         let debug_message = format!("{:?}", $arg);
         if !debug_message.is_empty() {
-            log::debug!($lit, debug_message)
+            log::debug!("{} - Executing {}", $node_id, debug_message)
         }
     };
 }
@@ -93,10 +93,10 @@ where
     where
         Self: Sized,
     {
-        debug!("Executing {:?}", self.previous);
+        debug!(self.previous, shared_state.config.node_id_hashed);
         let previous_output = self.previous.execute(shared_state).await?;
         let next_task = (self.map_fn)(previous_output);
-        debug!("Executing {:?}", next_task);
+        debug!(next_task, shared_state.config.node_id_hashed);
         next_task.execute(shared_state).await
     }
 }
@@ -117,11 +117,11 @@ where
     where
         Self: Sized,
     {
-        debug!("Executing {:?}", self.previous);
+        debug!(self.previous, shared_state.config.node_id_hashed);
         self.previous.execute(shared_state).await?;
 
         let next = U::default();
-        debug!("Executing {:?}", next);
+        debug!(next, shared_state.config.node_id_hashed);
         next.execute(shared_state).await
     }
 }
@@ -155,7 +155,7 @@ where
     type Output = U::Output;
 
     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-        debug!("Executing {:?}", self.previous);
+        debug!(self.previous, shared_state.config.node_id_hashed);
         if let Err(err) = self.previous.execute(shared_state).await {
             if !err.is::<StateMachineError>() {
                 log::error!("{err}");
@@ -163,7 +163,7 @@ where
         };
 
         let next = (self.loop_fn)();
-        debug!("Executing {:?}", next);
+        debug!(next, shared_state.config.node_id_hashed);
         next.execute(shared_state).await
     }
 }
