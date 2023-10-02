@@ -1,15 +1,26 @@
-use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
+use std::{
+    collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
+    time::Duration,
+};
 
-use crate::hash_type_id::TypeId;
-use tokio::sync::mpsc::{Receiver, Sender};
+use crate::{constants::DEFAULT_NETWORK_TIMEOUT, hash_type_id::TypeId};
+use tokio::{
+    sync::mpsc::{Receiver, Sender},
+    time::Instant,
+};
 use tokio_stream::StreamExt;
 
 use crate::{node_id::NodeId, IronCarrierError};
+
+use self::message_waiting_reply::ReplyType;
 
 use super::{
     connection::{Connection, ReadHalf},
     connection_storage::ConnectionStorage,
 };
+
+mod message_waiting_reply;
+use message_waiting_reply::MessageWaitingReply;
 
 mod network_event_decoder;
 use network_event_decoder::NetWorkEventDecoder;
@@ -20,12 +31,12 @@ use network_message::NetworkMessage;
 mod rpc_message;
 pub use rpc_message::RPCMessage;
 
-mod rpc_reply;
-use rpc_reply::RPCReply;
-
 mod call;
-mod group_call;
+mod rpc_reply;
 mod subscriber;
+
+mod group_call;
+pub use group_call::GroupCallResponse;
 
 mod rpc_handler;
 pub use rpc_handler::RPCHandler;
@@ -54,13 +65,24 @@ async fn rpc_loop(
     mut remove_consumers: Receiver<Vec<TypeId>>,
 ) {
     let (net_in_tx, mut net_in_rx) = tokio::sync::mpsc::channel::<(NodeId, NetworkMessage)>(10);
-    let mut received_messages: HashMap<TypeId, VecDeque<(NodeId, NetworkMessage)>> =
-        Default::default();
+    // Holds messages that arrived but didn't had any consumer ready to process it
+    let mut unprocessed_message_queue: HashMap<
+        TypeId,
+        VecDeque<(NodeId, NetworkMessage, Deadline)>,
+    > = Default::default();
+    let mut sent_requests: HashMap<u16, MessageWaitingReply> = Default::default();
+
     let mut consumers: HashMap<TypeId, Sender<RPCMessage>> = Default::default();
-    let mut waiting_reply: HashMap<(u16, NodeId), Sender<RPCReply>> = Default::default();
     let mut connections = ConnectionStorage::default();
 
+    let mut cleanup = tokio::time::interval(Duration::from_secs(1));
+
     loop {
+        let has_cleanup = !(unprocessed_message_queue.is_empty()
+            // && consumers.is_empty()
+            && sent_requests.is_empty()
+            && connections.is_empty());
+
         tokio::select! {
              request = net_in_rx.recv() => {
                 let Some((node_id, message)) = request else {
@@ -68,13 +90,13 @@ async fn rpc_loop(
                 };
 
                 if message.is_reply() {
-                    process_reply(message, node_id, &mut waiting_reply).await;
+                    process_reply(message, node_id, &mut sent_requests).await;
                 } else {
                     process_rpc_call(
                         message,
                         node_id,
                         &mut consumers,
-                        &mut received_messages,
+                        &mut unprocessed_message_queue,
                         &net_out_sender,
                     )
                     .await;
@@ -94,7 +116,7 @@ async fn rpc_loop(
 
             request = net_out.recv() => {
                 let Some((message, send_type)) = request else { break; };
-                send_output_message(message, send_type, &mut connections, &mut waiting_reply).await;
+                send_output_message(message, send_type, &mut connections, &mut sent_requests).await;
             }
 
             request = add_consumers.recv() => {
@@ -104,7 +126,7 @@ async fn rpc_loop(
                 add_new_consumer(
                     consumer_types,
                     consumer_channel,
-                    &mut received_messages,
+                    &mut unprocessed_message_queue,
                     &mut consumers,
                     &net_out_sender,
                 )
@@ -119,28 +141,50 @@ async fn rpc_loop(
                     consumers.remove(&consumer_type);
                 }
             }
+            _ = cleanup.tick(), if has_cleanup => {
+                cleanup_resources(&mut connections, &mut unprocessed_message_queue, &mut sent_requests, &mut consumers).await;
+            }
         }
     }
 
     // It is necessary to ensure that all output messages are sent before exiting
     while let Some((message, send_type)) = net_out.recv().await {
-        send_output_message(message, send_type, &mut connections, &mut waiting_reply).await;
+        send_output_message(message, send_type, &mut connections, &mut sent_requests).await;
+    }
+}
+
+struct Deadline {
+    deadline: Instant,
+}
+
+impl Deadline {
+    pub fn new(timeout: Duration) -> Self {
+        let deadline = Instant::now() + timeout;
+        Self { deadline }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        Instant::now() > self.deadline
+    }
+
+    pub fn extend(&mut self, secs: u64) {
+        self.deadline = Instant::now() + Duration::from_secs(secs)
     }
 }
 
 #[derive(Debug)]
 pub enum OutputMessageType {
-    Reply(NodeId),
-    SingleNode(NodeId, Sender<RPCReply>),
-    MultiNode(HashSet<NodeId>, Sender<RPCReply>),
-    Broadcast(Sender<RPCReply>),
+    Response(NodeId),
+    SingleNode(NodeId, Sender<ReplyType>, Duration),
+    MultiNode(HashSet<NodeId>, Sender<ReplyType>, Duration),
+    Broadcast(Sender<ReplyType>, Duration),
 }
 
 async fn process_rpc_call(
     message: NetworkMessage,
     node_id: NodeId,
     consumers: &mut HashMap<TypeId, tokio::sync::mpsc::Sender<RPCMessage>>,
-    received_messages: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage)>>,
+    message_queue: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
     net_out_sender: &Sender<(NetworkMessage, OutputMessageType)>,
 ) {
     if let Entry::Occupied(mut entry) = consumers.entry(message.type_id()) {
@@ -150,40 +194,47 @@ async fn process_rpc_call(
             .await
         {
             let message: NetworkMessage = err.0.into();
-            received_messages
+            message_queue
                 .entry(message.type_id())
                 .or_default()
-                .push_back((node_id, message));
+                .push_back((
+                    node_id,
+                    message,
+                    Deadline::new(Duration::from_secs(DEFAULT_NETWORK_TIMEOUT)),
+                ));
             entry.remove_entry();
         }
     } else {
-        received_messages
+        message_queue
             .entry(message.type_id())
             .or_default()
-            .push_back((node_id, message));
+            .push_back((
+                node_id,
+                message,
+                Deadline::new(Duration::from_secs(DEFAULT_NETWORK_TIMEOUT)),
+            ));
     }
 }
 
 async fn process_reply(
     message: NetworkMessage,
     node_id: NodeId,
-    waiting_reply: &mut HashMap<(u16, NodeId), Sender<RPCReply>>,
+    sent_requests: &mut HashMap<u16, MessageWaitingReply>,
 ) {
-    let sent_handler = match waiting_reply.remove(&(message.id(), node_id)) {
-        Some(sent_handler) => sent_handler,
-        None => {
-            log::error!("Received an unexpected message from {node_id}");
-            return;
+    match sent_requests.entry(message.id()) {
+        Entry::Occupied(mut entry) => {
+            let sent_request = entry.get_mut();
+            if let Err(err) = sent_request.process_reply(node_id, message).await {
+                log::error!("Failed to send reply {err}");
+            }
+
+            if sent_request.received_all_replies() {
+                entry.remove_entry();
+            }
         }
-    };
-
-    if sent_handler.is_closed() {
-        log::error!("Received reply from {node_id} after timeout");
-        return;
-    }
-
-    if let Err(err) = sent_handler.send(RPCReply::new(message, node_id)).await {
-        log::error!("Failed to send reply {err}");
+        Entry::Vacant(_) => {
+            log::error!("Received an unexpected message from {node_id}");
+        }
     }
 }
 
@@ -191,7 +242,7 @@ async fn send_output_message(
     message: NetworkMessage,
     send_type: OutputMessageType,
     connections: &mut ConnectionStorage,
-    waiting_reply: &mut HashMap<(u16, NodeId), Sender<RPCReply>>,
+    sent_requests: &mut HashMap<u16, MessageWaitingReply>,
 ) {
     async fn send_to(
         message: &NetworkMessage,
@@ -214,31 +265,52 @@ async fn send_output_message(
         Ok(())
     }
 
-    // TODO: keep track of unsent replies
+    // FIXME: keep track of unsent messages, they must be sent if the node connects again
     match send_type {
-        OutputMessageType::Reply(node_id) => {
+        OutputMessageType::Response(node_id) => {
             if let Err(err) = send_to(&message, node_id, connections).await {
                 log::error!("Failed to send reply {err}");
             }
         }
-        OutputMessageType::SingleNode(node_id, callback) => {
+        OutputMessageType::SingleNode(node_id, callback, timeout) => {
             if send_to(&message, node_id, connections).await.is_ok() {
-                waiting_reply.insert((message.id(), node_id), callback);
+                sent_requests.insert(
+                    message.id(),
+                    MessageWaitingReply::new(message.id(), [node_id].into(), callback, timeout),
+                );
             }
         }
-        OutputMessageType::MultiNode(nodes, callback) => {
+        OutputMessageType::MultiNode(nodes, callback, timeout) => {
+            log::warn!("Sending message {} to {:?}", message.id(), nodes);
+            // FIXME: nodes that are offline should already go in the "failed" list in the
+            // MessageWaitingReply. Or they should be in a "waiting to send" list, since they were
+            // online
+            let mut nodes_sent = HashSet::new();
             for node_id in nodes {
                 if send_to(&message, node_id, connections).await.is_ok() {
-                    waiting_reply.insert((message.id(), node_id), callback.clone());
+                    nodes_sent.insert(node_id);
                 }
             }
+
+            sent_requests.insert(
+                message.id(),
+                MessageWaitingReply::new(message.id(), nodes_sent, callback, timeout),
+            );
         }
-        OutputMessageType::Broadcast(callback) => {
+        OutputMessageType::Broadcast(callback, timeout) => {
+            let mut nodes = HashSet::new();
             for node_id in connections.connected_nodes().collect::<Vec<_>>() {
                 if send_to(&message, node_id, connections).await.is_ok() {
-                    waiting_reply.insert((message.id(), node_id), callback.clone());
+                    nodes.insert(node_id);
                 }
             }
+
+            log::warn!("Sending message {} to {:?}", message.id(), nodes);
+
+            sent_requests.insert(
+                message.id(),
+                MessageWaitingReply::new(message.id(), nodes, callback, timeout),
+            );
         }
     }
 }
@@ -246,18 +318,20 @@ async fn send_output_message(
 async fn add_new_consumer(
     consumer_types: Vec<TypeId>,
     consumer: Sender<RPCMessage>,
-    received_messages: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage)>>,
+    received_messages: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
     consumers: &mut HashMap<TypeId, tokio::sync::mpsc::Sender<RPCMessage>>,
     net_out_sender: &Sender<(NetworkMessage, OutputMessageType)>,
 ) {
     for consumer_type in consumer_types {
         if let Entry::Occupied(mut entry) = received_messages.entry(consumer_type) {
-            while let Some((node_id, message)) = entry.get_mut().pop_front() {
+            while let Some((node_id, message, deadline)) = entry.get_mut().pop_front() {
                 if let Err(err) = consumer
                     .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
                     .await
                 {
-                    entry.get_mut().push_front((node_id, err.0.into()));
+                    entry
+                        .get_mut()
+                        .push_front((node_id, err.0.into(), deadline));
                     return;
                 }
             }
@@ -267,6 +341,28 @@ async fn add_new_consumer(
 
         consumers.insert(consumer_type, consumer.clone());
     }
+}
+
+async fn cleanup_resources(
+    connections: &mut ConnectionStorage,
+    received_messages: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
+    sent_requests: &mut HashMap<u16, MessageWaitingReply>,
+    consumers: &mut HashMap<TypeId, tokio::sync::mpsc::Sender<RPCMessage>>,
+) {
+    connections.remove_stale();
+    consumers.retain(|_, consumer| !consumer.is_closed());
+
+    for (_, expired_message) in sent_requests.extract_if(|_, waiting| waiting.is_expired()) {
+        if let Err(err) = expired_message.send_timeout().await {
+            log::warn!("Failed to send timeout message {err}");
+        }
+    }
+
+    for messages in received_messages.values_mut() {
+        messages.retain(|(_, _, deadline)| !deadline.is_expired());
+    }
+
+    received_messages.retain(|_, messages| !messages.is_empty());
 }
 
 async fn read_network_data(
@@ -289,4 +385,165 @@ async fn read_network_data(
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::hash_type_id::HashTypeId;
+    use iron_carrier_macros::HashTypeId;
+    use serde::{Deserialize, Serialize};
+
+    #[tokio::test]
+    pub async fn ensure_rpc_single_call_times_out() {
+        let (new_connection_tx, new_connection_rx) = tokio::sync::mpsc::channel(1);
+        let rpc = rpc_service(new_connection_rx);
+        let ping = ping_rpc(Duration::from_secs(1));
+
+        let (ping_connection, connection) =
+            crate::network::connection::local_connection_pair(0.into());
+
+        let _ = ping.send(ping_connection).await;
+        let _ = new_connection_tx.send(connection).await;
+
+        assert!(rpc.call(Ack, 0.into()).ack().await.is_ok());
+        assert!(rpc.call(Reply, 0.into()).ack().await.is_err());
+    }
+
+    #[tokio::test]
+    pub async fn ensure_rpc_multi_call_times_out() {
+        let (new_connection_tx, new_connection_rx) = tokio::sync::mpsc::channel(1);
+        let rpc = rpc_service(new_connection_rx);
+
+        let fast_server = ping_rpc(Duration::from_secs(1));
+        let slow_server = ping_rpc(Duration::from_secs(10));
+
+        {
+            let (ping_connection, connection) =
+                crate::network::connection::local_connection_pair(0.into());
+            let _ = fast_server.send(ping_connection).await;
+            let _ = new_connection_tx.send(connection).await;
+        }
+
+        {
+            let (ping_connection, connection) =
+                crate::network::connection::local_connection_pair(1.into());
+            let _ = slow_server.send(ping_connection).await;
+            let _ = new_connection_tx.send(connection).await;
+        }
+
+        assert!(rpc.multi_call(Ack, [0.into()].into()).ack().await.is_ok());
+        assert!(rpc
+            .multi_call(Ack, [0.into(), 1.into()].into())
+            .ack()
+            .await
+            .is_err());
+
+        assert_eq!(
+            rpc.multi_call(Reply, [0.into()].into())
+                .result()
+                .await
+                .expect("Should not error")
+                .replies()
+                .len(),
+            1
+        );
+
+        match rpc
+            .multi_call(Reply, [0.into()].into())
+            .result()
+            .await
+            .expect("Should not error")
+        {
+            GroupCallResponse::Complete(replies) => assert_eq!(replies.len(), 1),
+            GroupCallResponse::Partial(_, _) => unreachable!("Unexpected response"),
+        }
+
+        match rpc
+            .multi_call(Reply, [0.into(), 1.into()].into())
+            .result()
+            .await
+            .expect("Should not error")
+        {
+            GroupCallResponse::Complete(_) => unreachable!("Unexpected response"),
+            GroupCallResponse::Partial(replies, nodes) => {
+                assert_eq!(replies.len(), 1);
+                assert_eq!(nodes, HashSet::from([NodeId::from(1)]))
+            }
+        }
+    }
+
+    #[tokio::test]
+    pub async fn ensure_rpc_broadcast_times_out() {
+        let (new_connection_tx, new_connection_rx) = tokio::sync::mpsc::channel(1);
+        let rpc = rpc_service(new_connection_rx);
+
+        let fast_server = ping_rpc(Duration::from_secs(1));
+        let slow_server = ping_rpc(Duration::from_secs(10));
+
+        {
+            let (ping_connection, connection) =
+                crate::network::connection::local_connection_pair(0.into());
+            let _ = fast_server.send(ping_connection).await;
+            let _ = new_connection_tx.send(connection).await;
+        }
+
+        {
+            let (ping_connection, connection) =
+                crate::network::connection::local_connection_pair(1.into());
+            let _ = slow_server.send(ping_connection).await;
+            let _ = new_connection_tx.send(connection).await;
+        }
+
+        assert!(rpc.broadcast(Ack).ack().await.is_err());
+        match rpc
+            .broadcast(Reply)
+            .result()
+            .await
+            .expect("Should not error")
+        {
+            GroupCallResponse::Complete(_) => unreachable!("Unexpected response"),
+            GroupCallResponse::Partial(replies, nodes) => {
+                assert_eq!(replies.len(), 1);
+                assert_eq!(nodes, HashSet::from([NodeId::from(1)]))
+            }
+        }
+    }
+
+    fn ping_rpc(wait_time: Duration) -> Sender<Connection> {
+        let (new_connection_tx, new_connection_rx) = tokio::sync::mpsc::channel(1);
+        let rpc = rpc_service(new_connection_rx);
+
+        tokio::spawn(async move {
+            let mut sub = rpc
+                .subscribe_many([Reply::ID, Ack::ID].into())
+                .await
+                .unwrap();
+
+            while let Some(message) = sub.next().await {
+                tokio::spawn(async move {
+                    tokio::time::sleep(wait_time).await;
+
+                    match message.type_id() {
+                        Reply::ID => {
+                            let _ = message.reply(Reply).await;
+                        }
+                        Ack::ID => {
+                            let _ = message.ack().await;
+                        }
+                        _ => unreachable!(),
+                    }
+                });
+            }
+        });
+
+        new_connection_tx
+    }
+
+    #[derive(Debug, HashTypeId, Serialize, Deserialize)]
+    struct Ack;
+
+    #[derive(Debug, HashTypeId, Serialize, Deserialize)]
+    struct Reply;
 }

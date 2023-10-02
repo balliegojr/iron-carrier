@@ -65,7 +65,9 @@ async fn test_full_sync_encrypted() {
         .map(|config| {
             let tx = tx.clone();
             tokio::spawn(async {
-                let _ = iron_carrier::start_daemon(config, Some(tx)).await;
+                if let Err(err) = iron_carrier::start_daemon(config, Some(tx)).await {
+                    log::error!("{err}");
+                }
             })
         })
         .collect();

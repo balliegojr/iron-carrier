@@ -40,6 +40,17 @@ pub struct Connection {
     dedup_control: u8,
 }
 
+#[cfg(test)]
+pub fn local_connection_pair(node_id: NodeId) -> (Connection, Connection) {
+    let (one_rx, one_tx) = tokio::io::duplex(4096);
+    let (two_rx, two_tx) = tokio::io::duplex(4096);
+
+    (
+        Connection::new(Box::pin(one_rx), Box::pin(two_tx), node_id, 0),
+        Connection::new(Box::pin(two_rx), Box::pin(one_tx), node_id, 0),
+    )
+}
+
 impl Connection {
     pub fn new(
         read_half: Pin<Box<dyn AsyncRead + Send>>,
@@ -94,7 +105,7 @@ pub async fn handshake_and_identify_connection(
         Pin<Box<dyn AsyncRead + Send>>,
         Pin<Box<dyn AsyncWrite + Send + Sync>>,
     ) = if config.encryption_key.is_some() {
-        get_encrypted_connection(read, write, config).await?
+        get_encrypted_connection(read, write, config.encryption_key.as_deref()).await?
     } else {
         (
             Box::pin(BufReader::new(read)),
@@ -147,7 +158,7 @@ pub async fn handshake_and_identify_connection(
 async fn get_encrypted_connection<R, W>(
     mut read: R,
     mut write: W,
-    config: &'static Config,
+    pre_defined_key: Option<&str>,
 ) -> crate::Result<(
     Pin<Box<dyn AsyncRead + Send>>,
     Pin<Box<dyn AsyncWrite + Send + Sync>>,
@@ -171,7 +182,7 @@ where
     let peer_public_key = PublicKey::from(peer_public_key);
     let shared_key = secret_key.diffie_hellman(&peer_public_key);
 
-    let shared_key = match config.encryption_key.as_ref() {
+    let shared_key = match pre_defined_key {
         Some(config_key) => get_key(config_key.as_bytes(), shared_key.as_bytes()),
         None => shared_key.to_bytes(),
     };

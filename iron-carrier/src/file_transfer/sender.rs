@@ -18,7 +18,10 @@ use tokio::{
 };
 // pub use transfer_blocks::TransferBlocks;
 
-use crate::{node_id::NodeId, storage::FileInfo, IronCarrierError, SharedState};
+use crate::{
+    network::rpc::GroupCallResponse, node_id::NodeId, storage::FileInfo, IronCarrierError,
+    SharedState,
+};
 
 use super::{
     block_index,
@@ -124,8 +127,9 @@ async fn query_transfer_type(
         )
         .result()
         .await
-        .and_then(|replies| {
-            replies
+        .and_then(|response| {
+            response
+                .replies()
                 .into_iter()
                 .map(|reply| {
                     reply
@@ -176,8 +180,9 @@ async fn query_required_blocks(
             )
             .result()
             .await
-            .and_then(|replies| {
-                replies
+            .and_then(|response| {
+                response
+                    .replies()
                     .into_iter()
                     .map(|reply| {
                         reply.data().map(|required_blocks: RequiredBlocks| {
@@ -252,16 +257,27 @@ async fn transfer_blocks(
         .result()
         .await?;
 
-    for result in results {
-        match result.data::<TransferResult>()? {
+    let (replies, timed_out) = match results {
+        GroupCallResponse::Complete(replies) => (replies, Default::default()),
+        GroupCallResponse::Partial(replies, timed_out) => (replies, Some(timed_out)),
+    };
+
+    for reply in replies {
+        match reply.data::<TransferResult>()? {
             TransferResult::Success => {
-                nodes_blocks.remove(&result.node_id());
+                nodes_blocks.remove(&reply.node_id());
             }
             TransferResult::Failed { required_blocks } => {
                 nodes_blocks
-                    .entry(result.node_id())
+                    .entry(reply.node_id())
                     .and_modify(|e| *e = required_blocks);
             }
+        }
+    }
+
+    if let Some(timed_out) = timed_out {
+        for node_id in timed_out {
+            nodes_blocks.remove(&node_id);
         }
     }
 

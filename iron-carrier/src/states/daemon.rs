@@ -134,40 +134,6 @@ impl State for BypassConsensus {
     }
 }
 
-// impl State for DaemonEvent {
-//     type Output = ();
-//
-//     async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
-//         match self {
-//             DaemonEvent::ScheduledSync => {
-//                 DiscoverPeers::default()
-//                     .and_then(ConnectAllPeers::new)
-//                     .and_then(|_| SyncLeader::sync(SyncOptions::default()))
-//                     .execute(shared_state)
-//                     .await
-//             }
-//             DaemonEvent::Watcher(to_sync) => {
-//                 DiscoverPeers::default()
-//                     .and_then(ConnectAllPeers::new)
-//                     .and_then(|_| SetSyncRole::sync(SyncOptions::new(to_sync)))
-//                     .execute(shared_state)
-//                     .await
-//             }
-//             DaemonEvent::ConsensusRequest => {
-//                 Consensus::new()
-//                     .and_then(|leader_id| SetSyncRole::new(leader_id, Default::default()))
-//                     .execute(shared_state)
-//                     .await
-//             }
-//             DaemonEvent::TransitionToFolowerRequest(leader_id) => {
-//                 SetSyncRole::new(leader_id, Default::default())
-//                     .execute(shared_state)
-//                     .await
-//             }
-//         }
-//     }
-// }
-
 async fn next_cron_schedule(config: &Config) {
     let cron_deadline = config.schedule_sync.as_ref().and_then(|schedule_cron| {
         let schedule = cron::Schedule::from_str(schedule_cron).unwrap();

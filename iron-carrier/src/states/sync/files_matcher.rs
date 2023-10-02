@@ -36,7 +36,8 @@ impl FilesMatcher {
                 hash: storage.hash,
             })
             .result()
-            .await?;
+            .await?
+            .replies();
 
         Ok(peer_storages
             .iter()
@@ -154,9 +155,7 @@ fn clear_moved_files_old_path(
         })
         .collect();
 
-    consolidated
-        .extract_if(|k, _| to_remove.contains(k))
-        .count();
+    consolidated.retain(|k, _| !to_remove.contains(k));
 }
 
 #[cfg(test)]
