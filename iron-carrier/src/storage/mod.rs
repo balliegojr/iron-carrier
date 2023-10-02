@@ -112,7 +112,7 @@ pub async fn walk_path(
                         _ => unreachable!(),
                     };
 
-                    files.extract_if(|f| f.path.eq(old_path)).count();
+                    files.retain(|f| !f.path.eq(old_path));
                     files.replace(moved_file);
                 }
                 _ => {

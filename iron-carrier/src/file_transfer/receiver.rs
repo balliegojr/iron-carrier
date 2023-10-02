@@ -2,18 +2,20 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     io::SeekFrom,
     sync::Arc,
+    time::Duration,
 };
 
 use tokio::{
     fs::File,
     io::{AsyncSeekExt, AsyncWriteExt},
-    sync::{mpsc::Sender, Semaphore},
+    sync::{mpsc::Sender, OwnedSemaphorePermit, Semaphore},
 };
 use tokio_stream::StreamExt;
 
 use crate::{
-    config::Config, hash_helper, hash_type_id::HashTypeId, ignored_files::IgnoredFilesCache,
-    network::rpc::RPCMessage, node_id::NodeId, storage::FileInfo, SharedState, StateMachineError,
+    config::Config, constants::DEFAULT_NETWORK_TIMEOUT, hash_helper, hash_type_id::HashTypeId,
+    ignored_files::IgnoredFilesCache, network::rpc::RPCMessage, node_id::NodeId, storage::FileInfo,
+    SharedState, StateMachineError,
 };
 
 use super::{
@@ -120,8 +122,7 @@ async fn process_query_transfer_type(
 
     let add_current_transfer = add_current_transfer.clone();
     tokio::spawn(async move {
-        let permit = transfers_semaphore.acquire_owned().await?; // FIXME: this will cause a
-                                                                 // timeout
+        let permit = acquire_permit(transfers_semaphore, &request).await?;
         let transfer = Transfer::new(data.file, permit)?;
         let handle =
             crate::storage::file_operations::open_file_for_writing(config, &transfer.file).await?;
@@ -154,6 +155,34 @@ async fn process_query_transfer_type(
     });
 
     Ok(())
+}
+
+/// Request a transfer permit and extend request timeout until permit is acquired
+async fn acquire_permit(
+    transfers_semaphore: Arc<Semaphore>,
+    request: &RPCMessage,
+) -> crate::Result<OwnedSemaphorePermit> {
+    let (permit_tx, mut permit_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let permit = transfers_semaphore.acquire_owned().await;
+        let _ = permit_tx.send(permit);
+    });
+
+    loop {
+        let timeout = tokio::time::sleep(Duration::from_secs_f32(
+            DEFAULT_NETWORK_TIMEOUT as f32 * 0.8,
+        ));
+
+        tokio::select! {
+            biased;
+            permit = &mut permit_rx => {
+                return Ok(permit??);
+            }
+            _ = timeout => {
+                request.ping().await?;
+            }
+        };
+    }
 }
 
 async fn get_transfer_type(

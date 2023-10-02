@@ -38,28 +38,16 @@ impl ConnectionStorage {
         self.connections.remove(node_id)
     }
 
-    pub fn connections_mut(&mut self) -> impl Iterator<Item = &mut WriteHalf> {
-        self.connections.values_mut()
-    }
-
-    pub fn contains_node(&self, node_id: &NodeId) -> bool {
-        self.connections.contains_key(node_id)
-    }
-
     pub fn connected_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.connections.keys().copied()
     }
 
-    pub fn len(&self) -> usize {
-        self.connections.len()
+    pub fn is_empty(&self) -> bool {
+        self.connections.is_empty()
     }
 
     pub fn remove_stale(&mut self) {
         self.connections
-            .extract_if(|_, connection| connection.is_stale());
-    }
-
-    pub fn clear(&mut self) {
-        self.connections.clear();
+            .retain(|_, connection| !connection.is_stale());
     }
 }

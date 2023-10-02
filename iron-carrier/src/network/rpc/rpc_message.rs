@@ -37,7 +37,16 @@ impl RPCMessage {
         let reply = NetworkMessage::ack_message(self.inner.id());
 
         self.reply_sender
-            .send((reply, OutputMessageType::Reply(self.node_id)))
+            .send((reply, OutputMessageType::Response(self.node_id)))
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn ping(&self) -> crate::Result<()> {
+        let ping_message = NetworkMessage::ping_message(self.inner.id());
+        self.reply_sender
+            .send((ping_message, OutputMessageType::Response(self.node_id)))
             .await?;
 
         Ok(())
@@ -46,7 +55,7 @@ impl RPCMessage {
     pub async fn reply<U: HashTypeId + Serialize>(self, message: U) -> crate::Result<()> {
         let reply = NetworkMessage::reply_message(self.inner.id(), message)?;
         self.reply_sender
-            .send((reply, OutputMessageType::Reply(self.node_id)))
+            .send((reply, OutputMessageType::Response(self.node_id)))
             .await?;
 
         Ok(())

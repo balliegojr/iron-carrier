@@ -6,13 +6,17 @@ use tokio::sync::mpsc::Sender;
 
 use crate::{node_id::NodeId, IronCarrierError};
 
-use super::{network_message::NetworkMessage, rpc_reply::RPCReply, OutputMessageType};
+use super::{
+    message_waiting_reply::ReplyType, network_message::NetworkMessage, rpc_reply::RPCReply,
+    OutputMessageType,
+};
 
 #[must_use]
 pub struct Call<T> {
     data: T,
     sender: Sender<(NetworkMessage, OutputMessageType)>,
     target: NodeId,
+    timeout: Duration,
 }
 
 impl<T> Call<T>
@@ -28,25 +32,32 @@ where
             data,
             sender,
             target,
+            timeout: Duration::from_secs(5),
         }
     }
 
     pub async fn ack(self) -> crate::Result<()> {
-        match self.wait_reply().await? {
-            Some(reply) if reply.is_ack() => Ok(()),
-            _ => Err(IronCarrierError::InvalidReply.into()),
+        if self.wait_reply().await?.is_ack() {
+            Ok(())
+        } else {
+            Err(IronCarrierError::InvalidReply.into())
         }
     }
 
-    async fn wait_reply(self) -> crate::Result<Option<RPCReply>> {
+    async fn wait_reply(self) -> crate::Result<RPCReply> {
         let message = NetworkMessage::encode(self.data)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         self.sender
-            .send((message, OutputMessageType::SingleNode(self.target, tx)))
+            .send((
+                message,
+                OutputMessageType::SingleNode(self.target, tx, self.timeout),
+            ))
             .await?;
 
-        tokio::time::timeout(Duration::from_secs(30), rx.recv())
-            .await
-            .map_err(|_| IronCarrierError::ReplyTimeOut.into())
+        if let Some(ReplyType::Message(reply)) = rx.recv().await {
+            return Ok(reply);
+        }
+
+        Err(IronCarrierError::ReplyTimeOut.into())
     }
 }

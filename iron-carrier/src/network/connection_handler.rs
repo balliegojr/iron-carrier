@@ -4,7 +4,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::{
     config::Config,
-    constants::PEER_IDENTIFICATION_TIMEOUT,
+    constants::DEFAULT_NETWORK_TIMEOUT,
     network::connection::{self, Connection},
     node_id::NodeId,
     IronCarrierError,
@@ -49,7 +49,7 @@ impl ConnectionHandler {
         };
 
         let connection = tokio::time::timeout(
-            Duration::from_secs(PEER_IDENTIFICATION_TIMEOUT),
+            Duration::from_secs(DEFAULT_NETWORK_TIMEOUT),
             connect_and_identify,
         )
         .await
@@ -73,7 +73,7 @@ async fn listen_connections(
 
     while let Ok((stream, _addr)) = listener.accept().await {
         let connection = match tokio::time::timeout(
-            Duration::from_secs(PEER_IDENTIFICATION_TIMEOUT),
+            Duration::from_secs(DEFAULT_NETWORK_TIMEOUT),
             connection::handshake_and_identify_connection(config, stream),
         )
         .await

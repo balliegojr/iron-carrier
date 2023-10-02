@@ -13,6 +13,7 @@ static MESSAGE_ID: AtomicU16 = AtomicU16::new(1);
 mod flags {
     pub const REPLY: u8 = 0b0000_0001;
     pub const ACK: u8 = 0b0000_0010;
+    pub const PING: u8 = 0b000_0100;
 }
 
 #[derive(Debug)]
@@ -26,7 +27,7 @@ impl NetworkMessage {
             return Ok(None);
         }
 
-        if src[2] & flags::ACK == flags::ACK {
+        if src[2] & flags::ACK == flags::ACK || src[2] & flags::PING == flags::PING {
             let content = src[0..3].to_vec();
             src.advance(content.len());
             return Ok(Some(Self { content }));
@@ -73,6 +74,13 @@ impl NetworkMessage {
     pub fn ack_message(id: u16) -> Self {
         let id = id.to_le_bytes();
         let content = vec![id[0], id[1], flags::REPLY | flags::ACK];
+
+        Self { content }
+    }
+
+    pub fn ping_message(id: u16) -> Self {
+        let id = id.to_le_bytes();
+        let content = vec![id[0], id[1], flags::REPLY | flags::PING];
 
         Self { content }
     }
@@ -128,6 +136,10 @@ impl NetworkMessage {
 
     pub fn is_ack(&self) -> bool {
         self.content[2] & flags::ACK == flags::ACK
+    }
+
+    pub fn is_ping(&self) -> bool {
+        self.content[2] & flags::PING == flags::PING
     }
 }
 

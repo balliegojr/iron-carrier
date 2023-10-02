@@ -5,6 +5,7 @@
 //! This protocol also expects absolute voting instead of majority
 use std::{fmt::Display, time::Duration};
 
+use futures::FutureExt;
 use iron_carrier_macros::HashTypeId;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -72,8 +73,6 @@ impl State for Consensus {
         //    protocol
 
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
-        let mut term = 0u32;
-
         let mut events = shared_state
             .rpc
             .subscribe_many(vec![
@@ -85,40 +84,70 @@ impl State for Consensus {
 
         tokio::spawn(shared_state.rpc.broadcast(StartConsensus).ack());
 
+        // FIXME: there must be a better way of doing this
+        let mut waiting_result = false;
+        let mut replies_fut: std::pin::Pin<
+            Box<
+                dyn futures::Future<Output = crate::Result<crate::network::rpc::GroupCallResponse>>
+                    + Send,
+            >,
+        > = std::future::pending().boxed();
+
+        let mut term = 0u32;
         let leader_id = loop {
             tokio::select! {
-                _ = tokio::time::sleep_until(deadline), if self.election_state == NodeState::Candidate => {
+                _ = tokio::time::sleep_until(deadline), if !waiting_result && self.election_state == NodeState::Candidate => {
                     if term > MAX_ELECTION_TERMS {
                         log::error!("Election reached maximum term of {MAX_ELECTION_TERMS}");
                         Err(StateMachineError::Abort)?
                     }
 
                     term += 1;
-                    let replies = shared_state
+                    replies_fut = shared_state
                         .rpc
                         .broadcast
                         (RequestVote { term })
+                        .timeout(Duration::from_secs(1))
                         .result()
-                        .await?;
+                        .boxed();
 
-                    if replies.is_empty() {
-                        log::error!("No participants in the consensus");
-                        Err(StateMachineError::Abort)?
+                    waiting_result = true;
+                    // deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
+                }
+
+                response = &mut replies_fut, if waiting_result && self.election_state == NodeState::Candidate => {
+                    log::warn!("consensus got reply");
+                    match response {
+                        Ok(response) => {
+                            let replies = response.replies();
+
+                            if replies.is_empty() {
+                                log::error!("No participants in the consensus");
+                                Err(StateMachineError::Abort)?
+                            }
+
+                            if replies.iter().all(|v| v.data::<TermVote>().map(|v| v.vote).unwrap_or_default()) {
+                                log::debug!("Node wins election");
+                                self.election_state = NodeState::Leader;
+                                let nodes = replies.into_iter().map(|r| r.node_id()).collect();
+                                shared_state.rpc.multi_call(ConsensusReached, nodes).ack().await?;
+
+                                break shared_state.config.node_id_hashed
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("Error getting consensus response {err}");
+                        }
                     }
 
-                    if replies.iter().all(|v| v.data::<TermVote>().map(|v| v.vote).unwrap_or_default()) {
-                        log::debug!("Node wins election");
-                        self.election_state = NodeState::Leader;
-                        shared_state.rpc.broadcast(ConsensusReached).ack().await?;
-
-                        break shared_state.config.node_id_hashed
-                    }
-
+                    waiting_result = false;
+                    replies_fut = std::future::pending().boxed();
                     deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
                 }
 
                 request = events.next() => {
                     let request = request.ok_or(StateMachineError::Abort)?;
+                    log::warn!("Consensus message from {}", request.node_id());
                     match request.type_id() {
                         RequestVote::ID => {
                             let data = request.data::<RequestVote>()?;
