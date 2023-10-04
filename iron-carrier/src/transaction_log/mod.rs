@@ -6,12 +6,10 @@ pub use entry_status::EntryStatus;
 pub use entry_type::EntryType;
 pub use log_entry::LogEntry;
 
-use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-    Row, SqlitePool,
-};
+use rusqlite::{params, Connection, OpenFlags};
+use tokio::sync::Mutex;
 
-use std::{collections::HashSet, path::Path, time::Duration};
+use std::{collections::HashSet, path::Path, sync::Arc, time::Duration};
 use thiserror::Error;
 
 use crate::relative_path::RelativePathBuf;
@@ -20,17 +18,25 @@ const TRANSACTION_KEEP_LIMIT_SECS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, Clone)]
 pub struct TransactionLog {
-    storage: SqlitePool,
+    storage: Arc<Mutex<Connection>>,
 }
 
 impl TransactionLog {
-    pub async fn load(log_path: &Path) -> crate::Result<Self> {
-        get_storage(log_path).await.map(|storage| Self { storage })
+    pub fn load(log_path: &Path) -> crate::Result<Self> {
+        get_storage(log_path)
+            .map(|storage| Self {
+                storage: Arc::new(Mutex::new(storage)),
+            })
+            .map_err(Box::from)
     }
 
     #[cfg(test)]
-    pub async fn memory() -> crate::Result<Self> {
-        get_memory_storage().await.map(|storage| Self { storage })
+    pub fn memory() -> crate::Result<Self> {
+        get_memory_storage()
+            .map(|storage| Self {
+                storage: Arc::new(Mutex::new(storage)),
+            })
+            .map_err(Box::from)
     }
 
     pub async fn append_entry(
@@ -40,14 +46,15 @@ impl TransactionLog {
         old_path: Option<&RelativePathBuf>,
         entry: LogEntry,
     ) -> crate::Result<()> {
-        sqlx::query("INSERT OR REPLACE INTO LogEntry (storage, path, old_path, entry_type, status, timestamp) VALUES (?,?,?,?,?,?)")
-            .bind(storage)
-            .bind(path.to_str())
-            .bind(old_path.map(|p| p.to_str()))
-            .bind(&entry.event_type.to_string())
-            .bind(&entry.event_status.to_string())
-            .bind(entry.timestamp as i64)
-            .execute(&self.storage).await?;
+        self.storage.lock().await
+            .execute("INSERT OR REPLACE INTO LogEntry (storage, path, old_path, entry_type, status, timestamp) VALUES (?,?,?,?,?,?)", params![
+                storage,
+                path.to_str(),
+                old_path.map(|p| p.to_str()),
+                &entry.event_type.to_string(),
+                &entry.event_status.to_string(),
+                entry.timestamp as i64
+            ])?;
 
         Ok(())
     }
@@ -58,47 +65,46 @@ impl TransactionLog {
         .elapsed()
         .as_secs();
 
-        sqlx::query("DELETE FROM LogEntry where timestamp < ?")
-            .bind(limit as i64)
-            .execute(&self.storage)
-            .await?;
+        self.storage
+            .lock()
+            .await
+            .execute("DELETE FROM LogEntry where timestamp < ?", [limit as i64])?;
 
         Ok(())
     }
 
     pub async fn get_deleted(&self, storage: &str) -> crate::Result<Vec<(RelativePathBuf, u64)>> {
-        sqlx::query("SELECT path, timestamp FROM LogEntry WHERE storage = ? and entry_type = ?")
-            .bind(storage)
-            .bind(EntryType::Delete.to_string())
-            .map(|row| {
-                (
-                    row.get::<&str, &str>("path").into(),
-                    row.get::<i64, &str>("timestamp") as u64,
-                )
-            })
-            .fetch_all(&self.storage)
-            .await
-            .map_err(Box::from)
+        let conn = self.storage.lock().await;
+        let mut stmt = conn
+            .prepare("SELECT path, timestamp FROM LogEntry WHERE storage = ? and entry_type = ?")?;
+
+        stmt.query_map(params![storage, EntryType::Delete.to_string()], |row| {
+            let path = row.get_ref("path")?;
+            let timestamp: u64 = row.get("timestamp")?;
+
+            Ok((path.as_str()?.into(), timestamp))
+        })
+        .and_then(|it| it.collect())
+        .map_err(Box::from)
     }
 
     pub async fn get_moved(
         &self,
         storage: &str,
     ) -> crate::Result<Vec<(RelativePathBuf, RelativePathBuf, u64)>> {
-        sqlx::query(
+        let conn = self.storage.lock().await;
+        let mut stmt = conn.prepare(
             "SELECT path, old_path, timestamp FROM LogEntry WHERE storage = ? and entry_type = ?",
-        )
-        .bind(storage)
-        .bind(EntryType::Move.to_string())
-        .map(|row| {
-            (
-                row.get::<&str, &str>("path").into(),
-                row.get::<&str, &str>("old_path").into(),
-                row.get::<i64, &str>("timestamp") as u64,
-            )
+        )?;
+
+        stmt.query_map(params![storage, EntryType::Move.to_string()], |row| {
+            let path = row.get_ref("path")?;
+            let old_path = row.get_ref("old_path")?;
+            let timestamp: u64 = row.get("timestamp")?;
+
+            Ok((path.as_str()?.into(), old_path.as_str()?.into(), timestamp))
         })
-        .fetch_all(&self.storage)
-        .await
+        .and_then(|it| it.collect())
         .map_err(Box::from)
     }
 
@@ -106,52 +112,93 @@ impl TransactionLog {
         &self,
         storage: &str,
     ) -> crate::Result<HashSet<RelativePathBuf>> {
-        sqlx::query("SELECT path FROM LogEntry WHERE storage = ? and entry_type = ? and status in ('fail', 'pending')")
-            .bind(storage)
-            .bind(EntryType::Write.to_string())
-            .map(|row| row.get::<&str, &str>("path").into())
-            .fetch_all(&self.storage)
-            .await
-            .map(HashSet::from_iter)
-            .map_err(Box::from)
+        let conn = self.storage.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT path FROM LogEntry WHERE storage = ? and entry_type = ? and status in ('fail', 'pending')"        
+        )?;
+
+        stmt.query_map(params![storage, EntryType::Write.to_string()], |row| {
+            let path = row.get_ref("path")?;
+
+            Ok(path.as_str()?.into())
+        })
+        .and_then(|it| it.collect())
+        .map_err(Box::from)
     }
 }
 
-pub async fn get_storage(log_path: &Path) -> crate::Result<SqlitePool> {
-    let options = SqliteConnectOptions::new()
-        .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .filename(log_path);
-
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await?;
-
-    sqlx::migrate!().run(&pool).await?;
-
-    Ok(pool)
+pub fn get_storage(log_path: &Path) -> rusqlite::Result<Connection> {
+    dbg!(Connection::open_with_flags(
+        log_path,
+        OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_READ_WRITE
+    ))
+    .and_then(setup)
 }
 
 #[cfg(test)]
-pub async fn get_memory_storage() -> crate::Result<SqlitePool> {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect(":memory:")
-        .await?;
+pub fn get_memory_storage() -> rusqlite::Result<Connection> {
+    Connection::open_in_memory().and_then(setup)
+}
 
-    sqlx::migrate!().run(&pool).await?;
+fn setup(conn: Connection) -> rusqlite::Result<Connection> {
+    conn.execute(
+        r#"
+            CREATE TABLE IF NOT EXISTS LogEntry (
+                storage TEXT NOT NULL,
+                path TEXT NOT NULL,
+                old_path TEXT,
+                entry_type TEXT NOT NULL check (entry_type in ('delete', 'write', 'move')),
+                status TEXT NOT NULL check (status in ('pending', 'done', 'fail')),
+                timestamp INTEGER NOT NULL,
 
-    Ok(pool)
+                PRIMARY KEY (storage, path)
+            )
+        "#,
+        (),
+    )
+    .map(|_| conn)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
+    use crate::config::PathConfig;
+
     use super::*;
 
     #[tokio::test]
     pub async fn test_can_run_migrations() -> crate::Result<()> {
-        get_memory_storage().await?;
+        get_memory_storage()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    pub async fn test_can_retrieve_entries() -> crate::Result<()> {
+        let log = TransactionLog::memory()?;
+        let path_config = PathConfig {
+            path: "/tmp".into(),
+            ..Default::default()
+        };
+
+        let file_path = RelativePathBuf::new(&path_config, "/tmp/file".into())?;
+        let entry_time = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 5;
+
+        log.append_entry(
+            "storage_0",
+            &file_path,
+            None,
+            LogEntry {
+                timestamp: entry_time,
+                event_type: EntryType::Delete,
+                event_status: EntryStatus::Done,
+            },
+        )
+        .await?;
+
+        let deleted = log.get_deleted("storage_0").await?;
+        assert_eq!(deleted, vec![(file_path, entry_time)]);
+
         Ok(())
     }
 }

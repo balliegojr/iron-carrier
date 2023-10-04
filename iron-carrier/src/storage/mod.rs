@@ -238,7 +238,7 @@ a = "./src/"
         let storage = config.storages.get("a").unwrap();
 
         let files = walk_path(
-            &TransactionLog::memory().await?,
+            &TransactionLog::memory()?,
             "a",
             storage,
             &crate::ignored_files::IgnoredFiles::empty(),

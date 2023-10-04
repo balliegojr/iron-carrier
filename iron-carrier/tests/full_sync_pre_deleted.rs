@@ -16,9 +16,7 @@ async fn test_sync_deleted_files() {
         common::generate_configs(TEST_NAME, common::FULL_SYNC_PRE_DELETED_PORT, 2, 1, None);
 
     let files = common::generate_files(&configs[1].storages["storage_0"].path, "del");
-    let transaction_log = TransactionLog::load(&configs[0].log_path)
-        .await
-        .expect("Failed to load log");
+    let transaction_log = TransactionLog::load(&configs[0].log_path).expect("Failed to load log");
 
     for file in files.iter().filter(|f| !common::is_ignored(f)) {
         transaction_log

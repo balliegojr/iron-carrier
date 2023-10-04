@@ -120,7 +120,7 @@ pub struct SharedState {
 
 pub async fn run_full_sync(config: &'static validation::Validated<config::Config>) -> Result<()> {
     let (connection_handler, rpc) = network::start_network_service(config).await?;
-    let transaction_log = transaction_log::TransactionLog::load(&config.log_path).await?;
+    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)?;
 
     let shared_state = SharedState {
         config,
@@ -147,7 +147,7 @@ pub async fn start_daemon(
     log::trace!("My id is {}", config.node_id);
 
     let (connection_handler, rpc) = network::start_network_service(config).await?;
-    let transaction_log = transaction_log::TransactionLog::load(&config.log_path).await?;
+    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)?;
 
     let shared_state = SharedState {
         config,
