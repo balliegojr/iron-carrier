@@ -14,19 +14,19 @@ chrono = { version = "0.4.23", default-features = false }
 clap = { version = "4.1", features = ["derive"] }
 crc = "^3.0"
 cron = "0.12.0"
-dirs = "^4.0"
+dirs = "^5.0"
 filetime = "0.2"
 globset = "^0.4"
 if-addrs = "^0.10"
 log = "^0.4.11"
-machine-uid = "^0.2"
-notify = { version = "^5.0", default-features = false, features = [
+machine-uid = "^0.5"
+notify = { version = "^6.1", default-features = false, features = [
     "macos_kqueue",
 ] }
 pin-project-lite = "0.2.0"
 rand = "^0.8"
 serde = { version = "1.0", features = ["derive", "rc"] }
-serde_with = "2.1.0"
+serde_with = "^3.3"
 simple-mdns = { version = "^0.4", features = ["async-tokio", "sync"] }
 sqlx = { version = "0.6.2", features = ["sqlite", "runtime-tokio-rustls"] }
 stderrlog = "0.5.0"
@@ -34,7 +34,7 @@ thiserror = "^1.0.0"
 tokio = { version = "1.23.0", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["sync"] }
 tokio-util = { version = "0.7.4", features = ["codec"] }
-toml = "^0.7"
+toml = "^0.8"
 iron-carrier-macros = { path = "../iron-carrier-macros" }
 
 async-encrypted-stream = { version = "0.1" }
