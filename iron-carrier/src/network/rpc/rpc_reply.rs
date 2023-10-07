@@ -20,7 +20,7 @@ impl RPCReply {
         self.inner.is_ack()
     }
 
-    pub fn data<'a, T>(&'a self) -> crate::Result<T>
+    pub fn data<'a, T>(&'a self) -> anyhow::Result<T>
     where
         T: HashTypeId + Deserialize<'a>,
     {

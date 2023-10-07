@@ -1,6 +1,6 @@
 use std::{collections::HashSet, time::Duration};
 
-use crate::{hash_type_id::HashTypeId, IronCarrierError};
+use crate::hash_type_id::HashTypeId;
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
@@ -34,7 +34,7 @@ where
     }
 
     /// Wait untill all nodes in the call acknowledge the request
-    pub async fn ack(self) -> crate::Result<HashSet<NodeId>> {
+    pub async fn ack(self) -> anyhow::Result<HashSet<NodeId>> {
         // TODO: on timeout, return nodeids that didn't reply
         self.wait_replies()
             .await
@@ -43,17 +43,17 @@ where
                     if replies.iter().all(|reply| reply.is_ack()) {
                         Ok(replies.into_iter().map(|r| r.node_id()).collect())
                     } else {
-                        Err(IronCarrierError::InvalidReply.into())
+                        anyhow::bail!("Received invalid reply");
                     }
                 }
-                GroupCallResponse::Partial(_, _) => Err(IronCarrierError::ReplyTimeOut.into()),
+                GroupCallResponse::Partial(_, _) => anyhow::bail!("Received invalid reply"),
             })
     }
 
     /// Wait for the execution reply for the nodes involved in this call.
     ///
     /// If any node doesn't reply before the request timeout, returns a partial response
-    pub async fn result(self) -> crate::Result<GroupCallResponse> {
+    pub async fn result(self) -> anyhow::Result<GroupCallResponse> {
         self.wait_replies().await
     }
 
@@ -63,7 +63,7 @@ where
         self
     }
 
-    async fn wait_replies(self) -> crate::Result<GroupCallResponse> {
+    async fn wait_replies(self) -> anyhow::Result<GroupCallResponse> {
         let message = NetworkMessage::encode(self.data)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let output_type = match self.targets {

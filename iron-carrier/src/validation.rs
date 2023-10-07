@@ -7,7 +7,7 @@ use std::ops::Deref;
 ///
 /// Any [Verified<T>] is garanteed to be verified
 pub trait Verifiable {
-    fn is_valid(&self) -> crate::Result<()>;
+    fn is_valid(&self) -> anyhow::Result<()>;
 }
 
 pub struct Unvalidated<T> {
@@ -22,7 +22,7 @@ where
         Self { inner }
     }
 
-    pub fn validate(self) -> crate::Result<Validated<T>> {
+    pub fn validate(self) -> anyhow::Result<Validated<T>> {
         self.is_valid().map(|_| Validated { inner: self.inner })
     }
 }

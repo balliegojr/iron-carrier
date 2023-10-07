@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 
 use rand::Rng;
 
-use crate::{node_id::NodeId, state_machine::State, SharedState};
+use crate::{node_id::NodeId, state_machine::Result, state_machine::State, SharedState};
 
 #[derive(Debug)]
 pub struct ConnectAllPeers {
@@ -26,7 +26,7 @@ impl Display for ConnectAllPeers {
 impl State for ConnectAllPeers {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         if self.addresses_to_connect.is_empty() {
             return Ok(());
         }

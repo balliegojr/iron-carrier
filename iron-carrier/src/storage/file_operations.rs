@@ -4,7 +4,6 @@ use crate::{
     config::Config,
     ignored_files::IgnoredFilesCache,
     transaction_log::{LogEntry, TransactionLog},
-    IronCarrierError,
 };
 
 use super::{fix_times_and_permissions, FileInfo, FileInfoType};
@@ -15,11 +14,11 @@ pub async fn move_file<'b>(
     transaction_log: &TransactionLog,
     file: &'b FileInfo,
     ignored_files_cache: &mut IgnoredFilesCache,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let path_config = config
         .storages
         .get(&file.storage)
-        .ok_or_else(|| IronCarrierError::StorageNotAvailable(file.storage.clone()))?;
+        .ok_or_else(|| anyhow::anyhow!("Storage {} not available", file.storage))?;
 
     let ignored_files = ignored_files_cache.get(path_config).await;
     if ignored_files.is_ignored(&file.path) {
@@ -30,7 +29,10 @@ pub async fn move_file<'b>(
     let src_path = if let FileInfoType::Moved { old_path, .. } = &file.info_type {
         old_path
     } else {
-        return Err(Box::new(IronCarrierError::InvalidOperation));
+        anyhow::bail!(
+            "Invalid Operation: called move for file that was not moved ({:?})",
+            file.path
+        );
     };
 
     if ignored_files.is_ignored(src_path) {
@@ -38,10 +40,20 @@ pub async fn move_file<'b>(
     }
 
     let src_path_abs = src_path.absolute(path_config)?;
+    if dest_path_abs.exists() {
+        anyhow::bail!(
+            "Invalid Operation: destination already exists, cannot move {:?} to {:?}",
+            src_path_abs,
+            dest_path_abs
+        );
+    }
 
-    if dest_path_abs.exists() || !src_path_abs.exists() {
-        log::warn!("{src_path_abs:?} cannot be moved to {dest_path_abs:?}");
-        return Err(Box::new(IronCarrierError::InvalidOperation));
+    if !src_path_abs.exists() {
+        anyhow::bail!(
+            "Invalid Operation: source does not exist, cannot move {:?} to {:?}",
+            src_path_abs,
+            dest_path_abs
+        );
     }
 
     if let Some(parent) = dest_path_abs.parent() {
@@ -95,7 +107,7 @@ pub async fn delete_file(
     transaction_log: &TransactionLog,
     file_info: &FileInfo,
     ignored_files_cache: &mut IgnoredFilesCache,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     if let Some(storage_config) = config.storages.get(&file_info.storage) {
         let ignored_files = ignored_files_cache.get(storage_config).await;
         if ignored_files.is_ignored(&file_info.path) {
@@ -106,7 +118,7 @@ pub async fn delete_file(
     let path = file_info.get_absolute_path(config)?;
     if !path.exists() {
         log::warn!("{:?} path does not exist", path);
-        return Err(Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)));
+        anyhow::bail!("File not found");
     } else if path.is_dir() {
         tokio::fs::remove_dir_all(&path).await?;
     } else {
@@ -131,15 +143,17 @@ pub async fn delete_file(
 pub async fn open_file_for_reading(
     config: &Config,
     file_info: &FileInfo,
-) -> crate::Result<tokio::fs::File> {
+) -> anyhow::Result<tokio::fs::File> {
     let file_path = file_info.get_absolute_path(config)?;
-    tokio::fs::File::open(file_path).await.map_err(Box::from)
+    tokio::fs::File::open(file_path)
+        .await
+        .map_err(anyhow::Error::from)
 }
 
 pub async fn open_file_for_writing(
     config: &Config,
     file_info: &FileInfo,
-) -> crate::Result<tokio::fs::File> {
+) -> anyhow::Result<tokio::fs::File> {
     let file_path = file_info.get_absolute_path(config)?;
 
     if let Some(parent) = file_path.parent() {
@@ -155,5 +169,5 @@ pub async fn open_file_for_writing(
         .read(true)
         .open(file_path)
         .await
-        .map_err(Box::from)
+        .map_err(anyhow::Error::from)
 }

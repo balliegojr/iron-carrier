@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use crate::{node_id::NodeId, state_machine::State, storage::FileInfo, SharedState};
+use crate::{
+    node_id::NodeId, state_machine::Result, state_machine::State, storage::FileInfo, SharedState,
+};
 
 mod block_index;
 pub use block_index::BlockIndexPosition;
@@ -24,7 +26,7 @@ pub struct TransferFiles {
 impl State for TransferFiles {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         let leader_id = self.sync_leader_id;
         let wait_complete_from = match leader_id {
             Some(leader_id) => HashSet::from([leader_id]),

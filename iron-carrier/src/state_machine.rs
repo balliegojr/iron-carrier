@@ -1,7 +1,5 @@
 use std::marker::PhantomData;
 
-use thiserror::Error;
-
 use crate::SharedState;
 
 macro_rules! debug {
@@ -13,17 +11,36 @@ macro_rules! debug {
     };
 }
 
-#[derive(Error, Debug)]
+pub type Result<T> = std::result::Result<T, StateMachineError>;
+
+#[derive(Debug)]
 pub enum StateMachineError {
-    #[error("Execution aborted")]
     Abort,
+    Err(anyhow::Error),
+}
+
+impl std::fmt::Display for StateMachineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateMachineError::Abort => write!(f, "Execution aborted"),
+            StateMachineError::Err(err) => err.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for StateMachineError {}
+
+impl From<anyhow::Error> for StateMachineError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::Err(value)
+    }
 }
 
 /// Represent a task or state to be executed
 pub trait State: std::fmt::Debug {
     type Output: std::fmt::Debug;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output>;
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output>;
 }
 
 pub trait StateComposer {
@@ -89,7 +106,7 @@ where
 {
     type Output = U::Output;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output>
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output>
     where
         Self: Sized,
     {
@@ -113,7 +130,7 @@ where
 {
     type Output = U::Output;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output>
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output>
     where
         Self: Sized,
     {
@@ -154,12 +171,10 @@ where
 {
     type Output = U::Output;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         debug!(self.previous, shared_state.config.node_id_hashed);
-        if let Err(err) = self.previous.execute(shared_state).await {
-            if !err.is::<StateMachineError>() {
-                log::error!("{err}");
-            }
+        if let Err(StateMachineError::Err(err)) = self.previous.execute(shared_state).await {
+            log::error!("{err}");
         };
 
         let next = (self.loop_fn)();

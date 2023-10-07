@@ -18,10 +18,7 @@ use tokio::{
 };
 // pub use transfer_blocks::TransferBlocks;
 
-use crate::{
-    network::rpc::GroupCallResponse, node_id::NodeId, storage::FileInfo, IronCarrierError,
-    SharedState,
-};
+use crate::{network::rpc::GroupCallResponse, node_id::NodeId, storage::FileInfo, SharedState};
 
 use super::{
     block_index,
@@ -35,7 +32,7 @@ use super::{
 pub async fn send_files(
     shared_state: &SharedState,
     files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let sending_limit = Arc::new(Semaphore::new(
         shared_state.config.max_parallel_sending.into(),
     ));
@@ -66,7 +63,7 @@ async fn send_file(
     file: FileInfo,
     nodes: HashSet<NodeId>,
     send_limit: Arc<Semaphore>,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     log::trace!("Waiting slot for file transfer");
     let permit = send_limit.acquire_owned().await.unwrap();
     let transfer = Transfer::new(file, permit).unwrap();
@@ -114,7 +111,7 @@ async fn query_transfer_type(
     shared_state: &crate::SharedState,
     transfer: &Transfer,
     nodes: HashSet<NodeId>,
-) -> crate::Result<HashMap<NodeId, TransferType>> {
+) -> anyhow::Result<HashMap<NodeId, TransferType>> {
     log::debug!("Querying transfer type for {:?}", transfer.file.path);
     shared_state
         .rpc
@@ -151,7 +148,7 @@ async fn query_required_blocks(
     transfer: &Transfer,
     file_handle: &mut File,
     mut transfer_types: HashMap<NodeId, TransferType>,
-) -> crate::Result<HashMap<NodeId, BTreeSet<BlockIndexPosition>>> {
+) -> anyhow::Result<HashMap<NodeId, BTreeSet<BlockIndexPosition>>> {
     let full_index = block_index::get_file_block_index(
         file_handle,
         transfer.block_size,
@@ -205,7 +202,7 @@ async fn transfer_blocks(
     transfer: &Transfer,
     file_handle: &mut File,
     nodes_blocks: &mut HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     log::debug!("Sending {:?} blocks to nodes", transfer.file.path);
     let mut block_nodes: BTreeMap<BlockIndexPosition, HashSet<NodeId>> =
         std::collections::BTreeMap::new();
@@ -223,7 +220,7 @@ async fn transfer_blocks(
         let bytes_to_read = transfer.block_size.min(file_size - position);
 
         if file_handle.seek(SeekFrom::Start(position)).await? != position {
-            return Err(IronCarrierError::IOReadingError.into());
+            anyhow::bail!("Failed to file from disk");
         }
 
         file_handle

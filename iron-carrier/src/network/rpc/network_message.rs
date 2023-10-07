@@ -5,8 +5,6 @@ use bytes::{Buf, BytesMut};
 use serde::{de::Deserialize, Serialize};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::IronCarrierError;
-
 const MAX: usize = 8 * 1024 * 1024;
 static MESSAGE_ID: AtomicU16 = AtomicU16::new(1);
 
@@ -22,7 +20,7 @@ pub struct NetworkMessage {
 }
 
 impl NetworkMessage {
-    pub fn try_decode(src: &mut BytesMut) -> crate::Result<Option<Self>> {
+    pub fn try_decode(src: &mut BytesMut) -> anyhow::Result<Option<Self>> {
         if src.len() < 3 {
             return Ok(None);
         }
@@ -39,7 +37,7 @@ impl NetworkMessage {
 
         let length = u16::from_le_bytes(src[11..13].try_into().unwrap()) as usize;
         if length > MAX {
-            return Err(Box::new(IronCarrierError::ParseNetworkMessage));
+            anyhow::bail!("Network message exceeds max allowed size");
         }
 
         if src.len() < 13 + length {
@@ -53,7 +51,7 @@ impl NetworkMessage {
         Ok(Some(Self { content }))
     }
 
-    pub fn encode<T>(data: T) -> crate::Result<Self>
+    pub fn encode<T>(data: T) -> anyhow::Result<Self>
     where
         T: HashTypeId + Serialize,
     {
@@ -85,7 +83,7 @@ impl NetworkMessage {
         Self { content }
     }
 
-    pub fn reply_message<T>(id: u16, data: T) -> crate::Result<Self>
+    pub fn reply_message<T>(id: u16, data: T) -> anyhow::Result<Self>
     where
         T: HashTypeId + Serialize,
     {
@@ -102,20 +100,21 @@ impl NetworkMessage {
         Ok(Self { content })
     }
 
-    pub fn data<'a, T: HashTypeId + Deserialize<'a>>(&'a self) -> crate::Result<T> {
+    pub fn data<'a, T: HashTypeId + Deserialize<'a>>(&'a self) -> anyhow::Result<T> {
         if self.is_ack() || self.type_id() != T::ID {
-            Err(IronCarrierError::InvalidReply)?;
+            anyhow::bail!("Received invalid reply");
         }
 
-        bincode::deserialize(&self.content[13..]).map_err(|_| IronCarrierError::InvalidReply.into())
+        bincode::deserialize(&self.content[13..])
+            .map_err(|err| anyhow::anyhow!("Received invalid reply {err}"))
     }
 
     pub async fn write_into(
         &self,
         writer: &mut (impl AsyncWrite + std::marker::Unpin),
-    ) -> crate::Result<()> {
+    ) -> anyhow::Result<()> {
         writer.write_all(&self.content).await?;
-        writer.flush().await.map_err(Box::from)
+        writer.flush().await.map_err(anyhow::Error::from)
     }
 
     pub fn id(&self) -> u16 {

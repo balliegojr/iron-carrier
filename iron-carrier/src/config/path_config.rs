@@ -23,7 +23,7 @@ impl FromStr for PathConfig {
 }
 
 impl PathConfig {
-    pub fn get_relative_path(&self, path: PathBuf) -> crate::Result<RelativePathBuf> {
+    pub fn get_relative_path(&self, path: PathBuf) -> anyhow::Result<RelativePathBuf> {
         RelativePathBuf::new(self, path)
     }
 }

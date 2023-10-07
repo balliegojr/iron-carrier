@@ -30,7 +30,7 @@ impl MessageWaitingReply {
         &mut self,
         node_id: NodeId,
         reply: super::network_message::NetworkMessage,
-    ) -> crate::Result<()> {
+    ) -> anyhow::Result<()> {
         if reply.is_ping() {
             self.deadline.extend(DEFAULT_NETWORK_TIMEOUT);
         } else if self.nodes.remove(&node_id) {
@@ -48,12 +48,12 @@ impl MessageWaitingReply {
         Ok(())
     }
 
-    pub async fn send_timeout(self) -> crate::Result<()> {
+    pub async fn send_timeout(self) -> anyhow::Result<()> {
         log::trace!("Message {} timed out", self.id);
         self.reply_channel
             .send(ReplyType::Timeout(self.nodes))
             .await
-            .map_err(Box::from)
+            .map_err(anyhow::Error::from)
     }
 
     pub fn received_all_replies(&self) -> bool {

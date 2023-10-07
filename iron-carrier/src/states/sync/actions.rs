@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     ignored_files::IgnoredFilesCache,
     node_id::NodeId,
-    state_machine::State,
+    state_machine::{Result, State},
     states::sync::events::{DeleteFile, MoveFile, SendFileTo},
     storage::{FileInfo, FileInfoType},
     SharedState,
@@ -108,7 +108,7 @@ impl Dispatcher {
 impl State for Dispatcher {
     type Output = Vec<(FileInfo, HashSet<NodeId>)>;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         let actions = self.matched_files_iter.filter_map(|file| {
             get_file_sync_action(shared_state.config.node_id_hashed, &self.nodes, file)
         });
@@ -147,7 +147,7 @@ pub async fn execute_action(
     files_to_send: &mut Vec<(FileInfo, HashSet<NodeId>)>,
     receive_files_from: &mut HashMap<NodeId, HashSet<NodeId>>,
     ignored_files_cache: &mut IgnoredFilesCache,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     match action {
         SyncAction::Delete { file, nodes } => {
             if nodes.contains(&shared_state.config.node_id_hashed) {

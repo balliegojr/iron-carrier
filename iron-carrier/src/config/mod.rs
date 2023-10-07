@@ -1,13 +1,12 @@
 //! Handles configuration
 use std::{
     collections::HashMap,
-    error::Error,
     fs::read_to_string,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
-use crate::{hash_helper, node_id::NodeId, validation::Unvalidated, IronCarrierError};
+use crate::{hash_helper, node_id::NodeId, validation::Unvalidated};
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, PickFirst};
 
@@ -56,6 +55,7 @@ pub struct Config {
     #[serde(default = "defaults::log_path")]
     pub log_path: PathBuf,
 
+    // FIXME: Allow for boolean volues
     pub encryption_key: Option<String>,
 
     #[serde(default = "defaults::max_parallel_transfers")]
@@ -73,7 +73,7 @@ impl Config {
     /// [Ok]`(`[Config]`)` if successful  
     /// [IronCarrierError::ConfigFileNotFound] if the provided path doesn't exists   
     /// [IronCarrierError::ConfigFileIsInvalid] if the provided configuration is not valid   
-    pub fn new(config_path: &Path) -> crate::Result<Unvalidated<Self>> {
+    pub fn new(config_path: &Path) -> anyhow::Result<Unvalidated<Self>> {
         log::debug!("reading config file {:?}", config_path);
 
         read_to_string(config_path)?.parse()
@@ -113,7 +113,7 @@ impl Config {
 impl Unvalidated<Config> {}
 
 impl FromStr for Unvalidated<Config> {
-    type Err = Box<dyn Error + Send + Sync>;
+    type Err = anyhow::Error;
 
     fn from_str(content: &str) -> Result<Self, Self::Err> {
         Ok(toml::from_str::<Config>(content).map(|c| {
@@ -127,17 +127,13 @@ impl FromStr for Unvalidated<Config> {
 }
 
 impl crate::validation::Verifiable for Config {
-    fn is_valid(&self) -> crate::Result<()> {
+    fn is_valid(&self) -> anyhow::Result<()> {
         if 0 == self.port {
-            log::error!("Invalid port number");
-            return Err(IronCarrierError::ConfigFileIsInvalid("invalid port number".into()).into());
+            anyhow::bail!("Invalid config: Invalid port number");
         }
 
         if self.storages.is_empty() {
-            return Err(IronCarrierError::ConfigFileIsInvalid(
-                "At least one storage storage must be provided".into(),
-            )
-            .into());
+            anyhow::bail!("Invalid config: At least one storage must be provided");
         }
 
         for (alias, path) in &self.storages {
@@ -146,34 +142,22 @@ impl crate::validation::Verifiable for Config {
                 std::fs::create_dir_all(&path.path)?;
             }
             if !path.path.is_dir() {
-                log::error!("provided path for alias {} is invalid", alias);
-                return Err(IronCarrierError::ConfigFileIsInvalid(format!(
-                    "invalid path: {alias}",
-                ))
-                .into());
+                anyhow::bail!("Invalid config: provided path for alias {alias} is invalid");
             }
         }
 
         if let Some(group) = &self.group && group.len() > 255 {
-            return Err(
-                IronCarrierError::ConfigFileIsInvalid("Group name is too long".into()).into(),
-            );
+            anyhow::bail!("Invalid config: Group name is too long");
         }
 
         if let Some(schedule_cron) = self.schedule_sync.as_ref() {
             if cron::Schedule::from_str(schedule_cron).is_err() {
-                return Err(IronCarrierError::ConfigFileIsInvalid(
-                    "schedule_sync contains an invalid cron".into(),
-                )
-                .into());
+                anyhow::bail!("Invalid config: schedule_sync contains an invalid cron");
             }
         }
 
         if matches!(self.encryption_key.as_deref(), Some("")) {
-            return Err(IronCarrierError::ConfigFileIsInvalid(
-                "Encryption key must be non empty".into(),
-            )
-            .into());
+            anyhow::bail!("Invalid config: Encryptino key must be non empty");
         }
 
         Ok(())
@@ -212,7 +196,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn can_parse_config() -> crate::Result<()> {
+    fn can_parse_config() -> anyhow::Result<()> {
         let config_content = r#"
         peers = [
             "127.0.0.1:8888"

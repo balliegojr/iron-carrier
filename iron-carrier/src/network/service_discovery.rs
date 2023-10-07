@@ -9,12 +9,12 @@ use tokio::sync::OnceCell;
 
 static SERVICE_DISCOVERY: OnceCell<ServiceDiscovery> = OnceCell::const_new();
 
-pub async fn get_service_discovery(config: &Config) -> crate::Result<Option<&ServiceDiscovery>> {
+pub async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&ServiceDiscovery>> {
     if !config.enable_service_discovery {
         return Ok(None);
     }
 
-    let sd: crate::Result<&ServiceDiscovery> = SERVICE_DISCOVERY
+    let sd: anyhow::Result<&ServiceDiscovery> = SERVICE_DISCOVERY
         .get_or_try_init(|| async {
             let node_id = config.node_id.clone();
             let mut sd = ServiceDiscovery::new(&node_id, "_ironcarrier._tcp.local", 600)?;
@@ -42,7 +42,7 @@ pub async fn get_service_discovery(config: &Config) -> crate::Result<Option<&Ser
     sd.map(Some)
 }
 
-pub fn get_my_ips() -> crate::Result<Vec<IpAddr>> {
+pub fn get_my_ips() -> anyhow::Result<Vec<IpAddr>> {
     let addrs = if_addrs::get_if_addrs()?
         .iter()
         .filter_map(|iface| {

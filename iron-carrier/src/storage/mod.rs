@@ -35,7 +35,7 @@ pub async fn get_storage_info(
     name: &str,
     storage_path_config: &PathConfig,
     transaction_log: &TransactionLog,
-) -> crate::Result<Storage> {
+) -> anyhow::Result<Storage> {
     let ignored_files = crate::ignored_files::IgnoredFiles::new(storage_path_config).await;
     let files = walk_path(transaction_log, name, storage_path_config, &ignored_files).await?;
     let hash = calculate_storage_hash(files.iter());
@@ -55,7 +55,7 @@ pub async fn walk_path(
     storage_name: &str,
     storage_config: &PathConfig,
     ignored_files: &IgnoredFiles,
-) -> crate::Result<Vec<FileInfo>> {
+) -> anyhow::Result<Vec<FileInfo>> {
     let mut paths = vec![storage_config.path.to_owned()];
     let mut files = get_deleted_files(transaction_log, storage_name).await?;
     let mut moved_files = get_moved_files(transaction_log, storage_name).await?;
@@ -144,7 +144,7 @@ pub fn calculate_storage_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) ->
 async fn get_deleted_files(
     transaction_log: &TransactionLog,
     storage: &str,
-) -> crate::Result<HashSet<FileInfo>> {
+) -> anyhow::Result<HashSet<FileInfo>> {
     transaction_log.get_deleted(storage).await.map(|files| {
         files
             .into_iter()
@@ -157,7 +157,7 @@ async fn get_deleted_files(
 async fn get_moved_files(
     transaction_log: &TransactionLog,
     storage: &str,
-) -> crate::Result<HashMap<RelativePathBuf, FileInfo>> {
+) -> anyhow::Result<HashMap<RelativePathBuf, FileInfo>> {
     transaction_log.get_moved(storage).await.map(|files| {
         files
             .into_iter()
@@ -171,7 +171,7 @@ async fn get_moved_files(
     })
 }
 
-pub fn fix_times_and_permissions(file_info: &FileInfo, config: &Config) -> crate::Result<()> {
+pub fn fix_times_and_permissions(file_info: &FileInfo, config: &Config) -> anyhow::Result<()> {
     let file_path = file_info.get_absolute_path(config)?;
     if file_info.permissions > 0 {
         set_file_permissions(&file_path, file_info.permissions)?;
@@ -227,7 +227,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn can_read_local_files() -> crate::Result<()> {
+    async fn can_read_local_files() -> anyhow::Result<()> {
         let config = r#"
 [storages]
 a = "./src/"

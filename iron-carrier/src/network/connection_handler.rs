@@ -7,7 +7,6 @@ use crate::{
     constants::DEFAULT_NETWORK_TIMEOUT,
     network::connection::{self, Connection},
     node_id::NodeId,
-    IronCarrierError,
 };
 
 #[derive(Debug, Clone)]
@@ -20,7 +19,7 @@ impl ConnectionHandler {
     pub async fn new(
         config: &'static Config,
         on_connect: Sender<Connection>,
-    ) -> crate::Result<Self> {
+    ) -> anyhow::Result<Self> {
         let inbound_fut = listen_connections(config, on_connect.clone());
 
         tokio::spawn(async move {
@@ -32,7 +31,7 @@ impl ConnectionHandler {
         Ok(Self { config, on_connect })
     }
 
-    pub async fn connect(&self, addr: SocketAddr) -> crate::Result<NodeId> {
+    pub async fn connect(&self, addr: SocketAddr) -> anyhow::Result<NodeId> {
         let connect_and_identify = async {
             let backoff = backoff::ExponentialBackoffBuilder::new()
                 .with_max_elapsed_time(Some(Duration::from_secs(3)))
@@ -53,7 +52,7 @@ impl ConnectionHandler {
             connect_and_identify,
         )
         .await
-        .map_err(|_| IronCarrierError::ConnectionTimeout)??;
+        .map_err(|_| anyhow::anyhow!("Timeout when connecting to node"))??;
 
         let node_id = connection.node_id();
         if let Err(err) = self.on_connect.send(connection).await {
@@ -67,7 +66,7 @@ impl ConnectionHandler {
 async fn listen_connections(
     config: &'static Config,
     on_connect: Sender<Connection>,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     log::debug!("Listening on {}", config.port);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
 
@@ -79,8 +78,12 @@ async fn listen_connections(
         .await
         {
             Ok(Ok(connection)) => connection,
-            _ => {
-                log::error!("{}", IronCarrierError::ConnectionTimeout);
+            Ok(Err(err)) => {
+                log::error!("{err}");
+                continue;
+            }
+            Err(_) => {
+                log::error!("Timeout when connecting to node");
                 continue;
             }
         };

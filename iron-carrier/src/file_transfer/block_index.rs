@@ -40,7 +40,7 @@ pub async fn get_file_block_index<T: AsyncRead + Unpin>(
     block_size: u64,
     target_file_size: u64,
     local_file_size: u64,
-) -> crate::Result<FullIndex> {
+) -> anyhow::Result<FullIndex> {
     if target_file_size == 0 {
         return Ok(Default::default());
     }

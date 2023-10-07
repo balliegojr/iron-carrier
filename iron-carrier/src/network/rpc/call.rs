@@ -4,7 +4,7 @@ use crate::hash_type_id::HashTypeId;
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
-use crate::{node_id::NodeId, IronCarrierError};
+use crate::node_id::NodeId;
 
 use super::{
     message_waiting_reply::ReplyType, network_message::NetworkMessage, rpc_reply::RPCReply,
@@ -36,15 +36,15 @@ where
         }
     }
 
-    pub async fn ack(self) -> crate::Result<()> {
+    pub async fn ack(self) -> anyhow::Result<()> {
         if self.wait_reply().await?.is_ack() {
             Ok(())
         } else {
-            Err(IronCarrierError::InvalidReply.into())
+            anyhow::bail!("Received invalid reply");
         }
     }
 
-    async fn wait_reply(self) -> crate::Result<RPCReply> {
+    async fn wait_reply(self) -> anyhow::Result<RPCReply> {
         let message = NetworkMessage::encode(self.data)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         self.sender
@@ -58,6 +58,6 @@ where
             return Ok(reply);
         }
 
-        Err(IronCarrierError::ReplyTimeOut.into())
+        anyhow::bail!("Timeout when waiting for replies")
     }
 }

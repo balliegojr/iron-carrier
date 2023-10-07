@@ -14,7 +14,7 @@ pub struct RelativePathBuf {
 }
 
 impl RelativePathBuf {
-    pub fn new(path_config: &PathConfig, mut path: PathBuf) -> crate::Result<Self> {
+    pub fn new(path_config: &PathConfig, mut path: PathBuf) -> anyhow::Result<Self> {
         if !path.has_root() {
             path = path.canonicalize()?;
         }
@@ -23,16 +23,16 @@ impl RelativePathBuf {
             .map(|inner| Self {
                 inner: inner.to_path_buf(),
             })
-            .map_err(Box::from)
+            .map_err(anyhow::Error::from)
     }
 
     /// Returns the absolute for the given [PathConfig]
-    pub fn absolute(&self, path_config: &PathConfig) -> crate::Result<PathBuf> {
+    pub fn absolute(&self, path_config: &PathConfig) -> anyhow::Result<PathBuf> {
         path_config
             .path
             .canonicalize()
             .map(|root_path| root_path.join(&self.inner))
-            .map_err(Box::from)
+            .map_err(anyhow::Error::from)
     }
 }
 

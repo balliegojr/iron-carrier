@@ -4,7 +4,7 @@ use crate::{
     config::PathConfig,
     node_id::NodeId,
     relative_path::RelativePathBuf,
-    state_machine::{State, StateMachineError},
+    state_machine::{Result, State, StateMachineError},
     storage::{self, FileInfo, Storage},
     SharedState,
 };
@@ -28,7 +28,7 @@ impl FilesMatcher {
         &self,
         shared_state: &SharedState,
         storage: &Storage,
-    ) -> crate::Result<HashMap<NodeId, Vec<FileInfo>>> {
+    ) -> Result<HashMap<NodeId, Vec<FileInfo>>> {
         let peer_storages = shared_state
             .rpc
             .broadcast(QueryStorageIndex {
@@ -65,7 +65,7 @@ impl FilesMatcher {
 impl State for FilesMatcher {
     type Output = (Vec<NodeId>, MatchedFilesIter);
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         let storage = storage::get_storage_info(
             self.storage_name,
             self.storage_config,

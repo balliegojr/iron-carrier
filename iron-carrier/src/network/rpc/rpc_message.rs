@@ -30,10 +30,10 @@ impl RPCMessage {
     pub fn type_id(&self) -> TypeId {
         self.inner.type_id()
     }
-    pub fn data<'a, T: HashTypeId + Deserialize<'a>>(&'a self) -> crate::Result<T> {
+    pub fn data<'a, T: HashTypeId + Deserialize<'a>>(&'a self) -> anyhow::Result<T> {
         self.inner.data()
     }
-    pub async fn ack(self) -> crate::Result<()> {
+    pub async fn ack(self) -> anyhow::Result<()> {
         let reply = NetworkMessage::ack_message(self.inner.id());
 
         self.reply_sender
@@ -43,7 +43,7 @@ impl RPCMessage {
         Ok(())
     }
 
-    pub async fn ping(&self) -> crate::Result<()> {
+    pub async fn ping(&self) -> anyhow::Result<()> {
         let ping_message = NetworkMessage::ping_message(self.inner.id());
         self.reply_sender
             .send((ping_message, OutputMessageType::Response(self.node_id)))
@@ -52,7 +52,7 @@ impl RPCMessage {
         Ok(())
     }
 
-    pub async fn reply<U: HashTypeId + Serialize>(self, message: U) -> crate::Result<()> {
+    pub async fn reply<U: HashTypeId + Serialize>(self, message: U) -> anyhow::Result<()> {
         let reply = NetworkMessage::reply_message(self.inner.id(), message)?;
         self.reply_sender
             .send((reply, OutputMessageType::Response(self.node_id)))
