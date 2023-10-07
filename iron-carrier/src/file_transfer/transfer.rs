@@ -13,7 +13,7 @@ pub struct Transfer {
 }
 
 impl Transfer {
-    pub fn new(file: FileInfo, permit: OwnedSemaphorePermit) -> crate::Result<Self> {
+    pub fn new(file: FileInfo, permit: OwnedSemaphorePermit) -> anyhow::Result<Self> {
         let transfer_id = Self::transfer_id(&file);
         Self::new_with_transfer_id(file, permit, transfer_id)
     }
@@ -22,7 +22,7 @@ impl Transfer {
         file: FileInfo,
         permit: OwnedSemaphorePermit,
         transfer_id: TransferId,
-    ) -> crate::Result<Self> {
+    ) -> anyhow::Result<Self> {
         let block_size = super::block_index::get_block_size(file.file_size()?);
 
         Ok(Self {

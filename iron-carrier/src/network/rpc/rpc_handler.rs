@@ -52,7 +52,7 @@ impl RPCHandler {
         GroupCall::new(data, self.network_output.clone(), None)
     }
 
-    pub async fn subscribe_many(&self, types: Vec<TypeId>) -> crate::Result<Subscriber> {
+    pub async fn subscribe_many(&self, types: Vec<TypeId>) -> anyhow::Result<Subscriber> {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         self.consumers.send((types.clone(), tx)).await?;
         Ok(Subscriber::new(types, rx, self.remove_consumers.clone()))

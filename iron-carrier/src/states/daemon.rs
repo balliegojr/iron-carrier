@@ -6,7 +6,7 @@ use crate::{
     config::Config,
     hash_type_id::HashTypeId,
     node_id::NodeId,
-    state_machine::{State, StateComposer, StateMachineError},
+    state_machine::{Result, State, StateComposer, StateMachineError},
     stream,
     sync_options::SyncOptions,
     SharedState,
@@ -23,7 +23,7 @@ pub struct Daemon {}
 impl State for Daemon {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         loop {
             let event = wait_event(shared_state).await?;
             if let Err(err) = execute_event(shared_state, event).await {
@@ -33,7 +33,7 @@ impl State for Daemon {
     }
 }
 
-async fn wait_event(shared_state: &SharedState) -> crate::Result<DaemonEvent> {
+async fn wait_event(shared_state: &SharedState) -> Result<DaemonEvent> {
     let _service_discovery =
         crate::network::service_discovery::get_service_discovery(shared_state.config).await?;
 
@@ -93,7 +93,7 @@ enum DaemonEvent {
     BecomeFollower(NodeId),
 }
 
-async fn execute_event(shared_state: &SharedState, event: DaemonEvent) -> crate::Result<()> {
+async fn execute_event(shared_state: &SharedState, event: DaemonEvent) -> Result<()> {
     match event {
         DaemonEvent::SyncWithConsensus => {
             DiscoverPeers::default()
@@ -128,7 +128,7 @@ struct BypassConsensus;
 impl State for BypassConsensus {
     type Output = NodeId;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         shared_state.rpc.broadcast(ConsensusReached).ack().await?;
         Ok(shared_state.config.node_id_hashed)
     }

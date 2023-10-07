@@ -1,7 +1,5 @@
 use std::str::FromStr;
 
-use super::TransactionLogError;
-
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum EntryType {
     Delete,
@@ -22,7 +20,7 @@ impl std::fmt::Display for EntryType {
 }
 
 impl FromStr for EntryType {
-    type Err = TransactionLogError;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         use EntryType::*;
@@ -31,7 +29,7 @@ impl FromStr for EntryType {
             "delete" => Ok(Delete),
             "write" => Ok(Write),
             "move" => Ok(Move),
-            _ => Err(TransactionLogError::InvalidStringFormat),
+            value => anyhow::bail!("Invalid EntryType {value}"),
         }
     }
 }

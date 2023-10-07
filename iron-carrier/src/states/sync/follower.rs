@@ -8,7 +8,7 @@ use crate::{
     ignored_files::IgnoredFilesCache,
     network::rpc::RPCMessage,
     node_id::NodeId,
-    state_machine::State,
+    state_machine::{Result, State},
     states::sync::events::SyncCompleted,
     storage::FileInfo,
     SharedState, StateMachineError,
@@ -38,7 +38,7 @@ impl Follower {
 impl State for Follower {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         log::debug!("start sync as follower");
 
         let mut ignored_files_cache = IgnoredFilesCache::default();
@@ -118,7 +118,7 @@ impl State for Follower {
 async fn process_query_index_request(
     shared_state: &SharedState,
     request: RPCMessage,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let query: QueryStorageIndex = request.data()?;
     let storage_index = match shared_state.config.storages.get(&query.name) {
         Some(storage_config) => {
@@ -157,7 +157,7 @@ async fn process_delete_file_request(
     shared_state: &SharedState,
     ignored_files_cache: &mut IgnoredFilesCache,
     request: RPCMessage,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let op: DeleteFile = request.data()?;
     crate::storage::file_operations::delete_file(
         shared_state.config,
@@ -173,7 +173,7 @@ async fn process_move_file_request(
     shared_state: &SharedState,
     ignored_files_cache: &mut IgnoredFilesCache,
     request: RPCMessage,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let op: MoveFile = request.data()?;
     crate::storage::file_operations::move_file(
         shared_state.config,
@@ -189,7 +189,7 @@ async fn process_move_file_request(
 async fn process_send_file_to_request(
     files_to_send: &mut Vec<(FileInfo, HashSet<NodeId>)>,
     request: RPCMessage,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let op: SendFileTo = request.data()?;
     files_to_send.push((op.file, op.nodes));
 

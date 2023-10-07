@@ -10,7 +10,7 @@ use tokio::{
 };
 use tokio_stream::StreamExt;
 
-use crate::{node_id::NodeId, IronCarrierError};
+use crate::node_id::NodeId;
 
 use self::message_waiting_reply::ReplyType;
 
@@ -248,18 +248,17 @@ async fn send_output_message(
         message: &NetworkMessage,
         node_id: NodeId,
         connections: &mut ConnectionStorage,
-    ) -> crate::Result<()> {
+    ) -> anyhow::Result<()> {
         let write_result = match connections.get_mut(&node_id) {
             Some(connection) => message.write_into(connection).await,
             None => {
-                log::error!("Not connected to node {node_id}");
-                return Err(IronCarrierError::UnknownNode(node_id).into());
+                anyhow::bail!("Not connected to node {node_id}");
             }
         };
 
         if let Err(err) = write_result {
-            log::error!("Failed to write to connection {err}");
             connections.remove(&node_id);
+            anyhow::bail!("Failed to write to connection {err}");
         }
 
         Ok(())
@@ -269,11 +268,13 @@ async fn send_output_message(
     match send_type {
         OutputMessageType::Response(node_id) => {
             if let Err(err) = send_to(&message, node_id, connections).await {
-                log::error!("Failed to send reply {err}");
+                log::error!("{err}");
             }
         }
         OutputMessageType::SingleNode(node_id, callback, timeout) => {
-            if send_to(&message, node_id, connections).await.is_ok() {
+            if let Err(err) = send_to(&message, node_id, connections).await {
+                log::error!("{err}");
+            } else {
                 sent_requests.insert(
                     message.id(),
                     MessageWaitingReply::new(message.id(), [node_id].into(), callback, timeout),
@@ -281,13 +282,14 @@ async fn send_output_message(
             }
         }
         OutputMessageType::MultiNode(nodes, callback, timeout) => {
-            log::warn!("Sending message {} to {:?}", message.id(), nodes);
             // FIXME: nodes that are offline should already go in the "failed" list in the
             // MessageWaitingReply. Or they should be in a "waiting to send" list, since they were
             // online
             let mut nodes_sent = HashSet::new();
             for node_id in nodes {
-                if send_to(&message, node_id, connections).await.is_ok() {
+                if let Err(err) = send_to(&message, node_id, connections).await {
+                    log::error!("{err}");
+                } else {
                     nodes_sent.insert(node_id);
                 }
             }
@@ -300,12 +302,12 @@ async fn send_output_message(
         OutputMessageType::Broadcast(callback, timeout) => {
             let mut nodes = HashSet::new();
             for node_id in connections.connected_nodes().collect::<Vec<_>>() {
-                if send_to(&message, node_id, connections).await.is_ok() {
+                if let Err(err) = send_to(&message, node_id, connections).await {
+                    log::error!("{err}");
+                } else {
                     nodes.insert(node_id);
                 }
             }
-
-            log::warn!("Sending message {} to {:?}", message.id(), nodes);
 
             sent_requests.insert(
                 message.id(),

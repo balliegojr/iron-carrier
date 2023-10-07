@@ -15,7 +15,7 @@ use pbkdf2::pbkdf2_hmac_array;
 use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
-use crate::{config::Config, constants::VERSION, hash_helper, node_id::NodeId, IronCarrierError};
+use crate::{config::Config, constants::VERSION, hash_helper, node_id::NodeId};
 
 mod read_half;
 pub use read_half::ReadHalf;
@@ -99,7 +99,7 @@ impl std::fmt::Debug for Connection {
 pub async fn handshake_and_identify_connection(
     config: &'static Config,
     stream: tokio::net::TcpStream,
-) -> crate::Result<Connection> {
+) -> anyhow::Result<Connection> {
     let (read, write) = stream.into_split();
     let (mut read, mut write): (
         Pin<Box<dyn AsyncRead + Send>>,
@@ -132,11 +132,11 @@ pub async fn handshake_and_identify_connection(
     read.read_exact(&mut buf).await?;
 
     if version.ne(&buf[..8]) {
-        return Err(Box::new(IronCarrierError::VersionMismatch));
+        anyhow::bail!("Version mismatch");
     }
 
     if group.ne(&buf[8..16]) {
-        return Err(Box::new(IronCarrierError::GroupMismatch));
+        anyhow::bail!("Version mismatch");
     }
 
     let node_id = NodeId::from(u64::from_be_bytes(buf[16..].try_into()?));
@@ -159,7 +159,7 @@ async fn get_encrypted_connection<R, W>(
     mut read: R,
     mut write: W,
     pre_defined_key: Option<&str>,
-) -> crate::Result<(
+) -> anyhow::Result<(
     Pin<Box<dyn AsyncRead + Send>>,
     Pin<Box<dyn AsyncWrite + Send + Sync>>,
 )>
@@ -173,7 +173,7 @@ where
     let public_key = PublicKey::from(&secret_key);
 
     if write.write(public_key.as_bytes()).await? != 32 {
-        return Err(IronCarrierError::ConnectionTimeout.into());
+        anyhow::bail!("Connection handshake failed");
     }
 
     let mut peer_public_key = [0u8; 32];

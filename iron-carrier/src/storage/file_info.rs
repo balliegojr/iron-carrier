@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use std::{cmp::Ord, hash::Hash, path::PathBuf};
 
-use crate::{config::Config, relative_path::RelativePathBuf, IronCarrierError};
+use crate::{config::Config, relative_path::RelativePathBuf};
 
 use super::{get_permissions, system_time_to_secs};
 
@@ -112,25 +112,24 @@ impl FileInfo {
     }
 
     /// Return the file size if the file type is existent
-    pub fn file_size(&self) -> crate::Result<u64> {
+    pub fn file_size(&self) -> anyhow::Result<u64> {
         if let FileInfoType::Existent { size, .. } = self.info_type {
             Ok(size)
         } else {
-            Err(Box::new(IronCarrierError::InvalidOperation))
+            anyhow::bail!("Invalid operation: File size is only available for existing files");
         }
     }
 
     /// Returns the absolute path of the file for this file system  
     /// Using the provided root path for the alias in [Config]
-    pub fn get_absolute_path(&self, config: &Config) -> crate::Result<PathBuf> {
+    pub fn get_absolute_path(&self, config: &Config) -> anyhow::Result<PathBuf> {
         match config.storages.get(&self.storage) {
             Some(path) => self.path.absolute(path),
             None => {
-                log::error!(
+                anyhow::bail!(
                     "provided storage does not exist in this node: {}",
                     self.storage
                 );
-                Err(IronCarrierError::StorageNotAvailable(self.storage.to_owned()).into())
             }
         }
     }
@@ -160,7 +159,7 @@ impl FileInfo {
         self_date.cmp(&other_date)
     }
 
-    pub fn get_local_file_info(&self, config: &Config) -> crate::Result<Self> {
+    pub fn get_local_file_info(&self, config: &Config) -> anyhow::Result<Self> {
         let metadata = self.get_absolute_path(config)?.metadata()?;
 
         let modified_at = metadata.modified().map(system_time_to_secs)?;

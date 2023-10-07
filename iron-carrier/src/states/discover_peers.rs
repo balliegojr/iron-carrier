@@ -5,7 +5,11 @@ use std::{
     time::Duration,
 };
 
-use crate::{node_id::NodeId, state_machine::State, SharedState};
+use crate::{
+    node_id::NodeId,
+    state_machine::{Result, State},
+    SharedState,
+};
 
 #[derive(Default, Debug)]
 pub struct DiscoverPeers {}
@@ -19,7 +23,7 @@ impl Display for DiscoverPeers {
 impl State for DiscoverPeers {
     type Output = HashMap<SocketAddr, Option<NodeId>>;
 
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         let backoff = backoff::ExponentialBackoffBuilder::new()
             .with_max_elapsed_time(Some(Duration::from_secs(30)))
             .build();

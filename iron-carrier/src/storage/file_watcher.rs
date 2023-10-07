@@ -30,7 +30,6 @@ use crate::{
     ignored_files::{IgnoredFiles, IgnoredFilesCache},
     relative_path::RelativePathBuf,
     transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog},
-    IronCarrierError,
 };
 
 /// Creates and return a file watcher that watch for file changes in all the storages that have the
@@ -39,7 +38,7 @@ pub fn get_file_watcher(
     config: &'static Config,
     transaction_log: TransactionLog,
     output: tokio::sync::mpsc::Sender<String>,
-) -> crate::Result<Option<RecommendedWatcher>> {
+) -> anyhow::Result<Option<RecommendedWatcher>> {
     let mut storages: HashMap<PathBuf, String> = Default::default();
     for (storage, storage_config) in config
         .storages
@@ -105,12 +104,12 @@ async fn register_event(
     transaction_log: &TransactionLog,
     event: Event,
     ignored_files_cache: &mut IgnoredFilesCache,
-) -> crate::Result<Option<String>> {
+) -> anyhow::Result<Option<String>> {
     let storage = event
         .paths
         .get(0)
         .and_then(|p| get_storage_for_path(storages, p))
-        .ok_or(IronCarrierError::InvalidOperation)?;
+        .ok_or_else(|| anyhow::anyhow!("Storage not found for path"))?;
 
     let storage_config = config.storages.get(&storage).unwrap();
     let ignored_files = ignored_files_cache.get(storage_config).await;
@@ -247,7 +246,7 @@ fn list_files_moved_pair(
     storage: &PathConfig,
     dst_path: PathBuf,
     src_path: PathBuf,
-) -> crate::Result<Vec<MovedFilePair>> {
+) -> anyhow::Result<Vec<MovedFilePair>> {
     if dst_path.is_file() {
         return Ok(vec![MovedFilePair {
             from: RelativePathBuf::new(storage, src_path)?,

@@ -1,7 +1,5 @@
 use std::str::FromStr;
 
-use super::TransactionLogError;
-
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum EntryStatus {
     Pending,
@@ -20,14 +18,14 @@ impl std::fmt::Display for EntryStatus {
 }
 
 impl FromStr for EntryStatus {
-    type Err = TransactionLogError;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "pending" => Ok(EntryStatus::Pending),
             "done" => Ok(EntryStatus::Done),
             "fail" => Ok(EntryStatus::Fail),
-            _ => Err(TransactionLogError::InvalidStringFormat),
+            value => anyhow::bail!("Invalid EntryStatus {value}"),
         }
     }
 }

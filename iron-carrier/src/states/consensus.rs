@@ -15,7 +15,7 @@ use crate::{
     constants::MAX_ELECTION_TERMS,
     hash_type_id::HashTypeId,
     node_id::NodeId,
-    state_machine::{State, StateMachineError},
+    state_machine::{Result, State, StateMachineError},
     SharedState,
 };
 
@@ -51,7 +51,7 @@ impl Display for Consensus {
 
 impl State for Consensus {
     type Output = NodeId;
-    async fn execute(mut self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(mut self, shared_state: &SharedState) -> Result<Self::Output> {
         // This election process repeats until a candidate becomes the leader
         //
         // After a timeout of 100-250ms, if the node is a candidate, it advances the current term
@@ -88,7 +88,7 @@ impl State for Consensus {
         let mut waiting_result = false;
         let mut replies_fut: std::pin::Pin<
             Box<
-                dyn futures::Future<Output = crate::Result<crate::network::rpc::GroupCallResponse>>
+                dyn futures::Future<Output = anyhow::Result<crate::network::rpc::GroupCallResponse>>
                     + Send,
             >,
         > = std::future::pending().boxed();
@@ -116,7 +116,6 @@ impl State for Consensus {
                 }
 
                 response = &mut replies_fut, if waiting_result && self.election_state == NodeState::Candidate => {
-                    log::warn!("consensus got reply");
                     match response {
                         Ok(response) => {
                             let replies = response.replies();
@@ -147,7 +146,6 @@ impl State for Consensus {
 
                 request = events.next() => {
                     let request = request.ok_or(StateMachineError::Abort)?;
-                    log::warn!("Consensus message from {}", request.node_id());
                     match request.type_id() {
                         RequestVote::ID => {
                             let data = request.data::<RequestVote>()?;

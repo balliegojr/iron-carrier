@@ -3,7 +3,7 @@ use std::fmt::Display;
 use crate::{
     file_transfer::TransferFiles,
     // file_transfer::TransferFiles,
-    state_machine::{State, StateComposer},
+    state_machine::{Result, State, StateComposer},
     states::sync::{actions::Dispatcher, events::SyncCompleted, files_matcher::FilesMatcher},
     sync_options::SyncOptions,
     SharedState,
@@ -33,7 +33,7 @@ impl Display for Leader {
 
 impl State for Leader {
     type Output = ();
-    async fn execute(self, shared_state: &SharedState) -> crate::Result<Self::Output> {
+    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
         log::debug!("start sync as leader");
         for (storage_name, storage_config) in shared_state
             .config
@@ -47,10 +47,8 @@ impl State for Leader {
                 .execute(shared_state)
                 .await;
 
-            if let Err(err) = sync_result {
-                if !err.is::<StateMachineError>() {
-                    log::error!("{err}");
-                }
+            if let Err(StateMachineError::Err(err)) = sync_result {
+                log::error!("{err}");
             }
         }
 

@@ -15,7 +15,7 @@ use tokio_stream::StreamExt;
 use crate::{
     config::Config, constants::DEFAULT_NETWORK_TIMEOUT, hash_helper, hash_type_id::HashTypeId,
     ignored_files::IgnoredFilesCache, network::rpc::RPCMessage, node_id::NodeId, storage::FileInfo,
-    SharedState, StateMachineError,
+    SharedState,
 };
 
 use super::{
@@ -30,7 +30,7 @@ use super::{
 pub async fn receive_files(
     shared_state: SharedState,
     mut wait_complete_signal_from: HashSet<NodeId>,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let mut ignored_files_cache = IgnoredFilesCache::default();
     let mut current_transfers: HashMap<TransferId, ActiveTransfer> = Default::default();
 
@@ -54,7 +54,7 @@ pub async fn receive_files(
     while !wait_complete_signal_from.is_empty() || !current_transfers.is_empty() {
         tokio::select! {
             request = events.next() => {
-                let request = request.ok_or(StateMachineError::Abort)?;
+                let Some(request) = request else { break; };
                 match request.type_id() {
                     QueryTransferType::ID => {
                         if let Err(err) = process_query_transfer_type(
@@ -112,7 +112,7 @@ async fn process_query_transfer_type(
     add_current_transfer: &Sender<ActiveTransfer>,
     transfers_semaphore: Arc<Semaphore>,
     request: RPCMessage,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let data = request.data::<QueryTransferType>()?;
     let transfer_type = get_transfer_type(&data.file, config, ignored_files_cache).await?;
 
@@ -161,7 +161,7 @@ async fn process_query_transfer_type(
 async fn acquire_permit(
     transfers_semaphore: Arc<Semaphore>,
     request: &RPCMessage,
-) -> crate::Result<OwnedSemaphorePermit> {
+) -> anyhow::Result<OwnedSemaphorePermit> {
     let (permit_tx, mut permit_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let permit = transfers_semaphore.acquire_owned().await;
@@ -189,7 +189,7 @@ async fn get_transfer_type(
     remote_file: &FileInfo,
     config: &'static Config,
     ignored_files_cache: &mut IgnoredFilesCache,
-) -> crate::Result<TransferType> {
+) -> anyhow::Result<TransferType> {
     if let Some(storage_config) = config.storages.get(&remote_file.storage) {
         if ignored_files_cache
             .get(storage_config)
@@ -218,7 +218,7 @@ async fn get_transfer_type(
 async fn process_query_required_blocks(
     current_transfers: &mut HashMap<TransferId, ActiveTransfer>,
     request: RPCMessage,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let data = request.data::<QueryRequiredBlocks>()?;
 
     match current_transfers.get_mut(&data.transfer_id) {
@@ -250,7 +250,7 @@ async fn process_query_required_blocks(
 
 fn calculate_expected_blocks_for_full_file(
     transfer: &Transfer,
-) -> crate::Result<BTreeSet<BlockIndexPosition>> {
+) -> anyhow::Result<BTreeSet<BlockIndexPosition>> {
     let file_size = transfer.file.file_size()?;
     let block_size = transfer.block_size;
     let expected_blocks = (file_size / block_size) + 1;
@@ -258,7 +258,7 @@ fn calculate_expected_blocks_for_full_file(
     Ok((0..expected_blocks).map(Into::into).collect())
 }
 
-async fn adjust_file_size(transfer: &Transfer, file_handle: &File) -> crate::Result<()> {
+async fn adjust_file_size(transfer: &Transfer, file_handle: &File) -> anyhow::Result<()> {
     let file_size = transfer.file.file_size()?;
     if file_size != file_handle.metadata().await?.len() {
         file_handle.set_len(file_size).await?;
@@ -271,7 +271,7 @@ async fn adjust_file_size(transfer: &Transfer, file_handle: &File) -> crate::Res
 async fn process_transfer_block(
     current_transfers: &mut HashMap<TransferId, ActiveTransfer>,
     request: RPCMessage,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let data = request.data::<TransferBlock>()?;
     match current_transfers.get_mut(&data.transfer_id) {
         Some(active_transfer) => {
@@ -304,7 +304,7 @@ async fn process_transfer_complete(
     config: &'static Config,
     current_transfers: &mut HashMap<TransferId, ActiveTransfer>,
     request: RPCMessage,
-) -> crate::Result<()> {
+) -> anyhow::Result<()> {
     let data = request.data::<TransferComplete>()?;
     match current_transfers.entry(data.transfer_id) {
         std::collections::hash_map::Entry::Occupied(mut entry) => {
