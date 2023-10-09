@@ -54,10 +54,10 @@ where
             ))
             .await?;
 
-        if let Some(ReplyType::Message(reply)) = rx.recv().await {
-            return Ok(reply);
+        match rx.recv().await {
+            Some(ReplyType::Message(reply)) => Ok(reply),
+            Some(ReplyType::Cancel(_)) => anyhow::bail!("Node canceled request"),
+            _ => anyhow::bail!("Timeout when waiting for replies"),
         }
-
-        anyhow::bail!("Timeout when waiting for replies")
     }
 }
