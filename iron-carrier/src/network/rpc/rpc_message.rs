@@ -51,6 +51,14 @@ impl RPCMessage {
 
         Ok(())
     }
+    pub async fn cancel(self) -> anyhow::Result<()> {
+        let cancel_message = NetworkMessage::cancel_message(self.inner.id());
+        self.reply_sender
+            .send((cancel_message, OutputMessageType::Response(self.node_id)))
+            .await?;
+
+        Ok(())
+    }
 
     pub async fn reply<U: HashTypeId + Serialize>(self, message: U) -> anyhow::Result<()> {
         let reply = NetworkMessage::reply_message(self.inner.id(), message)?;

@@ -35,9 +35,13 @@ impl MessageWaitingReply {
             self.deadline.extend(DEFAULT_NETWORK_TIMEOUT);
         } else if self.nodes.remove(&node_id) {
             log::trace!("Message {} received reply from {node_id}", self.id);
-            self.reply_channel
-                .send(ReplyType::Message(RPCReply::new(reply, node_id)))
-                .await?;
+            if reply.is_cancel() {
+                self.reply_channel.send(ReplyType::Cancel(node_id)).await?;
+            } else {
+                self.reply_channel
+                    .send(ReplyType::Message(RPCReply::new(reply, node_id)))
+                    .await?;
+            }
         } else {
             log::error!(
                 "Message {} received reply from unexpected node {node_id}",
@@ -68,5 +72,6 @@ impl MessageWaitingReply {
 #[derive(Debug)]
 pub enum ReplyType {
     Message(RPCReply),
+    Cancel(NodeId),
     Timeout(HashSet<NodeId>),
 }

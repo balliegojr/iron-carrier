@@ -84,7 +84,18 @@ async fn rpc_loop(
             && connections.is_empty());
 
         tokio::select! {
-             request = net_in_rx.recv() => {
+            biased;
+            request = new_connection.recv() =>  {
+                let Some(connection) = request else {
+                    break;
+                };
+
+                // TODO: send unsent messages to this node
+                if let Some(read) = connections.insert(connection) {
+                    tokio::spawn(read_network_data(read, net_in_tx.clone()));
+                }
+            }
+            request = net_in_rx.recv() => {
                 let Some((node_id, message)) = request else {
                     break;
                 };
@@ -100,17 +111,6 @@ async fn rpc_loop(
                         &net_out_sender,
                     )
                     .await;
-                }
-            }
-
-            request = new_connection.recv() =>  {
-                let Some(connection) = request else {
-                    break;
-                };
-
-                // TODO: send unsent messages to this node
-                if let Some(read) = connections.insert(connection) {
-                    tokio::spawn(read_network_data(read, net_in_tx.clone()));
                 }
             }
 
@@ -435,12 +435,20 @@ mod tests {
             let _ = new_connection_tx.send(connection).await;
         }
 
-        assert!(rpc.multi_call(Ack, [0.into()].into()).ack().await.is_ok());
-        assert!(rpc
-            .multi_call(Ack, [0.into(), 1.into()].into())
-            .ack()
-            .await
-            .is_err());
+        assert_eq!(
+            rpc.multi_call(Ack, [0.into()].into())
+                .ack()
+                .await
+                .expect("Should not error"),
+            HashSet::from([NodeId::from(0)])
+        );
+        assert_eq!(
+            rpc.multi_call(Ack, [0.into(), 1.into()].into())
+                .ack()
+                .await
+                .expect("Should not error"),
+            HashSet::from([NodeId::from(0)])
+        );
 
         assert_eq!(
             rpc.multi_call(Reply, [0.into()].into())
@@ -498,7 +506,11 @@ mod tests {
             let _ = new_connection_tx.send(connection).await;
         }
 
-        assert!(rpc.broadcast(Ack).ack().await.is_err());
+        assert_eq!(
+            rpc.broadcast(Ack).ack().await.expect("Should not error"),
+            HashSet::from([NodeId::from(0)])
+        );
+
         match rpc
             .broadcast(Reply)
             .result()

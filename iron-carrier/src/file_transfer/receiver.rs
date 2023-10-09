@@ -240,10 +240,8 @@ async fn process_query_required_blocks(
             request.reply(RequiredBlocks { required_blocks }).await
         }
         None => {
-            // FIXME: cancel request or send error message
-            log::error!("Received request for invalid transfer");
-            // FIXME: return proper error
-            Ok(())
+            let _ = request.cancel().await;
+            anyhow::bail!("Received request for invalid transfer");
         }
     }
 }
@@ -292,10 +290,8 @@ async fn process_transfer_block(
             request.ack().await
         }
         None => {
-            // FIXME: cancel request or send error message
-            log::error!("Received request for invalid transfer");
-            // FIXME: return proper error
-            Ok(())
+            let _ = request.cancel().await;
+            anyhow::bail!("Received request for invalid transfer");
         }
     }
 }
@@ -324,10 +320,8 @@ async fn process_transfer_complete(
             }
         }
         std::collections::hash_map::Entry::Vacant(_) => {
-            // FIXME: cancel request or send error message
-            log::error!("Received request for invalid transfer");
-            // FIXME: return proper error
-            Ok(())
+            let _ = request.cancel().await;
+            anyhow::bail!("Received request for invalid transfer");
         }
     }
 }

@@ -12,6 +12,7 @@ mod flags {
     pub const REPLY: u8 = 0b0000_0001;
     pub const ACK: u8 = 0b0000_0010;
     pub const PING: u8 = 0b000_0100;
+    pub const CANCEL: u8 = 0b000_1000;
 }
 
 #[derive(Debug)]
@@ -25,7 +26,7 @@ impl NetworkMessage {
             return Ok(None);
         }
 
-        if src[2] & flags::ACK == flags::ACK || src[2] & flags::PING == flags::PING {
+        if src[2] > flags::REPLY {
             let content = src[0..3].to_vec();
             src.advance(content.len());
             return Ok(Some(Self { content }));
@@ -79,6 +80,13 @@ impl NetworkMessage {
     pub fn ping_message(id: u16) -> Self {
         let id = id.to_le_bytes();
         let content = vec![id[0], id[1], flags::REPLY | flags::PING];
+
+        Self { content }
+    }
+
+    pub fn cancel_message(id: u16) -> Self {
+        let id = id.to_le_bytes();
+        let content = vec![id[0], id[1], flags::REPLY | flags::CANCEL];
 
         Self { content }
     }
@@ -139,6 +147,9 @@ impl NetworkMessage {
 
     pub fn is_ping(&self) -> bool {
         self.content[2] & flags::PING == flags::PING
+    }
+    pub fn is_cancel(&self) -> bool {
+        self.content[2] & flags::CANCEL == flags::CANCEL
     }
 }
 

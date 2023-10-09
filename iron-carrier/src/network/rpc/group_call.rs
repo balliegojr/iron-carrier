@@ -35,18 +35,16 @@ where
 
     /// Wait untill all nodes in the call acknowledge the request
     pub async fn ack(self) -> anyhow::Result<HashSet<NodeId>> {
-        // TODO: on timeout, return nodeids that didn't reply
         self.wait_replies()
             .await
             .and_then(|response| match response {
-                GroupCallResponse::Complete(replies) => {
+                GroupCallResponse::Partial(replies, _) | GroupCallResponse::Complete(replies) => {
                     if replies.iter().all(|reply| reply.is_ack()) {
                         Ok(replies.into_iter().map(|r| r.node_id()).collect())
                     } else {
                         anyhow::bail!("Received invalid reply");
                     }
                 }
-                GroupCallResponse::Partial(_, _) => anyhow::bail!("Received invalid reply"),
             })
     }
 
@@ -73,10 +71,14 @@ where
 
         self.sender.send((message, output_type)).await?;
         let mut replies = Vec::new();
+        let mut canceled_nodes = HashSet::new();
         while let Some(reply) = rx.recv().await {
             match reply {
                 super::message_waiting_reply::ReplyType::Message(reply) => {
                     replies.push(reply);
+                }
+                super::message_waiting_reply::ReplyType::Cancel(node_id) => {
+                    canceled_nodes.insert(node_id);
                 }
                 super::message_waiting_reply::ReplyType::Timeout(nodes) => {
                     return Ok(GroupCallResponse::Partial(replies, nodes))
@@ -84,7 +86,11 @@ where
             }
         }
 
-        Ok(GroupCallResponse::Complete(replies))
+        if canceled_nodes.is_empty() {
+            Ok(GroupCallResponse::Complete(replies))
+        } else {
+            Ok(GroupCallResponse::Partial(replies, canceled_nodes))
+        }
     }
 }
 
