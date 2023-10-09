@@ -5,6 +5,7 @@ use crate::node_id::NodeId;
 
 use super::network_message::NetworkMessage;
 
+/// A message reply from a Node
 #[derive(Debug)]
 pub struct RPCReply {
     inner: NetworkMessage,

@@ -1,75 +1,73 @@
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
+    sync::Arc,
     time::Duration,
 };
 
 use crate::{constants::DEFAULT_NETWORK_TIMEOUT, hash_type_id::TypeId};
-use tokio::{
-    sync::mpsc::{Receiver, Sender},
-    time::Instant,
+use tokio::sync::{
+    mpsc::{Receiver, Sender},
+    Semaphore,
 };
 use tokio_stream::StreamExt;
 
 use crate::node_id::NodeId;
 
-use self::message_waiting_reply::ReplyType;
+use self::{
+    deadline::Deadline,
+    message_waiting_reply::{MessageWaitingReply, ReplyType},
+    network_event_decoder::NetWorkEventDecoder,
+    network_message::NetworkMessage,
+};
 
 use super::{
     connection::{Connection, ReadHalf},
     connection_storage::ConnectionStorage,
 };
 
-mod message_waiting_reply;
-use message_waiting_reply::MessageWaitingReply;
-
-mod network_event_decoder;
-use network_event_decoder::NetWorkEventDecoder;
-
-mod network_message;
-use network_message::NetworkMessage;
-
-mod rpc_message;
-pub use rpc_message::RPCMessage;
-
 mod call;
-mod rpc_reply;
-mod subscriber;
-
+mod deadline;
 mod group_call;
-pub use group_call::GroupCallResponse;
-
+mod message_waiting_reply;
+mod network_event_decoder;
+mod network_message;
 mod rpc_handler;
+mod rpc_message;
+mod rpc_reply;
+mod subscription;
+
+pub use group_call::GroupCallResponse;
 pub use rpc_handler::RPCHandler;
+pub use rpc_message::RPCMessage;
 
 pub fn rpc_service(new_connection: Receiver<Connection>) -> RPCHandler {
     let (net_out_tx, net_out_rx) = tokio::sync::mpsc::channel(10);
     let (add_consumer_tx, add_consumer_rx) = tokio::sync::mpsc::channel(10);
-    let (remove_consumer_tx, remove_consumer_rx) = tokio::sync::mpsc::channel(10);
 
     tokio::spawn(rpc_loop(
         net_out_rx,
         net_out_tx.clone(),
         new_connection,
         add_consumer_rx,
-        remove_consumer_rx,
     ));
 
-    RPCHandler::new(net_out_tx, add_consumer_tx, remove_consumer_tx)
+    RPCHandler::new(net_out_tx, add_consumer_tx)
 }
 
 async fn rpc_loop(
-    mut net_out: Receiver<(NetworkMessage, OutputMessageType)>,
-    net_out_sender: Sender<(NetworkMessage, OutputMessageType)>,
+    mut net_out: Receiver<(NetworkMessage, OutboundNetworkMessageType)>,
+    net_out_sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
     mut new_connection: Receiver<Connection>,
-    mut add_consumers: Receiver<(Vec<TypeId>, Sender<RPCMessage>)>,
-    mut remove_consumers: Receiver<Vec<TypeId>>,
+    mut add_consumers: Receiver<(Vec<TypeId>, Sender<RPCMessage>, Arc<Semaphore>)>,
 ) {
     let (net_in_tx, mut net_in_rx) = tokio::sync::mpsc::channel::<(NodeId, NetworkMessage)>(10);
+    let (remove_consumers_tx, mut remove_consumers) = tokio::sync::mpsc::channel(1);
     // Holds messages that arrived but didn't had any consumer ready to process it
     let mut unprocessed_message_queue: HashMap<
         TypeId,
         VecDeque<(NodeId, NetworkMessage, Deadline)>,
     > = Default::default();
+    // Messages sent, waiting for a reply
     let mut sent_requests: HashMap<u16, MessageWaitingReply> = Default::default();
 
     let mut consumers: HashMap<TypeId, Sender<RPCMessage>> = Default::default();
@@ -90,7 +88,6 @@ async fn rpc_loop(
                     break;
                 };
 
-                // TODO: send unsent messages to this node
                 if let Some(read) = connections.insert(connection) {
                     tokio::spawn(read_network_data(read, net_in_tx.clone()));
                 }
@@ -116,19 +113,21 @@ async fn rpc_loop(
 
             request = net_out.recv() => {
                 let Some((message, send_type)) = request else { break; };
-                send_output_message(message, send_type, &mut connections, &mut sent_requests).await;
+                send_outbound_message(message, send_type, &mut connections, &mut sent_requests).await;
             }
 
             request = add_consumers.recv() => {
-                let Some((consumer_types, consumer_channel)) = request else {
+                let Some((consumer_types, consumer_channel, semaphore)) = request else {
                     break;
                 };
-                add_new_consumer(
+                add_new_consumers(
                     consumer_types,
                     consumer_channel,
                     &mut unprocessed_message_queue,
                     &mut consumers,
                     &net_out_sender,
+                    semaphore,
+                    remove_consumers_tx.clone(),
                 )
                 .await;
             }
@@ -149,31 +148,12 @@ async fn rpc_loop(
 
     // It is necessary to ensure that all output messages are sent before exiting
     while let Some((message, send_type)) = net_out.recv().await {
-        send_output_message(message, send_type, &mut connections, &mut sent_requests).await;
-    }
-}
-
-struct Deadline {
-    deadline: Instant,
-}
-
-impl Deadline {
-    pub fn new(timeout: Duration) -> Self {
-        let deadline = Instant::now() + timeout;
-        Self { deadline }
-    }
-
-    pub fn is_expired(&self) -> bool {
-        Instant::now() > self.deadline
-    }
-
-    pub fn extend(&mut self, secs: u64) {
-        self.deadline = Instant::now() + Duration::from_secs(secs)
+        send_outbound_message(message, send_type, &mut connections, &mut sent_requests).await;
     }
 }
 
 #[derive(Debug)]
-pub enum OutputMessageType {
+pub enum OutboundNetworkMessageType {
     Response(NodeId),
     SingleNode(NodeId, Sender<ReplyType>, Duration),
     MultiNode(HashSet<NodeId>, Sender<ReplyType>, Duration),
@@ -185,7 +165,7 @@ async fn process_rpc_call(
     node_id: NodeId,
     consumers: &mut HashMap<TypeId, tokio::sync::mpsc::Sender<RPCMessage>>,
     message_queue: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
-    net_out_sender: &Sender<(NetworkMessage, OutputMessageType)>,
+    net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 ) {
     if let Entry::Occupied(mut entry) = consumers.entry(message.type_id()) {
         if let Err(err) = entry
@@ -238,9 +218,9 @@ async fn process_reply(
     }
 }
 
-async fn send_output_message(
+async fn send_outbound_message(
     message: NetworkMessage,
-    send_type: OutputMessageType,
+    send_type: OutboundNetworkMessageType,
     connections: &mut ConnectionStorage,
     sent_requests: &mut HashMap<u16, MessageWaitingReply>,
 ) {
@@ -264,16 +244,16 @@ async fn send_output_message(
         Ok(())
     }
 
-    // FIXME: keep track of unsent messages, they must be sent if the node connects again
     match send_type {
-        OutputMessageType::Response(node_id) => {
+        OutboundNetworkMessageType::Response(node_id) => {
             if let Err(err) = send_to(&message, node_id, connections).await {
                 log::error!("{err}");
             }
         }
-        OutputMessageType::SingleNode(node_id, callback, timeout) => {
+        OutboundNetworkMessageType::SingleNode(node_id, callback, timeout) => {
             if let Err(err) = send_to(&message, node_id, connections).await {
                 log::error!("{err}");
+                let _ = callback.send(ReplyType::Cancel(node_id)).await;
             } else {
                 sent_requests.insert(
                     message.id(),
@@ -281,14 +261,12 @@ async fn send_output_message(
                 );
             }
         }
-        OutputMessageType::MultiNode(nodes, callback, timeout) => {
-            // FIXME: nodes that are offline should already go in the "failed" list in the
-            // MessageWaitingReply. Or they should be in a "waiting to send" list, since they were
-            // online
+        OutboundNetworkMessageType::MultiNode(nodes, callback, timeout) => {
             let mut nodes_sent = HashSet::new();
             for node_id in nodes {
                 if let Err(err) = send_to(&message, node_id, connections).await {
                     log::error!("{err}");
+                    let _ = callback.send(ReplyType::Cancel(node_id)).await;
                 } else {
                     nodes_sent.insert(node_id);
                 }
@@ -299,11 +277,12 @@ async fn send_output_message(
                 MessageWaitingReply::new(message.id(), nodes_sent, callback, timeout),
             );
         }
-        OutputMessageType::Broadcast(callback, timeout) => {
+        OutboundNetworkMessageType::Broadcast(callback, timeout) => {
             let mut nodes = HashSet::new();
             for node_id in connections.connected_nodes().collect::<Vec<_>>() {
                 if let Err(err) = send_to(&message, node_id, connections).await {
                     log::error!("{err}");
+                    let _ = callback.send(ReplyType::Cancel(node_id)).await;
                 } else {
                     nodes.insert(node_id);
                 }
@@ -317,15 +296,17 @@ async fn send_output_message(
     }
 }
 
-async fn add_new_consumer(
+async fn add_new_consumers(
     consumer_types: Vec<TypeId>,
     consumer: Sender<RPCMessage>,
     received_messages: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
     consumers: &mut HashMap<TypeId, tokio::sync::mpsc::Sender<RPCMessage>>,
-    net_out_sender: &Sender<(NetworkMessage, OutputMessageType)>,
+    net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
+    semaphore: Arc<Semaphore>,
+    remove_consumers: Sender<Vec<TypeId>>,
 ) {
-    for consumer_type in consumer_types {
-        if let Entry::Occupied(mut entry) = received_messages.entry(consumer_type) {
+    for consumer_type in consumer_types.iter() {
+        if let Entry::Occupied(mut entry) = received_messages.entry(*consumer_type) {
             while let Some((node_id, message, deadline)) = entry.get_mut().pop_front() {
                 if let Err(err) = consumer
                     .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
@@ -341,8 +322,13 @@ async fn add_new_consumer(
             entry.remove_entry();
         }
 
-        consumers.insert(consumer_type, consumer.clone());
+        consumers.insert(*consumer_type, consumer.clone());
     }
+
+    tokio::spawn(async move {
+        let _ = semaphore.acquire().await;
+        let _ = remove_consumers.send(consumer_types).await;
+    });
 }
 
 async fn cleanup_resources(
@@ -401,7 +387,7 @@ mod tests {
     pub async fn ensure_rpc_single_call_times_out() {
         let (new_connection_tx, new_connection_rx) = tokio::sync::mpsc::channel(1);
         let rpc = rpc_service(new_connection_rx);
-        let ping = ping_rpc(Duration::from_secs(1));
+        let ping = ping_rpc(Duration::from_millis(1));
 
         let (ping_connection, connection) =
             crate::network::connection::local_connection_pair(0.into());
@@ -530,10 +516,7 @@ mod tests {
         let rpc = rpc_service(new_connection_rx);
 
         tokio::spawn(async move {
-            let mut sub = rpc
-                .subscribe_many([Reply::ID, Ack::ID].into())
-                .await
-                .unwrap();
+            let mut sub = rpc.subscribe([Reply::ID, Ack::ID].into()).await.unwrap();
 
             while let Some(message) = sub.next().await {
                 tokio::spawn(async move {

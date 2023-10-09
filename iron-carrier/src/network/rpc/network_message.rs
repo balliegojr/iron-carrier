@@ -5,7 +5,12 @@ use bytes::{Buf, BytesMut};
 use serde::{de::Deserialize, Serialize};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-const MAX: usize = 8 * 1024 * 1024;
+const MAX_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
+/// Atomic counter to generate unique message IDs for sender node.  
+///
+/// The message id is only used to map replies to the correct channel and future, it doesn't need
+/// to be globaly unique and it is fine if the id overflows (unless there are more than u16::MAX
+/// messages at the same time)
 static MESSAGE_ID: AtomicU16 = AtomicU16::new(1);
 
 mod flags {
@@ -15,12 +20,47 @@ mod flags {
     pub const CANCEL: u8 = 0b000_1000;
 }
 
+/// Represents a network message in wire format.
+///
+/// This type makes no assumptions regarding the Data content.
 #[derive(Debug)]
 pub struct NetworkMessage {
     content: Vec<u8>,
 }
 
+/*
+ Message Format:
+
+                                    1  1  1  1  1  1
+      0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    |                      ID                       |
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    |          FLAGS           |      TYPE_ID       |
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    |                    TYPE_ID                    |
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    |                    TYPE_ID                    |
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    |                    TYPE_ID                    |
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    |          TYPE_ID         |     DATA_LENGTH    |
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    |        DATA_LENGTH       |        DATA        |
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+    ID          A 16 bit message id
+    FLAGS       A 8 bit field representing message flags
+    TYPE_ID     A 64 bit field representing the message type
+    DATA_LENGTH A 16 bit field representing the length of the DATA
+    DATA        Message DATA
+
+    Messages with the flags ACK, PING and CANCEL are only 3 bytes long
+*/
+
 impl NetworkMessage {
+    /// Try to read a full message from the provider `src` buffer, if there are enough bytes
+    /// Some(Self) will be returned and the buffer advanced to the next message
     pub fn try_decode(src: &mut BytesMut) -> anyhow::Result<Option<Self>> {
         if src.len() < 3 {
             return Ok(None);
@@ -36,8 +76,8 @@ impl NetworkMessage {
             return Ok(None);
         }
 
-        let length = u16::from_le_bytes(src[11..13].try_into().unwrap()) as usize;
-        if length > MAX {
+        let length = u16::from_be_bytes(src[11..13].try_into().unwrap()) as usize;
+        if length > MAX_MESSAGE_SIZE {
             anyhow::bail!("Network message exceeds max allowed size");
         }
 
@@ -52,6 +92,7 @@ impl NetworkMessage {
         Ok(Some(Self { content }))
     }
 
+    /// Encode `data` into network wire format
     pub fn encode<T>(data: T) -> anyhow::Result<Self>
     where
         T: HashTypeId + Serialize,
@@ -61,36 +102,40 @@ impl NetworkMessage {
         let mut content = Vec::with_capacity(13 + data.len());
         let id = MESSAGE_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        content.extend_from_slice(&id.to_le_bytes());
+        content.extend_from_slice(&id.to_be_bytes());
         content.push(0);
-        content.extend_from_slice(&T::ID.to_le_bytes());
-        content.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        content.extend_from_slice(&T::ID.to_be_bytes());
+        content.extend_from_slice(&(data.len() as u16).to_be_bytes());
         content.extend_from_slice(&data);
 
         Ok(Self { content })
     }
 
+    /// Creates an ACK NetworkMessage with `id`
     pub fn ack_message(id: u16) -> Self {
-        let id = id.to_le_bytes();
+        let id = id.to_be_bytes();
         let content = vec![id[0], id[1], flags::REPLY | flags::ACK];
 
         Self { content }
     }
 
+    /// Creates a PING NetworkMessage with `id`
     pub fn ping_message(id: u16) -> Self {
-        let id = id.to_le_bytes();
+        let id = id.to_be_bytes();
         let content = vec![id[0], id[1], flags::REPLY | flags::PING];
 
         Self { content }
     }
 
+    /// Creates a CANCEL NetworkMessage with `id`
     pub fn cancel_message(id: u16) -> Self {
-        let id = id.to_le_bytes();
+        let id = id.to_be_bytes();
         let content = vec![id[0], id[1], flags::REPLY | flags::CANCEL];
 
         Self { content }
     }
 
+    /// Creates a reply message with `id` and encoded `data`
     pub fn reply_message<T>(id: u16, data: T) -> anyhow::Result<Self>
     where
         T: HashTypeId + Serialize,
@@ -99,17 +144,19 @@ impl NetworkMessage {
 
         let mut content = Vec::with_capacity(13 + data.len());
 
-        content.extend_from_slice(&id.to_le_bytes());
+        content.extend_from_slice(&id.to_be_bytes());
         content.push(flags::REPLY);
-        content.extend_from_slice(&T::ID.to_le_bytes());
-        content.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        content.extend_from_slice(&T::ID.to_be_bytes());
+        content.extend_from_slice(&(data.len() as u16).to_be_bytes());
         content.extend_from_slice(&data);
 
         Ok(Self { content })
     }
 
+    /// Try to deserialize the message data into `T`, it fails the current message is of different
+    /// type
     pub fn data<'a, T: HashTypeId + Deserialize<'a>>(&'a self) -> anyhow::Result<T> {
-        if self.is_ack() || self.type_id() != T::ID {
+        if self.type_id() != T::ID {
             anyhow::bail!("Received invalid reply");
         }
 
@@ -117,6 +164,7 @@ impl NetworkMessage {
             .map_err(|err| anyhow::anyhow!("Received invalid reply {err}"))
     }
 
+    /// Writes the current message bytes into `writer`
     pub async fn write_into(
         &self,
         writer: &mut (impl AsyncWrite + std::marker::Unpin),
@@ -125,29 +173,37 @@ impl NetworkMessage {
         writer.flush().await.map_err(anyhow::Error::from)
     }
 
+    /// Returns the message id
     pub fn id(&self) -> u16 {
-        u16::from_le_bytes(self.content[0..2].try_into().unwrap())
+        u16::from_be_bytes(self.content[0..2].try_into().unwrap())
     }
 
+    /// Returns the `TypeId` of this message, if a message doesn't contain a TypeId, returns 0
+    /// instead
     pub fn type_id(&self) -> TypeId {
         if self.content.len() < 13 {
             0.into()
         } else {
-            u64::from_le_bytes(self.content[3..11].try_into().unwrap()).into()
+            u64::from_be_bytes(self.content[3..11].try_into().unwrap()).into()
         }
     }
 
+    /// Returns true if message has the REPLY flag
     pub fn is_reply(&self) -> bool {
         self.content[2] & flags::REPLY == flags::REPLY
     }
 
+    /// Returns true if message has the ACK flag
     pub fn is_ack(&self) -> bool {
         self.content[2] & flags::ACK == flags::ACK
     }
 
+    /// Returns true if message has the PING flag
     pub fn is_ping(&self) -> bool {
         self.content[2] & flags::PING == flags::PING
     }
+
+    /// Returns true if message has the CANCEL flag
     pub fn is_cancel(&self) -> bool {
         self.content[2] & flags::CANCEL == flags::CANCEL
     }

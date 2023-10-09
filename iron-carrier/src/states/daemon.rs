@@ -52,7 +52,7 @@ async fn wait_event(shared_state: &SharedState) -> Result<DaemonEvent> {
     let mut full_sync_deadline = pin!(next_cron_schedule(shared_state.config));
     let mut events = shared_state
         .rpc
-        .subscribe_many(vec![StartConsensus::ID, ConsensusReached::ID])
+        .subscribe(vec![StartConsensus::ID, ConsensusReached::ID])
         .await?;
 
     let event = tokio::select! {
@@ -80,8 +80,6 @@ async fn wait_event(shared_state: &SharedState) -> Result<DaemonEvent> {
             Ok(DaemonEvent::SyncWithoutConsensus(Default::default()))
         }
     };
-
-    events.free().await;
 
     event
 }

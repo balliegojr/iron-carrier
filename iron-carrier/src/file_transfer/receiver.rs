@@ -42,7 +42,7 @@ pub async fn receive_files(
 
     let mut events = shared_state
         .rpc
-        .subscribe_many(vec![
+        .subscribe(vec![
             QueryTransferType::ID,
             QueryRequiredBlocks::ID,
             TransferBlock::ID,
@@ -94,8 +94,6 @@ pub async fn receive_files(
             }
         }
     }
-
-    events.free().await;
 
     Ok(())
 }
