@@ -104,8 +104,8 @@ pub async fn handshake_and_identify_connection(
     let (mut read, mut write): (
         Pin<Box<dyn AsyncRead + Send>>,
         Pin<Box<dyn AsyncWrite + Send + Sync>>,
-    ) = if config.encryption_key.is_some() {
-        get_encrypted_connection(read, write, config.encryption_key.as_deref()).await?
+    ) = if config.encryption.is_enabled() {
+        get_encrypted_connection(read, write, config.encryption.encryption_key()).await?
     } else {
         (
             Box::pin(BufReader::new(read)),

@@ -69,8 +69,8 @@ pub fn generate_configs(
     };
 
     let encryption = encryption_key
-        .map(|key| format!(r#"encryption_key = "{key}""#))
-        .unwrap_or_default();
+        .map(|key| format!(r#"encryption = "{key}""#))
+        .unwrap_or("encryption = false".to_string());
 
     (initial_port..final_port)
         .map(|port| {
