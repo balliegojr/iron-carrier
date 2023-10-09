@@ -74,7 +74,7 @@ impl State for Consensus {
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
         let mut events = shared_state
             .rpc
-            .subscribe_many(vec![
+            .subscribe(vec![
                 StartConsensus::ID,
                 RequestVote::ID,
                 ConsensusReached::ID,
@@ -169,7 +169,6 @@ impl State for Consensus {
             }
         };
 
-        events.free().await;
         Ok(leader_id)
     }
 }

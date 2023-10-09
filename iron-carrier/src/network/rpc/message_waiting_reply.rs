@@ -4,6 +4,7 @@ use tokio::sync::mpsc::Sender;
 use super::{rpc_reply::RPCReply, Deadline};
 use crate::{constants::DEFAULT_NETWORK_TIMEOUT, NodeId};
 
+/// Represents a message that is waiting for replies of one or more nodes.
 pub struct MessageWaitingReply {
     id: u16,
     nodes: HashSet<NodeId>,

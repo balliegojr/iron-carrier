@@ -44,7 +44,7 @@ impl State for Follower {
         let mut ignored_files_cache = IgnoredFilesCache::default();
         let mut events = shared_state
             .rpc
-            .subscribe_many(vec![
+            .subscribe(vec![
                 QueryStorageIndex::ID,
                 SyncCompleted::ID,
                 DeleteFile::ID,
@@ -108,8 +108,6 @@ impl State for Follower {
         }
 
         log::info!("end sync as follower");
-
-        events.free().await;
 
         Ok(())
     }

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::hash_type_id::HashTypeId;
+use crate::{constants::DEFAULT_NETWORK_TIMEOUT, hash_type_id::HashTypeId};
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
@@ -8,13 +8,14 @@ use crate::node_id::NodeId;
 
 use super::{
     message_waiting_reply::ReplyType, network_message::NetworkMessage, rpc_reply::RPCReply,
-    OutputMessageType,
+    OutboundNetworkMessageType,
 };
 
+/// Represents a RPC for a single Node
 #[must_use]
 pub struct Call<T> {
     data: T,
-    sender: Sender<(NetworkMessage, OutputMessageType)>,
+    sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
     target: NodeId,
     timeout: Duration,
 }
@@ -25,17 +26,20 @@ where
 {
     pub fn new(
         data: T,
-        sender: Sender<(NetworkMessage, OutputMessageType)>,
+        sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
         target: NodeId,
     ) -> Self {
         Self {
             data,
             sender,
             target,
-            timeout: Duration::from_secs(5),
+            timeout: Duration::from_secs(DEFAULT_NETWORK_TIMEOUT),
         }
     }
 
+    /// Wait for the ack for this message.
+    ///
+    /// The operation may fail if the other Node cancel the request or does't reply in time
     pub async fn ack(self) -> anyhow::Result<()> {
         if self.wait_reply().await?.is_ack() {
             Ok(())
@@ -50,7 +54,7 @@ where
         self.sender
             .send((
                 message,
-                OutputMessageType::SingleNode(self.target, tx, self.timeout),
+                OutboundNetworkMessageType::SingleNode(self.target, tx, self.timeout),
             ))
             .await?;
 

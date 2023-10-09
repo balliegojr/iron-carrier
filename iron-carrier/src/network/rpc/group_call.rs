@@ -1,17 +1,18 @@
 use std::{collections::HashSet, time::Duration};
 
-use crate::hash_type_id::HashTypeId;
+use crate::{constants::DEFAULT_NETWORK_TIMEOUT, hash_type_id::HashTypeId};
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
 use crate::node_id::NodeId;
 
-use super::{network_message::NetworkMessage, rpc_reply::RPCReply, OutputMessageType};
+use super::{network_message::NetworkMessage, rpc_reply::RPCReply, OutboundNetworkMessageType};
 
+/// Represents a RPC for multiple nodes or a broadcast
 #[must_use]
 pub struct GroupCall<T> {
     data: T,
-    sender: Sender<(NetworkMessage, OutputMessageType)>,
+    sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
     targets: Option<HashSet<NodeId>>,
     timeout: Duration,
 }
@@ -22,18 +23,19 @@ where
 {
     pub fn new(
         data: T,
-        sender: Sender<(NetworkMessage, OutputMessageType)>,
+        sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
         targets: Option<HashSet<NodeId>>,
     ) -> Self {
         Self {
             data,
             sender,
             targets,
-            timeout: Duration::from_secs(5),
+            timeout: Duration::from_secs(DEFAULT_NETWORK_TIMEOUT),
         }
     }
 
-    /// Wait untill all nodes in the call acknowledge the request
+    /// Wait untill all nodes in the call ack the request. Returns a HashSet of Nodes that acked
+    /// the message.
     pub async fn ack(self) -> anyhow::Result<HashSet<NodeId>> {
         self.wait_replies()
             .await
@@ -65,8 +67,8 @@ where
         let message = NetworkMessage::encode(self.data)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let output_type = match self.targets {
-            Some(nodes) => OutputMessageType::MultiNode(nodes, tx, self.timeout),
-            None => OutputMessageType::Broadcast(tx, self.timeout),
+            Some(nodes) => OutboundNetworkMessageType::MultiNode(nodes, tx, self.timeout),
+            None => OutboundNetworkMessageType::Broadcast(tx, self.timeout),
         };
 
         self.sender.send((message, output_type)).await?;
