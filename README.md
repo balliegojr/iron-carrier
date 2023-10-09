@@ -57,7 +57,10 @@ enable_service_discovery = true
 log_path = "$HOME/.config/iron-carrier/iron-carrier.db"
 
 # Key used for network encryption 
-encryption_key = "some super safe key"
+encryption = true
+
+# It is also possible to use a pre defined key that will be used to construct the final encryption key
+# encryption = "some super safe key"
 
 # Maximum number of parallel transfers
 max_parallel_transfers = 4
@@ -120,8 +123,8 @@ A unique group name will prevent from trying to synchronize with different users
 It is also possible to disable service discovery and use the **peers** configuration to list the nodes to connect to.
 
 ## Network encryption
-This software is intended to be used in trusted networks, in machines with low resources, for this reason encryption is disabled by default.
-If privacy is a concern, encryption can be enabled by setting the **encryption_key** property to encrypt all network communication.
+This software is intended to be used in trusted networks, in machines with low resources, for this reason encryption can be disabled.
+If privacy is a concern, encryption can be enabled by setting the **encryption** property to encrypt all network communication.
 
 The protocol used for encryption is **XChaCha20Poly1305**.
 

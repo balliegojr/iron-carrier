@@ -10,6 +10,9 @@ use crate::{hash_helper, node_id::NodeId, validation::Unvalidated};
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, PickFirst};
 
+mod encryption;
+pub use encryption::Encryption;
+
 mod path_config;
 pub use path_config::PathConfig;
 
@@ -55,8 +58,8 @@ pub struct Config {
     #[serde(default = "defaults::log_path")]
     pub log_path: PathBuf,
 
-    // FIXME: Allow for boolean volues
-    pub encryption_key: Option<String>,
+    #[serde(default)]
+    pub encryption: Encryption,
 
     #[serde(default = "defaults::max_parallel_transfers")]
     pub max_parallel_sending: u8,
@@ -156,8 +159,10 @@ impl crate::validation::Verifiable for Config {
             }
         }
 
-        if matches!(self.encryption_key.as_deref(), Some("")) {
-            anyhow::bail!("Invalid config: Encryptino key must be non empty");
+        if let Encryption::EnabledWithKey(key) = &self.encryption {
+            if key.is_empty() {
+                anyhow::bail!("Invalid config: Encryption key must be non empty");
+            }
         }
 
         Ok(())
@@ -212,6 +217,7 @@ mod tests {
         .to_owned();
 
         let config: Unvalidated<Config> = config_content.parse()?;
+        assert_eq!(config.encryption, Encryption::Enabled);
         assert_eq!(config.peers, Some(vec!["127.0.0.1:8888".to_owned()]));
 
         let storages = &config.storages;
@@ -221,7 +227,6 @@ mod tests {
             PathBuf::from("./extended_path"),
             storages["struct_path"].path
         );
-
         assert!(!config.node_id.is_empty());
         assert!(config.group.is_none());
         assert_eq!(config.log_path, PathBuf::from_str("./iron-carrier.log")?);
