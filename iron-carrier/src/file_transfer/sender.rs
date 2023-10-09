@@ -92,17 +92,6 @@ async fn send_file(
 
     log::info!("{:?} sent to nodes", transfer.file.path);
 
-    // let transfer_task = QueryTransfer::new(transfer, nodes.clone())
-    //     .and_then(|(transfer, transfer_types)| QueryRequiredBlocks::new(transfer, transfer_types))
-    //     .and_then(|(transfer, file_handle, nodes_blocks)| {
-    //         TransferBlocks::new(transfer, file_handle, nodes_blocks)
-    //     })
-    //     .execute(&shared_state);
-    //
-    // if let Err(err) = transfer_task.await {
-    //     log::error!("{err}");
-    // }
-
     Ok(())
 }
 
