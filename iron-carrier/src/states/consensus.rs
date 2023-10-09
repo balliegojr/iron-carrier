@@ -5,7 +5,6 @@
 //! This protocol also expects absolute voting instead of majority
 use std::{fmt::Display, time::Duration};
 
-use futures::FutureExt;
 use iron_carrier_macros::HashTypeId;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -84,38 +83,38 @@ impl State for Consensus {
 
         tokio::spawn(shared_state.rpc.broadcast(StartConsensus).ack());
 
-        // FIXME: there must be a better way of doing this
-        let mut waiting_result = false;
-        let mut replies_fut: std::pin::Pin<
-            Box<
-                dyn futures::Future<Output = anyhow::Result<crate::network::rpc::GroupCallResponse>>
-                    + Send,
+        let mut replies_fut: Option<
+            std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = anyhow::Result<crate::network::rpc::GroupCallResponse>,
+                        > + Send,
+                >,
             >,
-        > = std::future::pending().boxed();
+        > = None;
 
         let mut term = 0u32;
         let leader_id = loop {
             tokio::select! {
-                _ = tokio::time::sleep_until(deadline), if !waiting_result && self.election_state == NodeState::Candidate => {
+                _ = tokio::time::sleep_until(deadline), if replies_fut.is_none() && self.election_state == NodeState::Candidate => {
                     if term > MAX_ELECTION_TERMS {
                         log::error!("Election reached maximum term of {MAX_ELECTION_TERMS}");
                         Err(StateMachineError::Abort)?
                     }
 
                     term += 1;
-                    replies_fut = shared_state
+                    replies_fut = Some(Box::pin(shared_state
                         .rpc
                         .broadcast
                         (RequestVote { term })
                         .timeout(Duration::from_secs(1))
-                        .result()
-                        .boxed();
+                        .result()));
 
-                    waiting_result = true;
-                    // deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
                 }
 
-                response = &mut replies_fut, if waiting_result && self.election_state == NodeState::Candidate => {
+                response = async { replies_fut.as_mut().unwrap().await }, if replies_fut.is_some() => {
+                    replies_fut = None;
+
                     match response {
                         Ok(response) => {
                             let replies = response.replies();
@@ -139,8 +138,6 @@ impl State for Consensus {
                         }
                     }
 
-                    waiting_result = false;
-                    replies_fut = std::future::pending().boxed();
                     deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
                 }
 
