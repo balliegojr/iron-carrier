@@ -136,7 +136,7 @@ pub async fn handshake_and_identify_connection(
     }
 
     if group.ne(&buf[8..16]) {
-        anyhow::bail!("Version mismatch");
+        anyhow::bail!("Group mismatch");
     }
 
     let node_id = NodeId::from(u64::from_be_bytes(buf[16..].try_into()?));
