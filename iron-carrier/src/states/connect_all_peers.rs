@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Display, net::SocketAddr};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    net::SocketAddr,
+};
 
 use rand::Rng;
 
@@ -31,18 +35,30 @@ impl State for ConnectAllPeers {
             return Ok(());
         }
 
-        // prevent colision when multiple needs start at the same time
+        // prevent colision when multiple nodes start at the same time
         // this is an issue when running the tests, unlikely to be an issue for normal operation
         tokio::time::sleep(std::time::Duration::from_millis(random_wait_time())).await;
 
-        let handles = self
+        let address_by_node: HashMap<Option<NodeId>, HashSet<SocketAddr>> = self
             .addresses_to_connect
-            .into_keys()
-            .map(|addr| {
+            .iter()
+            .fold(HashMap::new(), |mut acc, (addr, node_id)| {
+                acc.entry(*node_id).or_default().insert(*addr);
+                acc
+            });
+
+        let handles = address_by_node
+            .into_values()
+            .map(|addresses| {
                 let connection_handler = shared_state.connection_handler.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = connection_handler.connect(addr).await {
-                        log::error!("Failed to connect to {addr}: {err}");
+                    for addr in addresses {
+                        match connection_handler.connect(addr).await {
+                            Ok(_) => break,
+                            Err(err) => {
+                                log::error!("Failed to connect to {addr}: {err}");
+                            }
+                        }
                     }
                 })
             })
