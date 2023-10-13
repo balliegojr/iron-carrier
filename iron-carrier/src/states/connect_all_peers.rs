@@ -6,7 +6,9 @@ use std::{
 
 use rand::Rng;
 
-use crate::{node_id::NodeId, state_machine::Result, state_machine::State, SharedState};
+use crate::{
+    node_id::NodeId, state_machine::Result, state_machine::State, Context, StateMachineError,
+};
 
 #[derive(Debug)]
 pub struct ConnectAllPeers {
@@ -30,9 +32,9 @@ impl Display for ConnectAllPeers {
 impl State for ConnectAllPeers {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
+    async fn execute(self, context: &Context) -> Result<Self::Output> {
         if self.addresses_to_connect.is_empty() {
-            return Ok(());
+            Err(StateMachineError::Abort)?;
         }
 
         // prevent colision when multiple nodes start at the same time
@@ -50,7 +52,7 @@ impl State for ConnectAllPeers {
         let handles = address_by_node
             .into_values()
             .map(|addresses| {
-                let connection_handler = shared_state.connection_handler.clone();
+                let connection_handler = context.connection_handler.clone();
                 tokio::spawn(async move {
                     for addr in addresses {
                         match connection_handler.connect(addr).await {

@@ -54,11 +54,11 @@ impl RPCHandler {
     }
 
     /// Subscribe to events from the network
-    pub async fn subscribe(&self, types: Vec<TypeId>) -> anyhow::Result<Subscription> {
+    pub async fn subscribe(&self, types: &[TypeId]) -> anyhow::Result<Subscription> {
         let semaphore = Arc::new(Semaphore::new(1));
         let permit = semaphore.clone().acquire_owned().await?;
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        self.consumers.send((types, tx, semaphore)).await?;
+        self.consumers.send((types.to_vec(), tx, semaphore)).await?;
         Ok(Subscription::new(rx, permit))
     }
 }

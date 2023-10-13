@@ -6,7 +6,7 @@ use crate::{
     relative_path::RelativePathBuf,
     state_machine::{Result, State, StateMachineError},
     storage::{self, FileInfo, Storage},
-    SharedState,
+    Context,
 };
 
 use super::events::{QueryStorageIndex, StorageIndex, StorageIndexStatus};
@@ -26,10 +26,10 @@ impl FilesMatcher {
 
     async fn get_storage_from_nodes(
         &self,
-        shared_state: &SharedState,
+        context: &Context,
         storage: &Storage,
     ) -> Result<HashMap<NodeId, Vec<FileInfo>>> {
-        let peer_storages = shared_state
+        let peer_storages = context
             .rpc
             .broadcast(QueryStorageIndex {
                 name: self.storage_name.to_string(),
@@ -65,15 +65,15 @@ impl FilesMatcher {
 impl State for FilesMatcher {
     type Output = (Vec<NodeId>, MatchedFilesIter);
 
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
+    async fn execute(self, context: &Context) -> Result<Self::Output> {
         let storage = storage::get_storage_info(
             self.storage_name,
             self.storage_config,
-            &shared_state.transaction_log,
+            &context.transaction_log,
         )
         .await?;
 
-        let peers_storages = self.get_storage_from_nodes(shared_state, &storage).await?;
+        let peers_storages = self.get_storage_from_nodes(context, &storage).await?;
         if peers_storages.is_empty() {
             log::trace!("Storage already in sync with all peers");
             Err(StateMachineError::Abort)?
@@ -87,7 +87,7 @@ impl State for FilesMatcher {
 
         Ok((
             peers,
-            match_files(storage, peers_storages, shared_state.config.node_id_hashed),
+            match_files(storage, peers_storages, context.config.node_id_hashed),
         ))
     }
 }

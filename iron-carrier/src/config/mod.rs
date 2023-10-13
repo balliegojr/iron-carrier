@@ -18,7 +18,7 @@ pub use path_config::PathConfig;
 
 /// Represents the configuration for the current machine
 #[serde_as]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct Config {
     #[serde(default = "String::default")]
     pub node_id: String,

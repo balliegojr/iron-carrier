@@ -9,25 +9,22 @@
 #![feature(is_sorted)]
 #![feature(async_fn_in_trait)]
 
-use network::{rpc::RPCHandler, ConnectionHandler};
+use context::Context;
 use node_id::NodeId;
 use state_machine::{State, StateComposer};
 use states::SetSyncRole;
 use sync_options::SyncOptions;
 use tokio::sync::mpsc::Sender;
-use transaction_log::TransactionLog;
-use validation::Validated;
 
 pub mod config;
-use config::Config;
-
-pub mod hash_type_id;
-
 pub mod constants;
+pub mod hash_type_id;
+pub mod relative_path;
+
+mod context;
 mod hash_helper;
 mod ignored_files;
 mod node_id;
-pub mod relative_path;
 mod stream;
 mod sync_options;
 mod time;
@@ -45,15 +42,6 @@ mod states;
 pub mod transaction_log;
 pub mod validation;
 
-#[derive(Clone)]
-pub struct SharedState {
-    config: &'static Validated<Config>,
-    connection_handler: ConnectionHandler,
-    rpc: RPCHandler,
-    transaction_log: TransactionLog,
-    when_done: Option<Sender<()>>,
-}
-
 // TODO: implement client mode if the daemon is running (basic a cli that shows sync status)
 // TODO: add sync information to the transaction log (when it was last synched and what nodes
 // participated
@@ -61,22 +49,17 @@ pub struct SharedState {
 pub async fn run_full_sync(
     config: &'static validation::Validated<config::Config>,
 ) -> anyhow::Result<()> {
-    let (connection_handler, rpc) = network::start_network_service(config).await?;
-    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)?;
+    let (connection_handler, rpc) = network::get_network_service(config);
+    connection_handler.start_listening();
 
-    let shared_state = SharedState {
-        config,
-        connection_handler,
-        rpc,
-        transaction_log,
-        when_done: None,
-    };
+    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)?;
+    let context = Context::new(config, connection_handler, rpc, transaction_log);
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
         .and_then(|leader_id| SetSyncRole::new(leader_id, SyncOptions::default()))
-        .execute(&shared_state)
+        .execute(&context)
         .await?;
 
     Ok(())
@@ -88,23 +71,22 @@ pub async fn start_daemon(
 ) -> anyhow::Result<()> {
     log::trace!("My id is {}", config.node_id);
 
-    let (connection_handler, rpc) = network::start_network_service(config).await?;
-    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)?;
+    let (connection_handler, rpc) = network::get_network_service(config);
+    connection_handler.start_listening();
 
-    let shared_state = SharedState {
-        config,
-        connection_handler,
-        rpc,
-        transaction_log,
-        when_done,
-    };
+    let transaction_log = transaction_log::TransactionLog::load(&config.log_path)?;
+    let mut context = Context::new(config, connection_handler, rpc, transaction_log);
+
+    if let Some(output_channel) = when_done {
+        context = context.with_output_channel(output_channel);
+    }
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and::<states::Consensus>()
         .and_then(|leader_id| SetSyncRole::new(leader_id, SyncOptions::default()))
         .then_default_to(states::Daemon::default)
-        .execute(&shared_state)
+        .execute(&context)
         .await?;
 
     Ok(())

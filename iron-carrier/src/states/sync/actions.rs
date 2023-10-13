@@ -6,7 +6,7 @@ use crate::{
     state_machine::{Result, State},
     states::sync::events::{DeleteFile, MoveFile, SendFileTo},
     storage::{FileInfo, FileInfoType},
-    SharedState,
+    Context,
 };
 
 use super::files_matcher::MatchedFilesIter;
@@ -108,9 +108,9 @@ impl Dispatcher {
 impl State for Dispatcher {
     type Output = Vec<(FileInfo, HashSet<NodeId>)>;
 
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
+    async fn execute(self, context: &Context) -> Result<Self::Output> {
         let actions = self.matched_files_iter.filter_map(|file| {
-            get_file_sync_action(shared_state.config.node_id_hashed, &self.nodes, file)
+            get_file_sync_action(context.config.node_id_hashed, &self.nodes, file)
         });
 
         let mut ignored_files_cache = IgnoredFilesCache::default();
@@ -120,7 +120,7 @@ impl State for Dispatcher {
         for action in actions {
             if let Err(err) = execute_action(
                 action,
-                shared_state,
+                context,
                 &mut files_to_send,
                 &mut receive_files_from,
                 &mut ignored_files_cache,
@@ -143,17 +143,17 @@ impl State for Dispatcher {
 /// it
 pub async fn execute_action(
     action: SyncAction,
-    shared_state: &SharedState,
+    context: &Context,
     files_to_send: &mut Vec<(FileInfo, HashSet<NodeId>)>,
     receive_files_from: &mut HashMap<NodeId, HashSet<NodeId>>,
     ignored_files_cache: &mut IgnoredFilesCache,
 ) -> anyhow::Result<()> {
     match action {
         SyncAction::Delete { file, nodes } => {
-            if nodes.contains(&shared_state.config.node_id_hashed) {
+            if nodes.contains(&context.config.node_id_hashed) {
                 crate::storage::file_operations::delete_file(
-                    shared_state.config,
-                    &shared_state.transaction_log,
+                    context.config,
+                    &context.transaction_log,
                     &file,
                     ignored_files_cache,
                 )
@@ -161,17 +161,17 @@ pub async fn execute_action(
             }
 
             log::info!("Delete {:?} on {nodes:?}", file.path);
-            shared_state
+            context
                 .rpc
                 .multi_call(DeleteFile { file }, nodes)
                 .ack()
                 .await?;
         }
         SyncAction::Move { file, nodes } => {
-            if nodes.contains(&shared_state.config.node_id_hashed) {
+            if nodes.contains(&context.config.node_id_hashed) {
                 crate::storage::file_operations::move_file(
-                    shared_state.config,
-                    &shared_state.transaction_log,
+                    context.config,
+                    &context.transaction_log,
                     &file,
                     ignored_files_cache,
                 )
@@ -179,7 +179,7 @@ pub async fn execute_action(
             }
 
             log::info!("Move {:?} on {nodes:?}", file.path);
-            shared_state
+            context
                 .rpc
                 .multi_call(MoveFile { file }, nodes)
                 .ack()
@@ -190,7 +190,7 @@ pub async fn execute_action(
                 receive_files_from
                     .entry(*node)
                     .or_default()
-                    .insert(shared_state.config.node_id_hashed);
+                    .insert(context.config.node_id_hashed);
             }
             files_to_send.push((file, nodes));
         }
@@ -211,7 +211,7 @@ pub async fn execute_action(
                     .insert(delegate_to);
             }
 
-            shared_state
+            context
                 .rpc
                 .call(SendFileTo { file, nodes }, delegate_to)
                 .ack()

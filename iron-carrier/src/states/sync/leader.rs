@@ -6,7 +6,7 @@ use crate::{
     state_machine::{Result, State, StateComposer},
     states::sync::{actions::Dispatcher, events::SyncCompleted, files_matcher::FilesMatcher},
     sync_options::SyncOptions,
-    SharedState,
+    Context,
     StateMachineError,
 };
 
@@ -33,9 +33,9 @@ impl Display for Leader {
 
 impl State for Leader {
     type Output = ();
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
+    async fn execute(self, context: &Context) -> Result<Self::Output> {
         log::debug!("start sync as leader");
-        for (storage_name, storage_config) in shared_state
+        for (storage_name, storage_config) in context
             .config
             .storages
             .iter()
@@ -44,7 +44,7 @@ impl State for Leader {
             let sync_result = FilesMatcher::new(storage_name, storage_config)
                 .and_then(|(peers, matched)| Dispatcher::new(peers, matched))
                 .and_then(|files_to_send| TransferFiles::new(None, files_to_send))
-                .execute(shared_state)
+                .execute(context)
                 .await;
 
             if let Err(StateMachineError::Err(err)) = sync_result {
@@ -52,10 +52,10 @@ impl State for Leader {
             }
         }
 
-        shared_state.transaction_log.flush().await?;
-        shared_state.rpc.broadcast(SyncCompleted).ack().await?;
+        context.transaction_log.flush().await?;
+        context.rpc.broadcast(SyncCompleted).ack().await?;
 
-        if let Some(when_done) = shared_state.when_done.clone().as_mut() {
+        if let Some(when_done) = context.when_done.clone().as_mut() {
             let _ = when_done.send(()).await;
         }
 

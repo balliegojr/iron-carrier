@@ -7,6 +7,7 @@ use crate::node_id::NodeId;
 use super::{network_message::NetworkMessage, OutboundNetworkMessageType};
 
 /// RPC Message received from a network node.
+#[derive(Debug)]
 pub struct RPCMessage {
     inner: NetworkMessage,
     node_id: NodeId,
