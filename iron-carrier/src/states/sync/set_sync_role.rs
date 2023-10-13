@@ -24,14 +24,14 @@ impl SetSyncRole {
 impl State for SetSyncRole {
     type Output = ();
 
-    async fn execute(self, shared_state: &crate::SharedState) -> Result<Self::Output> {
-        if self.leader_node_id == shared_state.config.node_id_hashed {
+    async fn execute(self, context: &crate::Context) -> Result<Self::Output> {
+        if self.leader_node_id == context.config.node_id_hashed {
             (Leader::sync(self.sync_options))
-                .execute(shared_state)
+                .execute(context)
                 .await
         } else {
             Follower::new(self.leader_node_id)
-                .execute(shared_state)
+                .execute(context)
                 .await
         }
     }

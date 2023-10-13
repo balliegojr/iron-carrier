@@ -3,7 +3,7 @@
 //! Here we are only interested in the leader election, the log replication process is not
 //! implemented.
 //! This protocol also expects absolute voting instead of majority
-use std::{fmt::Display, time::Duration};
+use std::{collections::HashSet, fmt::Display, time::Duration};
 
 use iron_carrier_macros::HashTypeId;
 use rand::Rng;
@@ -15,7 +15,7 @@ use crate::{
     hash_type_id::HashTypeId,
     node_id::NodeId,
     state_machine::{Result, State, StateMachineError},
-    SharedState,
+    Context,
 };
 
 /// Possible states that a node can be
@@ -25,6 +25,7 @@ use crate::{
 #[derive(Debug, PartialEq, Eq, Default)]
 pub enum NodeState {
     #[default]
+    Init,
     Candidate,
     Follower,
     Leader,
@@ -48,9 +49,11 @@ impl Display for Consensus {
     }
 }
 
+type MaybeFuture<T> = Option<std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>>;
+
 impl State for Consensus {
     type Output = NodeId;
-    async fn execute(mut self, shared_state: &SharedState) -> Result<Self::Output> {
+    async fn execute(mut self, context: &Context) -> Result<Self::Output> {
         // This election process repeats until a candidate becomes the leader
         //
         // After a timeout of 100-250ms, if the node is a candidate, it advances the current term
@@ -72,30 +75,29 @@ impl State for Consensus {
         //    protocol
 
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
-        let mut events = shared_state
+        let mut events = context
             .rpc
-            .subscribe(vec![
-                StartConsensus::ID,
-                RequestVote::ID,
-                ConsensusReached::ID,
-            ])
+            .subscribe(&[StartConsensus::ID, RequestVote::ID, ConsensusReached::ID])
             .await?;
 
-        tokio::spawn(shared_state.rpc.broadcast(StartConsensus).ack());
+        let mut replies_fut: MaybeFuture<anyhow::Result<crate::network::rpc::GroupCallResponse>> =
+            None;
 
-        let mut replies_fut: Option<
-            std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                            Output = anyhow::Result<crate::network::rpc::GroupCallResponse>,
-                        > + Send,
-                >,
-            >,
-        > = None;
+        let mut init_fut: MaybeFuture<anyhow::Result<HashSet<NodeId>>> = Some(Box::pin(
+            context
+                .rpc
+                .broadcast(StartConsensus)
+                .timeout(Duration::from_secs(10))
+                .ack(),
+        ));
 
         let mut term = 0u32;
         let leader_id = loop {
             tokio::select! {
+                _participant_nodes = async { init_fut.as_mut().unwrap().await }, if init_fut.is_some() => {
+                    init_fut = None;
+                    self.election_state = NodeState::Candidate;
+                }
                 _ = tokio::time::sleep_until(deadline), if replies_fut.is_none() && self.election_state == NodeState::Candidate => {
                     if term > MAX_ELECTION_TERMS {
                         log::error!("Election reached maximum term of {MAX_ELECTION_TERMS}");
@@ -103,7 +105,7 @@ impl State for Consensus {
                     }
 
                     term += 1;
-                    replies_fut = Some(Box::pin(shared_state
+                    replies_fut = Some(Box::pin(context
                         .rpc
                         .broadcast
                         (RequestVote { term })
@@ -117,7 +119,7 @@ impl State for Consensus {
 
                     match response {
                         Ok(response) => {
-                            let replies = response.replies();
+                            let replies =  response.replies();
 
                             if replies.is_empty() {
                                 log::error!("No participants in the consensus");
@@ -128,9 +130,9 @@ impl State for Consensus {
                                 log::debug!("Node wins election");
                                 self.election_state = NodeState::Leader;
                                 let nodes = replies.into_iter().map(|r| r.node_id()).collect();
-                                shared_state.rpc.multi_call(ConsensusReached, nodes).ack().await?;
+                                context.rpc.multi_call(ConsensusReached, nodes).ack().await?;
 
-                                break shared_state.config.node_id_hashed
+                                break context.config.node_id_hashed
                             }
                         }
                         Err(err) => {
@@ -191,4 +193,32 @@ struct TermVote {
 fn random_wait_time() -> u64 {
     let mut rng = rand::thread_rng();
     rng.gen_range(100..250)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ensure_can_reach_consensus() -> anyhow::Result<()> {
+        let [one, two, three] = crate::context::local_contexts().await?;
+
+        let (r_one, r_two, r_three) = tokio::join!(
+            tokio::spawn(async move { Consensus::default().execute(&one).await }),
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                Consensus::default().execute(&two).await
+            }),
+            tokio::spawn(async move { Consensus::default().execute(&three).await }),
+        );
+
+        let r_one = r_one??;
+        let r_two = r_two??;
+        let r_three = r_three??;
+
+        assert_eq!(r_one, r_two);
+        assert_eq!(r_one, r_three);
+
+        Ok(())
+    }
 }

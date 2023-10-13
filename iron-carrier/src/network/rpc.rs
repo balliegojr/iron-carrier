@@ -60,7 +60,7 @@ async fn rpc_loop(
     mut new_connection: Receiver<Connection>,
     mut add_consumers: Receiver<(Vec<TypeId>, Sender<RPCMessage>, Arc<Semaphore>)>,
 ) {
-    let (net_in_tx, mut net_in_rx) = tokio::sync::mpsc::channel::<(NodeId, NetworkMessage)>(10);
+    let (net_in_tx, mut net_in_rx) = tokio::sync::mpsc::channel::<IncomingNetworkEvent>(10);
     let (remove_consumers_tx, mut remove_consumers) = tokio::sync::mpsc::channel(1);
     // Holds messages that arrived but didn't had any consumer ready to process it
     let mut unprocessed_message_queue: HashMap<
@@ -85,6 +85,7 @@ async fn rpc_loop(
             biased;
             request = new_connection.recv() =>  {
                 let Some(connection) = request else {
+                    log::trace!("break new connection");
                     break;
                 };
 
@@ -93,21 +94,29 @@ async fn rpc_loop(
                 }
             }
             request = net_in_rx.recv() => {
-                let Some((node_id, message)) = request else {
+                let Some(event) = request else {
+                    log::trace!("break net in");
                     break;
                 };
 
-                if message.is_reply() {
-                    process_reply(message, node_id, &mut sent_requests).await;
-                } else {
-                    process_rpc_call(
-                        message,
-                        node_id,
-                        &mut consumers,
-                        &mut unprocessed_message_queue,
-                        &net_out_sender,
-                    )
-                    .await;
+                match event {
+                    IncomingNetworkEvent::Disconnected(node_id) => {
+                        connections.remove(&node_id);
+                    }
+                    IncomingNetworkEvent::Message(node_id, message) => {
+                        if message.is_reply() {
+                            process_reply(message, node_id, &mut sent_requests).await;
+                        } else {
+                            process_rpc_call(
+                                message,
+                                node_id,
+                                &mut consumers,
+                                &mut unprocessed_message_queue,
+                                &net_out_sender,
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
 
@@ -150,6 +159,12 @@ async fn rpc_loop(
     while let Some((message, send_type)) = net_out.recv().await {
         send_outbound_message(message, send_type, &mut connections, &mut sent_requests).await;
     }
+}
+
+#[derive(Debug)]
+enum IncomingNetworkEvent {
+    Disconnected(NodeId),
+    Message(NodeId, NetworkMessage),
 }
 
 #[derive(Debug)]
@@ -353,170 +368,155 @@ async fn cleanup_resources(
     received_messages.retain(|_, messages| !messages.is_empty());
 }
 
-async fn read_network_data(
-    read_connection: ReadHalf,
-    event_stream: Sender<(NodeId, NetworkMessage)>,
-) {
-    let peer_id = read_connection.node_id();
+async fn read_network_data(read_connection: ReadHalf, event_stream: Sender<IncomingNetworkEvent>) {
+    let node_id = read_connection.node_id();
 
     let mut stream = tokio_util::codec::FramedRead::new(read_connection, NetWorkEventDecoder {});
     while let Some(event) = stream.next().await {
         match event {
             Ok(event) => {
-                if let Err(err) = event_stream.send((peer_id, event)).await {
+                if let Err(err) = event_stream
+                    .send(IncomingNetworkEvent::Message(node_id, event))
+                    .await
+                {
                     log::error!("Error sending event to event stream {err}");
                     break;
                 }
             }
             Err(err) => {
                 log::error!("error reading from peer {err}");
+                break;
             }
         }
     }
+
+    let _ = event_stream
+        .send(IncomingNetworkEvent::Disconnected(node_id))
+        .await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::hash_type_id::HashTypeId;
+    use crate::{context::Context, hash_type_id::HashTypeId};
     use iron_carrier_macros::HashTypeId;
     use serde::{Deserialize, Serialize};
 
     #[tokio::test]
-    pub async fn ensure_rpc_single_call_times_out() {
-        let (new_connection_tx, new_connection_rx) = tokio::sync::mpsc::channel(1);
-        let rpc = rpc_service(new_connection_rx);
-        let ping = ping_rpc(Duration::from_millis(1));
+    pub async fn ensure_rpc_single_call_times_out() -> anyhow::Result<()> {
+        let [zero, one] = crate::context::local_contexts().await?;
 
-        let (ping_connection, connection) =
-            crate::network::connection::local_connection_pair(0.into());
+        ping_rpc(Duration::from_secs(1), one);
 
-        let _ = ping.send(ping_connection).await;
-        let _ = new_connection_tx.send(connection).await;
+        assert!(zero.rpc.call(Ack, 1.into()).ack().await.is_ok());
+        assert!(zero.rpc.call(Reply, 1.into()).ack().await.is_err());
 
-        assert!(rpc.call(Ack, 0.into()).ack().await.is_ok());
-        assert!(rpc.call(Reply, 0.into()).ack().await.is_err());
+        Ok(())
     }
 
     #[tokio::test]
-    pub async fn ensure_rpc_multi_call_times_out() {
-        let (new_connection_tx, new_connection_rx) = tokio::sync::mpsc::channel(1);
-        let rpc = rpc_service(new_connection_rx);
+    pub async fn ensure_rpc_multi_call_times_out() -> anyhow::Result<()> {
+        let [zero, one, two] = crate::context::local_contexts().await?;
 
-        let fast_server = ping_rpc(Duration::from_secs(1));
-        let slow_server = ping_rpc(Duration::from_secs(10));
-
-        {
-            let (ping_connection, connection) =
-                crate::network::connection::local_connection_pair(0.into());
-            let _ = fast_server.send(ping_connection).await;
-            let _ = new_connection_tx.send(connection).await;
-        }
-
-        {
-            let (ping_connection, connection) =
-                crate::network::connection::local_connection_pair(1.into());
-            let _ = slow_server.send(ping_connection).await;
-            let _ = new_connection_tx.send(connection).await;
-        }
+        ping_rpc(Duration::from_millis(100), one);
+        ping_rpc(Duration::from_secs(3), two);
 
         assert_eq!(
-            rpc.multi_call(Ack, [0.into()].into())
+            zero.rpc
+                .multi_call(Ack, [1.into()].into())
+                .timeout(Duration::from_secs(1))
                 .ack()
-                .await
-                .expect("Should not error"),
-            HashSet::from([NodeId::from(0)])
+                .await?,
+            HashSet::from([NodeId::from(1)])
         );
         assert_eq!(
-            rpc.multi_call(Ack, [0.into(), 1.into()].into())
+            zero.rpc
+                .multi_call(Ack, [1.into(), 2.into()].into())
+                .timeout(Duration::from_secs(1))
                 .ack()
-                .await
-                .expect("Should not error"),
-            HashSet::from([NodeId::from(0)])
+                .await?,
+            HashSet::from([NodeId::from(1)])
         );
 
         assert_eq!(
-            rpc.multi_call(Reply, [0.into()].into())
+            zero.rpc
+                .multi_call(Reply, [1.into()].into())
+                .timeout(Duration::from_secs(1))
                 .result()
-                .await
-                .expect("Should not error")
+                .await?
                 .replies()
                 .len(),
             1
         );
 
-        match rpc
-            .multi_call(Reply, [0.into()].into())
+        match zero
+            .rpc
+            .multi_call(Reply, [1.into()].into())
+            .timeout(Duration::from_secs(1))
             .result()
-            .await
-            .expect("Should not error")
+            .await?
         {
             GroupCallResponse::Complete(replies) => assert_eq!(replies.len(), 1),
             GroupCallResponse::Partial(_, _) => unreachable!("Unexpected response"),
         }
 
-        match rpc
-            .multi_call(Reply, [0.into(), 1.into()].into())
+        match zero
+            .rpc
+            .multi_call(Reply, [1.into(), 2.into()].into())
+            .timeout(Duration::from_secs(1))
             .result()
-            .await
-            .expect("Should not error")
+            .await?
         {
             GroupCallResponse::Complete(_) => unreachable!("Unexpected response"),
             GroupCallResponse::Partial(replies, nodes) => {
                 assert_eq!(replies.len(), 1);
-                assert_eq!(nodes, HashSet::from([NodeId::from(1)]))
+                assert_eq!(nodes, HashSet::from([NodeId::from(2)]))
             }
         }
+
+        Ok(())
     }
 
     #[tokio::test]
-    pub async fn ensure_rpc_broadcast_times_out() {
-        let (new_connection_tx, new_connection_rx) = tokio::sync::mpsc::channel(1);
-        let rpc = rpc_service(new_connection_rx);
+    pub async fn ensure_rpc_broadcast_times_out() -> anyhow::Result<()> {
+        let [zero, one, two] = crate::context::local_contexts().await?;
 
-        let fast_server = ping_rpc(Duration::from_secs(1));
-        let slow_server = ping_rpc(Duration::from_secs(10));
-
-        {
-            let (ping_connection, connection) =
-                crate::network::connection::local_connection_pair(0.into());
-            let _ = fast_server.send(ping_connection).await;
-            let _ = new_connection_tx.send(connection).await;
-        }
-
-        {
-            let (ping_connection, connection) =
-                crate::network::connection::local_connection_pair(1.into());
-            let _ = slow_server.send(ping_connection).await;
-            let _ = new_connection_tx.send(connection).await;
-        }
+        ping_rpc(Duration::from_millis(100), one);
+        ping_rpc(Duration::from_secs(3), two);
 
         assert_eq!(
-            rpc.broadcast(Ack).ack().await.expect("Should not error"),
-            HashSet::from([NodeId::from(0)])
+            zero.rpc
+                .broadcast(Ack)
+                .timeout(Duration::from_secs(1))
+                .ack()
+                .await?,
+            HashSet::from([NodeId::from(1)])
         );
 
-        match rpc
+        match zero
+            .rpc
             .broadcast(Reply)
+            .timeout(Duration::from_secs(1))
             .result()
-            .await
-            .expect("Should not error")
+            .await?
         {
             GroupCallResponse::Complete(_) => unreachable!("Unexpected response"),
             GroupCallResponse::Partial(replies, nodes) => {
                 assert_eq!(replies.len(), 1);
-                assert_eq!(nodes, HashSet::from([NodeId::from(1)]))
+                assert_eq!(nodes, HashSet::from([NodeId::from(2)]))
             }
         }
+
+        Ok(())
     }
 
-    fn ping_rpc(wait_time: Duration) -> Sender<Connection> {
-        let (new_connection_tx, new_connection_rx) = tokio::sync::mpsc::channel(1);
-        let rpc = rpc_service(new_connection_rx);
-
+    fn ping_rpc(wait_time: Duration, context: Context) {
         tokio::spawn(async move {
-            let mut sub = rpc.subscribe([Reply::ID, Ack::ID].into()).await.unwrap();
+            // Necessary to move the whole context, otherwise it gets dropped
+            let context = context;
+
+            let mut sub = context.rpc.subscribe(&[Reply::ID, Ack::ID]).await.unwrap();
 
             while let Some(message) = sub.next().await {
                 tokio::spawn(async move {
@@ -534,8 +534,6 @@ mod tests {
                 });
             }
         });
-
-        new_connection_tx
     }
 
     #[derive(Debug, HashTypeId, Serialize, Deserialize)]

@@ -50,6 +50,13 @@ pub struct Validated<T> {
     inner: T,
 }
 
+#[cfg(test)]
+impl<T> Validated<T> {
+    pub fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
 impl<T: Verifiable> Deref for Validated<T> {
     type Target = T;
 

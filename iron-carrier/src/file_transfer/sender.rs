@@ -18,7 +18,7 @@ use tokio::{
 };
 // pub use transfer_blocks::TransferBlocks;
 
-use crate::{network::rpc::GroupCallResponse, node_id::NodeId, storage::FileInfo, SharedState};
+use crate::{network::rpc::GroupCallResponse, node_id::NodeId, storage::FileInfo, Context};
 
 use super::{
     block_index,
@@ -30,18 +30,18 @@ use super::{
 };
 
 pub async fn send_files(
-    shared_state: &SharedState,
+    context: &Context,
     files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
 ) -> anyhow::Result<()> {
     let sending_limit = Arc::new(Semaphore::new(
-        shared_state.config.max_parallel_sending.into(),
+        context.config.max_parallel_sending.into(),
     ));
 
     let tasks: Vec<_> = files_to_send
         .into_iter()
         .map(|(file, nodes)| {
             tokio::spawn(send_file(
-                shared_state.clone(),
+                context.clone(),
                 file,
                 nodes,
                 sending_limit.clone(),
@@ -59,7 +59,7 @@ pub async fn send_files(
 }
 
 async fn send_file(
-    shared_state: SharedState,
+    context: Context,
     file: FileInfo,
     nodes: HashSet<NodeId>,
     send_limit: Arc<Semaphore>,
@@ -68,21 +68,21 @@ async fn send_file(
     let permit = send_limit.acquire_owned().await.unwrap();
     let transfer = Transfer::new(file, permit).unwrap();
 
-    let transfer_types = query_transfer_type(&shared_state, &transfer, nodes).await?;
+    let transfer_types = query_transfer_type(&context, &transfer, nodes).await?;
     if transfer_types.is_empty() {
         return Ok(());
     }
 
     let mut file_handle =
-        crate::storage::file_operations::open_file_for_reading(shared_state.config, &transfer.file)
+        crate::storage::file_operations::open_file_for_reading(context.config, &transfer.file)
             .await?;
 
     let mut nodes_blocks =
-        query_required_blocks(&shared_state, &transfer, &mut file_handle, transfer_types).await?;
+        query_required_blocks(&context, &transfer, &mut file_handle, transfer_types).await?;
 
     while !nodes_blocks.is_empty() {
         transfer_blocks(
-            &shared_state,
+            &context,
             &transfer,
             &mut file_handle,
             &mut nodes_blocks,
@@ -97,12 +97,12 @@ async fn send_file(
 
 /// Query `nodes` about the transfer type, returns only Partial or Full transfers
 async fn query_transfer_type(
-    shared_state: &crate::SharedState,
+    context: &crate::Context,
     transfer: &Transfer,
     nodes: HashSet<NodeId>,
 ) -> anyhow::Result<HashMap<NodeId, TransferType>> {
     log::debug!("Querying transfer type for {:?}", transfer.file.path);
-    shared_state
+    context
         .rpc
         .multi_call(
             QueryTransferType {
@@ -133,7 +133,7 @@ async fn query_transfer_type(
 }
 
 async fn query_required_blocks(
-    shared_state: &SharedState,
+    context: &Context,
     transfer: &Transfer,
     file_handle: &mut File,
     mut transfer_types: HashMap<NodeId, TransferType>,
@@ -155,7 +155,7 @@ async fn query_required_blocks(
         Default::default()
     } else {
         log::debug!("Querying required blocks for {:?}", transfer.file.path);
-        shared_state
+        context
             .rpc
             .multi_call(
                 events::QueryRequiredBlocks {
@@ -187,7 +187,7 @@ async fn query_required_blocks(
 }
 
 async fn transfer_blocks(
-    shared_state: &crate::SharedState,
+    context: &crate::Context,
     transfer: &Transfer,
     file_handle: &mut File,
     nodes_blocks: &mut HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
@@ -218,7 +218,7 @@ async fn transfer_blocks(
 
         // FIXME: remove nodes missing ack
         // FIXME: back to stream...
-        shared_state
+        context
             .rpc
             .multi_call(
                 TransferBlock {
@@ -232,7 +232,7 @@ async fn transfer_blocks(
             .await?;
     }
 
-    let results = shared_state
+    let results = context
         .rpc
         .multi_call(
             TransferComplete {

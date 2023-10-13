@@ -15,7 +15,7 @@ use tokio_stream::StreamExt;
 use crate::{
     config::Config, constants::DEFAULT_NETWORK_TIMEOUT, hash_helper, hash_type_id::HashTypeId,
     ignored_files::IgnoredFilesCache, network::rpc::RPCMessage, node_id::NodeId, storage::FileInfo,
-    SharedState,
+    Context,
 };
 
 use super::{
@@ -28,21 +28,20 @@ use super::{
 };
 
 pub async fn receive_files(
-    shared_state: SharedState,
+    context: Context,
     mut wait_complete_signal_from: HashSet<NodeId>,
 ) -> anyhow::Result<()> {
     let mut ignored_files_cache = IgnoredFilesCache::default();
     let mut current_transfers: HashMap<TransferId, ActiveTransfer> = Default::default();
 
-    let transfers_semaphore = Arc::new(Semaphore::new(
-        shared_state.config.max_parallel_receiving.into(),
-    ));
+    let transfers_semaphore =
+        Arc::new(Semaphore::new(context.config.max_parallel_receiving.into()));
 
     let (add_current_transfer_tx, mut add_current_transfer_rx) = tokio::sync::mpsc::channel(1);
 
-    let mut events = shared_state
+    let mut events = context
         .rpc
-        .subscribe(vec![
+        .subscribe(&[
             QueryTransferType::ID,
             QueryRequiredBlocks::ID,
             TransferBlock::ID,
@@ -58,7 +57,7 @@ pub async fn receive_files(
                 match request.type_id() {
                     QueryTransferType::ID => {
                         if let Err(err) = process_query_transfer_type(
-                            shared_state.config,
+                            context.config,
                             &mut ignored_files_cache,
                             &add_current_transfer_tx,
                             transfers_semaphore.clone(),
@@ -78,7 +77,7 @@ pub async fn receive_files(
                         }
                     }
                     TransferComplete::ID => {
-                        if let Err(err) = process_transfer_complete(shared_state.config, &mut current_transfers, request).await {
+                        if let Err(err) = process_transfer_complete(context.config, &mut current_transfers, request).await {
                             log::error!("{err}")
                         }
                     }

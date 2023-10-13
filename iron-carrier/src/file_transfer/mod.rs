@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    node_id::NodeId, state_machine::Result, state_machine::State, storage::FileInfo, SharedState,
+    node_id::NodeId, state_machine::Result, state_machine::State, storage::FileInfo, Context,
 };
 
 mod block_index;
@@ -26,25 +26,25 @@ pub struct TransferFiles {
 impl State for TransferFiles {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
+    async fn execute(self, context: &Context) -> Result<Self::Output> {
         let leader_id = self.sync_leader_id;
         let wait_complete_from = match leader_id {
             Some(leader_id) => HashSet::from([leader_id]),
-            None => shared_state.rpc.broadcast(TransferFilesStart).ack().await?,
+            None => context.rpc.broadcast(TransferFilesStart).ack().await?,
         };
 
         let receive_task = tokio::spawn(receiver::receive_files(
-            shared_state.clone(),
+            context.clone(),
             wait_complete_from,
         ));
 
-        if let Err(err) = sender::send_files(shared_state, self.files_to_send).await {
+        if let Err(err) = sender::send_files(context, self.files_to_send).await {
             log::error!("{err}")
         }
 
         match leader_id {
             Some(leader_id) => {
-                let _ = shared_state
+                let _ = context
                     .rpc
                     .call(TransferFilesCompleted, leader_id)
                     .ack()
@@ -58,7 +58,7 @@ impl State for TransferFiles {
                 if let Err(err) = receive_task.await {
                     log::error!("{err}")
                 }
-                let _ = shared_state
+                let _ = context
                     .rpc
                     .broadcast(TransferFilesCompleted)
                     .ack()

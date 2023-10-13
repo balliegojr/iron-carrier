@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::SharedState;
+use crate::Context;
 
 macro_rules! debug {
     ($arg:expr, $node_id:expr) => {
@@ -40,7 +40,7 @@ impl From<anyhow::Error> for StateMachineError {
 pub trait State: std::fmt::Debug {
     type Output: std::fmt::Debug;
 
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output>;
+    async fn execute(self, context: &Context) -> Result<Self::Output>;
 }
 
 pub trait StateComposer {
@@ -106,15 +106,15 @@ where
 {
     type Output = U::Output;
 
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output>
+    async fn execute(self, context: &Context) -> Result<Self::Output>
     where
         Self: Sized,
     {
-        debug!(self.previous, shared_state.config.node_id_hashed);
-        let previous_output = self.previous.execute(shared_state).await?;
+        debug!(self.previous, context.config.node_id_hashed);
+        let previous_output = self.previous.execute(context).await?;
         let next_task = (self.map_fn)(previous_output);
-        debug!(next_task, shared_state.config.node_id_hashed);
-        next_task.execute(shared_state).await
+        debug!(next_task, context.config.node_id_hashed);
+        next_task.execute(context).await
     }
 }
 
@@ -130,16 +130,16 @@ where
 {
     type Output = U::Output;
 
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output>
+    async fn execute(self, context: &Context) -> Result<Self::Output>
     where
         Self: Sized,
     {
-        debug!(self.previous, shared_state.config.node_id_hashed);
-        self.previous.execute(shared_state).await?;
+        debug!(self.previous, context.config.node_id_hashed);
+        self.previous.execute(context).await?;
 
         let next = U::default();
-        debug!(next, shared_state.config.node_id_hashed);
-        next.execute(shared_state).await
+        debug!(next, context.config.node_id_hashed);
+        next.execute(context).await
     }
 }
 
@@ -171,14 +171,14 @@ where
 {
     type Output = U::Output;
 
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
-        debug!(self.previous, shared_state.config.node_id_hashed);
-        if let Err(StateMachineError::Err(err)) = self.previous.execute(shared_state).await {
+    async fn execute(self, context: &Context) -> Result<Self::Output> {
+        debug!(self.previous, context.config.node_id_hashed);
+        if let Err(StateMachineError::Err(err)) = self.previous.execute(context).await {
             log::error!("{err}");
         };
 
         let next = (self.loop_fn)();
-        debug!(next, shared_state.config.node_id_hashed);
-        next.execute(shared_state).await
+        debug!(next, context.config.node_id_hashed);
+        next.execute(context).await
     }
 }

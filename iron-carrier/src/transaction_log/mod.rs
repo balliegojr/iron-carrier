@@ -126,7 +126,7 @@ impl TransactionLog {
     }
 }
 
-pub fn get_storage(log_path: &Path) -> rusqlite::Result<Connection> {
+fn get_storage(log_path: &Path) -> rusqlite::Result<Connection> {
     Connection::open_with_flags(
         log_path,
         OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_READ_WRITE,
@@ -135,7 +135,7 @@ pub fn get_storage(log_path: &Path) -> rusqlite::Result<Connection> {
 }
 
 #[cfg(test)]
-pub fn get_memory_storage() -> rusqlite::Result<Connection> {
+fn get_memory_storage() -> rusqlite::Result<Connection> {
     Connection::open_in_memory().and_then(setup)
 }
 

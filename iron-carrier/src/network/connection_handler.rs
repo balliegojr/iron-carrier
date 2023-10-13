@@ -16,19 +16,31 @@ pub struct ConnectionHandler {
 }
 
 impl ConnectionHandler {
-    pub async fn new(
-        config: &'static Config,
-        on_connect: Sender<Connection>,
-    ) -> anyhow::Result<Self> {
-        let inbound_fut = listen_connections(config, on_connect.clone());
+    pub fn new(config: &'static Config, on_connect: Sender<Connection>) -> Self {
+        Self { config, on_connect }
+    }
 
+    pub fn start_listening(&self) {
+        let inbound_fut = listen_connections(self.config, self.on_connect.clone());
         tokio::spawn(async move {
             if let Err(err) = inbound_fut.await {
                 log::error!("{err}");
             }
         });
+    }
 
-        Ok(Self { config, on_connect })
+    #[cfg(test)]
+    pub async fn connect_context(&self, other: &crate::context::Context) {
+        log::info!(
+            "Connecting {} to {}",
+            self.config.node_id_hashed,
+            other.config.node_id_hashed
+        );
+        let (self_conn, other_conn) =
+            local_connection_pair(self.config.node_id_hashed, other.config.node_id_hashed);
+
+        let _ = self.on_connect.send(other_conn).await;
+        let _ = other.connection_handler.on_connect.send(self_conn).await;
     }
 
     pub async fn connect(&self, addr: SocketAddr) -> anyhow::Result<NodeId> {
@@ -95,4 +107,18 @@ async fn listen_connections(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+fn local_connection_pair(
+    first: crate::node_id::NodeId,
+    second: crate::node_id::NodeId,
+) -> (connection::Connection, connection::Connection) {
+    let (one_rx, one_tx) = tokio::io::duplex(4096);
+    let (two_rx, two_tx) = tokio::io::duplex(4096);
+
+    (
+        connection::Connection::new(Box::pin(one_rx), Box::pin(two_tx), first, 0),
+        connection::Connection::new(Box::pin(two_rx), Box::pin(one_tx), second, 0),
+    )
 }

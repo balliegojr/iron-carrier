@@ -40,17 +40,6 @@ pub struct Connection {
     dedup_control: u8,
 }
 
-#[cfg(test)]
-pub fn local_connection_pair(node_id: NodeId) -> (Connection, Connection) {
-    let (one_rx, one_tx) = tokio::io::duplex(4096);
-    let (two_rx, two_tx) = tokio::io::duplex(4096);
-
-    (
-        Connection::new(Box::pin(one_rx), Box::pin(two_tx), node_id, 0),
-        Connection::new(Box::pin(two_rx), Box::pin(one_tx), node_id, 0),
-    )
-}
-
 impl Connection {
     pub fn new(
         read_half: Pin<Box<dyn AsyncRead + Send>>,
@@ -140,6 +129,12 @@ pub async fn handshake_and_identify_connection(
     }
 
     let node_id = NodeId::from(u64::from_be_bytes(buf[16..].try_into()?));
+    // Docker network interface will have the same ip on different nodes (172.17.0.1)
+    // Trying to connect to it, with docker running, have the same effect of a loopback
+    if node_id == config.node_id_hashed {
+        anyhow::bail!("Tried to connect to same node");
+    }
+
     let control = match config.node_id_hashed.cmp(&node_id) {
         std::cmp::Ordering::Less | std::cmp::Ordering::Equal => {
             let control =

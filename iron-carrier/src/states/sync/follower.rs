@@ -11,7 +11,7 @@ use crate::{
     state_machine::{Result, State},
     states::sync::events::SyncCompleted,
     storage::FileInfo,
-    SharedState, StateMachineError,
+    Context, StateMachineError,
 };
 
 use super::events::{
@@ -38,13 +38,13 @@ impl Follower {
 impl State for Follower {
     type Output = ();
 
-    async fn execute(self, shared_state: &SharedState) -> Result<Self::Output> {
+    async fn execute(self, context: &Context) -> Result<Self::Output> {
         log::debug!("start sync as follower");
 
         let mut ignored_files_cache = IgnoredFilesCache::default();
-        let mut events = shared_state
+        let mut events = context
             .rpc
-            .subscribe(vec![
+            .subscribe(&[
                 QueryStorageIndex::ID,
                 SyncCompleted::ID,
                 DeleteFile::ID,
@@ -60,7 +60,7 @@ impl State for Follower {
             let request = events.next().await.ok_or(StateMachineError::Abort)?;
             match request.type_id() {
                 QueryStorageIndex::ID => {
-                    if let Err(err) = process_query_index_request(shared_state, request).await {
+                    if let Err(err) = process_query_index_request(context, request).await {
                         log::error!("{err}")
                     }
                 }
@@ -70,7 +70,7 @@ impl State for Follower {
                 }
                 DeleteFile::ID => {
                     if let Err(err) =
-                        process_delete_file_request(shared_state, &mut ignored_files_cache, request)
+                        process_delete_file_request(context, &mut ignored_files_cache, request)
                             .await
                     {
                         log::error!("{err}")
@@ -78,8 +78,7 @@ impl State for Follower {
                 }
                 MoveFile::ID => {
                     if let Err(err) =
-                        process_move_file_request(shared_state, &mut ignored_files_cache, request)
-                            .await
+                        process_move_file_request(context, &mut ignored_files_cache, request).await
                     {
                         log::error!("{err}")
                     }
@@ -97,7 +96,7 @@ impl State for Follower {
                         Some(self.sync_leader),
                         std::mem::take(&mut files_to_send),
                     )
-                    .execute(shared_state)
+                    .execute(context)
                     .await
                     {
                         log::error!("{err}")
@@ -113,17 +112,14 @@ impl State for Follower {
     }
 }
 
-async fn process_query_index_request(
-    shared_state: &SharedState,
-    request: RPCMessage,
-) -> anyhow::Result<()> {
+async fn process_query_index_request(context: &Context, request: RPCMessage) -> anyhow::Result<()> {
     let query: QueryStorageIndex = request.data()?;
-    let storage_index = match shared_state.config.storages.get(&query.name) {
+    let storage_index = match context.config.storages.get(&query.name) {
         Some(storage_config) => {
             match crate::storage::get_storage_info(
                 &query.name,
                 storage_config,
-                &shared_state.transaction_log,
+                &context.transaction_log,
             )
             .await
             {
@@ -152,14 +148,14 @@ async fn process_query_index_request(
 }
 
 async fn process_delete_file_request(
-    shared_state: &SharedState,
+    context: &Context,
     ignored_files_cache: &mut IgnoredFilesCache,
     request: RPCMessage,
 ) -> anyhow::Result<()> {
     let op: DeleteFile = request.data()?;
     crate::storage::file_operations::delete_file(
-        shared_state.config,
-        &shared_state.transaction_log,
+        context.config,
+        &context.transaction_log,
         &op.file,
         ignored_files_cache,
     )
@@ -168,14 +164,14 @@ async fn process_delete_file_request(
 }
 
 async fn process_move_file_request(
-    shared_state: &SharedState,
+    context: &Context,
     ignored_files_cache: &mut IgnoredFilesCache,
     request: RPCMessage,
 ) -> anyhow::Result<()> {
     let op: MoveFile = request.data()?;
     crate::storage::file_operations::move_file(
-        shared_state.config,
-        &shared_state.transaction_log,
+        context.config,
+        &context.transaction_log,
         &op.file,
         ignored_files_cache,
     )
