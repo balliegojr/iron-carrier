@@ -72,7 +72,7 @@ pub async fn get_peers(
     let services = service_discovery
         .get_known_services()
         .await
-        .into_iter()
+        .into_values()
         .filter(|service| same_version(service) && same_group(service, &h_group));
 
     for mut instance_info in services {
