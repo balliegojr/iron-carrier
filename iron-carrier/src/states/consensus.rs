@@ -5,14 +5,13 @@
 //! This protocol also expects absolute voting instead of majority
 use std::{collections::HashSet, fmt::Display, time::Duration};
 
-use iron_carrier_macros::HashTypeId;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
 use crate::{
     constants::MAX_ELECTION_TERMS,
-    hash_type_id::HashTypeId,
+    message_types::MessageType,
     node_id::NodeId,
     state_machine::{Result, State, StateMachineError},
     Context,
@@ -38,9 +37,19 @@ pub enum ElectionEvents {
     VoteOnTerm(u32, bool),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Consensus {
     election_state: NodeState,
+    participants: HashSet<NodeId>,
+}
+
+impl Consensus {
+    pub fn new(participants: HashSet<NodeId>) -> Self {
+        Self {
+            election_state: Default::default(),
+            participants,
+        }
+    }
 }
 
 impl Display for Consensus {
@@ -77,7 +86,11 @@ impl State for Consensus {
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
         let mut events = context
             .rpc
-            .subscribe(&[StartConsensus::ID, RequestVote::ID, ConsensusReached::ID])
+            .subscribe(&[
+                StartConsensus::MESSAGE_TYPE,
+                RequestVote::MESSAGE_TYPE,
+                ConsensusReached::MESSAGE_TYPE,
+            ])
             .await?;
 
         let mut replies_fut: MaybeFuture<anyhow::Result<crate::network::rpc::GroupCallResponse>> =
@@ -86,8 +99,8 @@ impl State for Consensus {
         let mut init_fut: MaybeFuture<anyhow::Result<HashSet<NodeId>>> = Some(Box::pin(
             context
                 .rpc
-                .broadcast(StartConsensus)
-                .timeout(Duration::from_secs(10))
+                .multi_call(StartConsensus, self.participants.clone())
+                .timeout(Duration::from_secs(60))
                 .ack(),
         ));
 
@@ -130,7 +143,9 @@ impl State for Consensus {
                                 log::debug!("Node wins election");
                                 self.election_state = NodeState::Leader;
                                 let nodes = replies.into_iter().map(|r| r.node_id()).collect();
-                                context.rpc.multi_call(ConsensusReached, nodes).ack().await?;
+                                context.rpc.multi_call(ConsensusReached, nodes)
+                                    .timeout(Duration::from_secs(60))
+                                    .ack().await?;
 
                                 break context.config.node_id_hashed
                             }
@@ -145,8 +160,8 @@ impl State for Consensus {
 
                 request = events.next() => {
                     let request = request.ok_or(StateMachineError::Abort)?;
-                    match request.type_id() {
-                        RequestVote::ID => {
+                    match request.type_id()? {
+                        RequestVote::MESSAGE_TYPE => {
                             let data = request.data::<RequestVote>()?;
                             if term < data.term {
                                 term = data.term;
@@ -157,12 +172,12 @@ impl State for Consensus {
                                 request.reply(TermVote { vote: false }).await?;
                             }
                         }
-                        ConsensusReached::ID => {
+                        ConsensusReached::MESSAGE_TYPE => {
                             let leader = request.node_id();
                             request.ack().await?;
                             break leader;
                         }
-                        StartConsensus::ID => {
+                        StartConsensus::MESSAGE_TYPE => {
                             let _ = request.ack().await;
                         }
                         _ => { unreachable!() }
@@ -175,17 +190,18 @@ impl State for Consensus {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, HashTypeId)]
+#[derive(Debug, Serialize, Deserialize, MessageType)]
 pub struct StartConsensus;
-#[derive(Debug, Serialize, Deserialize, HashTypeId)]
+
+#[derive(Debug, Serialize, Deserialize, MessageType)]
 pub struct ConsensusReached;
 
-#[derive(Debug, Serialize, Deserialize, HashTypeId)]
+#[derive(Debug, Serialize, Deserialize, MessageType)]
 struct RequestVote {
     pub term: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize, HashTypeId)]
+#[derive(Debug, Serialize, Deserialize, MessageType)]
 struct TermVote {
     pub vote: bool,
 }
@@ -202,14 +218,21 @@ mod tests {
     #[tokio::test]
     async fn ensure_can_reach_consensus() -> anyhow::Result<()> {
         let [one, two, three] = crate::context::local_contexts().await?;
+        let n_one = one.config.node_id_hashed;
+        let n_two = two.config.node_id_hashed;
+        let n_three = three.config.node_id_hashed;
 
         let (r_one, r_two, r_three) = tokio::join!(
-            tokio::spawn(async move { Consensus::default().execute(&one).await }),
+            tokio::spawn(
+                async move { Consensus::new([n_two, n_three].into(),).execute(&one).await }
+            ),
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(3)).await;
-                Consensus::default().execute(&two).await
+                Consensus::new([n_one, n_three].into()).execute(&two).await
             }),
-            tokio::spawn(async move { Consensus::default().execute(&three).await }),
+            tokio::spawn(
+                async move { Consensus::new([n_one, n_two].into()).execute(&three).await }
+            ),
         );
 
         let r_one = r_one??;

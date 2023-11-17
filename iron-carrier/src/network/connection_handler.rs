@@ -5,9 +5,11 @@ use tokio::sync::mpsc::Sender;
 use crate::{
     config::Config,
     constants::DEFAULT_NETWORK_TIMEOUT,
-    network::connection::{self, Connection},
+    network::connection::{self},
     node_id::NodeId,
 };
+
+use super::connection::Connection;
 
 #[derive(Debug, Clone)]
 pub struct ConnectionHandler {
@@ -20,8 +22,8 @@ impl ConnectionHandler {
         Self { config, on_connect }
     }
 
-    pub fn start_listening(&self) {
-        let inbound_fut = listen_connections(self.config, self.on_connect.clone());
+    pub fn start_accepting_connections(&self) {
+        let inbound_fut = accept_connections(self.config, self.on_connect.clone());
         tokio::spawn(async move {
             if let Err(err) = inbound_fut.await {
                 log::error!("{err}");
@@ -44,27 +46,7 @@ impl ConnectionHandler {
     }
 
     pub async fn connect(&self, addr: SocketAddr) -> anyhow::Result<NodeId> {
-        let connect_and_identify = async {
-            let backoff = backoff::ExponentialBackoffBuilder::new()
-                .with_max_elapsed_time(Some(Duration::from_secs(3)))
-                .build();
-
-            let transport_stream = backoff::future::retry(backoff, || async {
-                tokio::net::TcpStream::connect(addr)
-                    .await
-                    .map_err(backoff::Error::from)
-            })
-            .await?;
-
-            connection::handshake_and_identify_connection(self.config, transport_stream).await
-        };
-
-        let connection = tokio::time::timeout(
-            Duration::from_secs(DEFAULT_NETWORK_TIMEOUT),
-            connect_and_identify,
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("Timeout when connecting to node"))??;
+        let connection = connection::try_connect_and_identify(self.config, addr).await?;
 
         let node_id = connection.node_id();
         if let Err(err) = self.on_connect.send(connection).await {
@@ -75,7 +57,7 @@ impl ConnectionHandler {
     }
 }
 
-async fn listen_connections(
+async fn accept_connections(
     config: &'static Config,
     on_connect: Sender<Connection>,
 ) -> anyhow::Result<()> {

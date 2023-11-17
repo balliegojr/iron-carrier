@@ -33,13 +33,17 @@ impl ConnectionStorage {
         self.connections.get_mut(node_id)
     }
 
-    pub fn remove(&mut self, node_id: &NodeId) -> Option<WriteHalf> {
+    pub fn remove(&mut self, node_id: NodeId) {
         log::trace!("Removing connection {:?}", node_id);
-        self.connections.remove(node_id)
+        self.connections.remove(&node_id);
     }
 
     pub fn connected_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.connections.keys().copied()
+    }
+
+    pub fn is_connected(&self, node_id: NodeId) -> bool {
+        self.connections.contains_key(&node_id)
     }
 
     pub fn is_empty(&self) -> bool {

@@ -24,31 +24,10 @@ impl State for DiscoverPeers {
     type Output = HashMap<SocketAddr, Option<NodeId>>;
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
-        let backoff = backoff::ExponentialBackoffBuilder::new()
-            .with_max_elapsed_time(Some(Duration::from_secs(30)))
-            .build();
+        crate::network::service_discovery::init_service_discovery(context.config).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-        // this retry is here in case the network card isn't ready when initializing the daemon
-        let discovery = backoff::future::retry(backoff, || async {
-            crate::network::service_discovery::get_service_discovery(context.config)
-                .await
-                .map_err(backoff::Error::from)
-        })
-        .await?;
-
-        let mut addresses = match discovery {
-            Some(discovery) => {
-                // Wait for a while to discover peers in the network
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                crate::network::service_discovery::get_peers(
-                    discovery,
-                    context.config.group.as_ref(),
-                )
-                .await
-            }
-            None => Default::default(),
-        };
-
+        let mut addresses = crate::network::service_discovery::get_nodes(context).await?;
         if let Some(peers) = &context.config.peers {
             for addrs in peers.iter().filter_map(|p| p.to_socket_addrs().ok()) {
                 for addr in addrs {

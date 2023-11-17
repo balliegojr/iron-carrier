@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{constants::DEFAULT_NETWORK_TIMEOUT, hash_type_id::TypeId};
+use crate::{constants::DEFAULT_NETWORK_TIMEOUT, message_types::MessageTypes};
 use tokio::sync::{
     mpsc::{Receiver, Sender},
     Semaphore,
@@ -43,34 +43,37 @@ pub use rpc_message::RPCMessage;
 pub fn rpc_service(new_connection: Receiver<Connection>) -> RPCHandler {
     let (net_out_tx, net_out_rx) = tokio::sync::mpsc::channel(10);
     let (add_consumer_tx, add_consumer_rx) = tokio::sync::mpsc::channel(10);
+    let (connection_query_tx, connection_query_rx) = tokio::sync::mpsc::channel(1);
 
     tokio::spawn(rpc_loop(
         net_out_rx,
         net_out_tx.clone(),
         new_connection,
         add_consumer_rx,
+        connection_query_rx,
     ));
 
-    RPCHandler::new(net_out_tx, add_consumer_tx)
+    RPCHandler::new(net_out_tx, add_consumer_tx, connection_query_tx)
 }
 
 async fn rpc_loop(
     mut net_out: Receiver<(NetworkMessage, OutboundNetworkMessageType)>,
     net_out_sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
     mut new_connection: Receiver<Connection>,
-    mut add_consumers: Receiver<(Vec<TypeId>, Sender<RPCMessage>, Arc<Semaphore>)>,
+    mut add_consumers: Receiver<(Vec<MessageTypes>, Sender<RPCMessage>, Arc<Semaphore>)>,
+    mut connection_query: Receiver<(NodeId, tokio::sync::oneshot::Sender<bool>)>,
 ) {
     let (net_in_tx, mut net_in_rx) = tokio::sync::mpsc::channel::<IncomingNetworkEvent>(10);
     let (remove_consumers_tx, mut remove_consumers) = tokio::sync::mpsc::channel(1);
     // Holds messages that arrived but didn't had any consumer ready to process it
     let mut unprocessed_message_queue: HashMap<
-        TypeId,
+        MessageTypes,
         VecDeque<(NodeId, NetworkMessage, Deadline)>,
     > = Default::default();
     // Messages sent, waiting for a reply
     let mut sent_requests: HashMap<u16, MessageWaitingReply> = Default::default();
 
-    let mut consumers: HashMap<TypeId, Sender<RPCMessage>> = Default::default();
+    let mut consumers: HashMap<MessageTypes, Sender<RPCMessage>> = Default::default();
     let mut connections = ConnectionStorage::default();
 
     let mut cleanup = tokio::time::interval(Duration::from_secs(1));
@@ -85,7 +88,6 @@ async fn rpc_loop(
             biased;
             request = new_connection.recv() =>  {
                 let Some(connection) = request else {
-                    log::trace!("break new connection");
                     break;
                 };
 
@@ -95,15 +97,15 @@ async fn rpc_loop(
             }
             request = net_in_rx.recv() => {
                 let Some(event) = request else {
-                    log::trace!("break net in");
                     break;
                 };
 
                 match event {
                     IncomingNetworkEvent::Disconnected(node_id) => {
-                        connections.remove(&node_id);
+                        connections.remove(node_id);
                     }
                     IncomingNetworkEvent::Message(node_id, message) => {
+                        log::trace!("Received message {:?}", message);
                         if message.is_reply() {
                             process_reply(message, node_id, &mut sent_requests).await;
                         } else {
@@ -149,6 +151,11 @@ async fn rpc_loop(
                     consumers.remove(&consumer_type);
                 }
             }
+
+            request = connection_query.recv() => {
+                let Some((node_id, reply)) = request else { break; };
+                let _ = reply.send(connections.is_connected(node_id));
+            }
             _ = cleanup.tick(), if has_cleanup => {
                 cleanup_resources(&mut connections, &mut unprocessed_message_queue, &mut sent_requests, &mut consumers).await;
             }
@@ -178,36 +185,35 @@ pub enum OutboundNetworkMessageType {
 async fn process_rpc_call(
     message: NetworkMessage,
     node_id: NodeId,
-    consumers: &mut HashMap<TypeId, tokio::sync::mpsc::Sender<RPCMessage>>,
-    message_queue: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
+    consumers: &mut HashMap<MessageTypes, tokio::sync::mpsc::Sender<RPCMessage>>,
+    message_queue: &mut HashMap<MessageTypes, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
     net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 ) {
-    if let Entry::Occupied(mut entry) = consumers.entry(message.type_id()) {
+    let Ok(type_id) = message.type_id() else {
+        log::error!("Received message without type_id {:?}", message);
+        return;
+    };
+
+    if let Entry::Occupied(mut entry) = consumers.entry(type_id) {
         if let Err(err) = entry
             .get_mut()
             .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
             .await
         {
             let message: NetworkMessage = err.0.into();
-            message_queue
-                .entry(message.type_id())
-                .or_default()
-                .push_back((
-                    node_id,
-                    message,
-                    Deadline::new(Duration::from_secs(DEFAULT_NETWORK_TIMEOUT)),
-                ));
-            entry.remove_entry();
-        }
-    } else {
-        message_queue
-            .entry(message.type_id())
-            .or_default()
-            .push_back((
+            message_queue.entry(type_id).or_default().push_back((
                 node_id,
                 message,
                 Deadline::new(Duration::from_secs(DEFAULT_NETWORK_TIMEOUT)),
             ));
+            entry.remove_entry();
+        }
+    } else {
+        message_queue.entry(type_id).or_default().push_back((
+            node_id,
+            message,
+            Deadline::new(Duration::from_secs(DEFAULT_NETWORK_TIMEOUT)),
+        ));
     }
 }
 
@@ -228,7 +234,10 @@ async fn process_reply(
             }
         }
         Entry::Vacant(_) => {
-            log::error!("Received an unexpected message from {node_id}");
+            log::error!(
+                "Received an unexpected message from {node_id}: {:?}",
+                message,
+            );
         }
     }
 }
@@ -239,34 +248,16 @@ async fn send_outbound_message(
     connections: &mut ConnectionStorage,
     sent_requests: &mut HashMap<u16, MessageWaitingReply>,
 ) {
-    async fn send_to(
-        message: &NetworkMessage,
-        node_id: NodeId,
-        connections: &mut ConnectionStorage,
-    ) -> anyhow::Result<()> {
-        let write_result = match connections.get_mut(&node_id) {
-            Some(connection) => message.write_into(connection).await,
-            None => {
-                anyhow::bail!("Not connected to node {node_id}");
-            }
-        };
-
-        if let Err(err) = write_result {
-            connections.remove(&node_id);
-            anyhow::bail!("Failed to write to connection {err}");
-        }
-
-        Ok(())
-    }
+    log::trace!("Sending message {:?}", message);
 
     match send_type {
         OutboundNetworkMessageType::Response(node_id) => {
-            if let Err(err) = send_to(&message, node_id, connections).await {
+            if let Err(err) = send_message_to(&message, node_id, connections).await {
                 log::error!("{err}");
             }
         }
         OutboundNetworkMessageType::SingleNode(node_id, callback, timeout) => {
-            if let Err(err) = send_to(&message, node_id, connections).await {
+            if let Err(err) = send_message_to(&message, node_id, connections).await {
                 log::error!("{err}");
                 let _ = callback.send(ReplyType::Cancel(node_id)).await;
             } else {
@@ -279,7 +270,7 @@ async fn send_outbound_message(
         OutboundNetworkMessageType::MultiNode(nodes, callback, timeout) => {
             let mut nodes_sent = HashSet::new();
             for node_id in nodes {
-                if let Err(err) = send_to(&message, node_id, connections).await {
+                if let Err(err) = send_message_to(&message, node_id, connections).await {
                     log::error!("{err}");
                     let _ = callback.send(ReplyType::Cancel(node_id)).await;
                 } else {
@@ -295,7 +286,7 @@ async fn send_outbound_message(
         OutboundNetworkMessageType::Broadcast(callback, timeout) => {
             let mut nodes = HashSet::new();
             for node_id in connections.connected_nodes().collect::<Vec<_>>() {
-                if let Err(err) = send_to(&message, node_id, connections).await {
+                if let Err(err) = send_message_to(&message, node_id, connections).await {
                     log::error!("{err}");
                     let _ = callback.send(ReplyType::Cancel(node_id)).await;
                 } else {
@@ -311,14 +302,31 @@ async fn send_outbound_message(
     }
 }
 
+async fn send_message_to(
+    message: &NetworkMessage,
+    node_id: NodeId,
+    connections: &mut ConnectionStorage,
+) -> anyhow::Result<()> {
+    let connection = connections
+        .get_mut(&node_id)
+        .ok_or_else(|| anyhow::anyhow!("Unknown node {node_id}"))?;
+
+    if let Err(err) = message.write_into(connection).await {
+        connections.remove(node_id);
+        anyhow::bail!("Failed to write to connection {err}");
+    }
+
+    Ok(())
+}
+
 async fn add_new_consumers(
-    consumer_types: Vec<TypeId>,
+    consumer_types: Vec<MessageTypes>,
     consumer: Sender<RPCMessage>,
-    received_messages: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
-    consumers: &mut HashMap<TypeId, tokio::sync::mpsc::Sender<RPCMessage>>,
+    received_messages: &mut HashMap<MessageTypes, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
+    consumers: &mut HashMap<MessageTypes, tokio::sync::mpsc::Sender<RPCMessage>>,
     net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
     semaphore: Arc<Semaphore>,
-    remove_consumers: Sender<Vec<TypeId>>,
+    remove_consumers: Sender<Vec<MessageTypes>>,
 ) {
     for consumer_type in consumer_types.iter() {
         if let Entry::Occupied(mut entry) = received_messages.entry(*consumer_type) {
@@ -348,9 +356,9 @@ async fn add_new_consumers(
 
 async fn cleanup_resources(
     connections: &mut ConnectionStorage,
-    received_messages: &mut HashMap<TypeId, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
+    received_messages: &mut HashMap<MessageTypes, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
     sent_requests: &mut HashMap<u16, MessageWaitingReply>,
-    consumers: &mut HashMap<TypeId, tokio::sync::mpsc::Sender<RPCMessage>>,
+    consumers: &mut HashMap<MessageTypes, tokio::sync::mpsc::Sender<RPCMessage>>,
 ) {
     connections.remove_stale();
     consumers.retain(|_, consumer| !consumer.is_closed());
@@ -390,6 +398,8 @@ async fn read_network_data(read_connection: ReadHalf, event_stream: Sender<Incom
         }
     }
 
+    stream.into_inner().set_dropped();
+
     let _ = event_stream
         .send(IncomingNetworkEvent::Disconnected(node_id))
         .await;
@@ -399,9 +409,11 @@ async fn read_network_data(read_connection: ReadHalf, event_stream: Sender<Incom
 mod tests {
     use super::*;
 
-    use crate::{context::Context, hash_type_id::HashTypeId};
-    use iron_carrier_macros::HashTypeId;
-    use serde::{Deserialize, Serialize};
+    use crate::{
+        context::Context,
+        message_types::MessageTypes,
+        states::consensus::{ConsensusReached, StartConsensus},
+    };
 
     #[tokio::test]
     pub async fn ensure_rpc_single_call_times_out() -> anyhow::Result<()> {
@@ -409,8 +421,13 @@ mod tests {
 
         ping_rpc(Duration::from_secs(1), one);
 
-        assert!(zero.rpc.call(Ack, 1.into()).ack().await.is_ok());
-        assert!(zero.rpc.call(Reply, 1.into()).ack().await.is_err());
+        assert!(zero
+            .rpc
+            .call(ConsensusReached, 1.into())
+            .ack()
+            .await
+            .is_ok());
+        assert!(zero.rpc.call(StartConsensus, 1.into()).ack().await.is_err());
 
         Ok(())
     }
@@ -424,7 +441,7 @@ mod tests {
 
         assert_eq!(
             zero.rpc
-                .multi_call(Ack, [1.into()].into())
+                .multi_call(ConsensusReached, [1.into()].into())
                 .timeout(Duration::from_secs(1))
                 .ack()
                 .await?,
@@ -432,7 +449,7 @@ mod tests {
         );
         assert_eq!(
             zero.rpc
-                .multi_call(Ack, [1.into(), 2.into()].into())
+                .multi_call(ConsensusReached, [1.into(), 2.into()].into())
                 .timeout(Duration::from_secs(1))
                 .ack()
                 .await?,
@@ -441,7 +458,7 @@ mod tests {
 
         assert_eq!(
             zero.rpc
-                .multi_call(Reply, [1.into()].into())
+                .multi_call(StartConsensus, [1.into()].into())
                 .timeout(Duration::from_secs(1))
                 .result()
                 .await?
@@ -452,7 +469,7 @@ mod tests {
 
         match zero
             .rpc
-            .multi_call(Reply, [1.into()].into())
+            .multi_call(StartConsensus, [1.into()].into())
             .timeout(Duration::from_secs(1))
             .result()
             .await?
@@ -463,7 +480,7 @@ mod tests {
 
         match zero
             .rpc
-            .multi_call(Reply, [1.into(), 2.into()].into())
+            .multi_call(ConsensusReached, [1.into(), 2.into()].into())
             .timeout(Duration::from_secs(1))
             .result()
             .await?
@@ -487,7 +504,7 @@ mod tests {
 
         assert_eq!(
             zero.rpc
-                .broadcast(Ack)
+                .broadcast(ConsensusReached)
                 .timeout(Duration::from_secs(1))
                 .ack()
                 .await?,
@@ -496,7 +513,7 @@ mod tests {
 
         match zero
             .rpc
-            .broadcast(Reply)
+            .broadcast(StartConsensus)
             .timeout(Duration::from_secs(1))
             .result()
             .await?
@@ -516,17 +533,21 @@ mod tests {
             // Necessary to move the whole context, otherwise it gets dropped
             let context = context;
 
-            let mut sub = context.rpc.subscribe(&[Reply::ID, Ack::ID]).await.unwrap();
+            let mut sub = context
+                .rpc
+                .subscribe(&[MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
+                .await
+                .unwrap();
 
             while let Some(message) = sub.next().await {
                 tokio::spawn(async move {
                     tokio::time::sleep(wait_time).await;
 
                     match message.type_id() {
-                        Reply::ID => {
-                            let _ = message.reply(Reply).await;
+                        Ok(MessageTypes::StartConsensus) => {
+                            let _ = message.reply(ConsensusReached).await;
                         }
-                        Ack::ID => {
+                        Ok(MessageTypes::ConsensusReached) => {
                             let _ = message.ack().await;
                         }
                         _ => unreachable!(),
@@ -535,10 +556,4 @@ mod tests {
             }
         });
     }
-
-    #[derive(Debug, HashTypeId, Serialize, Deserialize)]
-    struct Ack;
-
-    #[derive(Debug, HashTypeId, Serialize, Deserialize)]
-    struct Reply;
 }

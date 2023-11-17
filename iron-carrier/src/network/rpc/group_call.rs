@@ -1,6 +1,6 @@
 use std::{collections::HashSet, time::Duration};
 
-use crate::{constants::DEFAULT_NETWORK_TIMEOUT, hash_type_id::HashTypeId};
+use crate::{constants::DEFAULT_NETWORK_TIMEOUT, message_types::MessageType};
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
@@ -19,7 +19,7 @@ pub struct GroupCall<T> {
 
 impl<T> GroupCall<T>
 where
-    T: HashTypeId + Serialize,
+    T: MessageType + Serialize,
 {
     pub fn new(
         data: T,

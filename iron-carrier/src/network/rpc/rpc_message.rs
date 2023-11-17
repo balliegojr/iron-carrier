@@ -1,4 +1,4 @@
-use crate::hash_type_id::{HashTypeId, TypeId};
+use crate::message_types::{MessageType, MessageTypes};
 use serde::{de::Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
 
@@ -30,11 +30,11 @@ impl RPCMessage {
         self.node_id
     }
 
-    pub fn type_id(&self) -> TypeId {
+    pub fn type_id(&self) -> anyhow::Result<MessageTypes> {
         self.inner.type_id()
     }
 
-    pub fn data<'a, T: HashTypeId + Deserialize<'a>>(&'a self) -> anyhow::Result<T> {
+    pub fn data<'a, T: MessageType + Deserialize<'a>>(&'a self) -> anyhow::Result<T> {
         self.inner.data()
     }
 
@@ -53,7 +53,7 @@ impl RPCMessage {
         self.send(cancel_message).await
     }
 
-    pub async fn reply<U: HashTypeId + Serialize>(self, message: U) -> anyhow::Result<()> {
+    pub async fn reply<U: MessageType + Serialize>(self, message: U) -> anyhow::Result<()> {
         let reply = NetworkMessage::reply_message(self.inner.id(), message)?;
         self.send(reply).await
     }

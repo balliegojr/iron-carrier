@@ -1,10 +1,11 @@
-use std::{future, pin::pin, str::FromStr, time::Duration};
+use std::{collections::HashSet, future, pin::pin, str::FromStr, time::Duration};
 
 use tokio_stream::StreamExt;
 
 use crate::{
     config::Config,
-    hash_type_id::HashTypeId,
+    message_types::MessageTypes,
+    network::rpc::RPCMessage,
     node_id::NodeId,
     state_machine::{Result, State, StateComposer, StateMachineError},
     stream,
@@ -12,10 +13,7 @@ use crate::{
     Context,
 };
 
-use super::{
-    consensus::{ConsensusReached, StartConsensus},
-    ConnectAllPeers, Consensus, DiscoverPeers, SetSyncRole,
-};
+use super::{consensus::ConsensusReached, ConnectAllPeers, Consensus, DiscoverPeers, SetSyncRole};
 
 #[derive(Default, Debug)]
 pub struct Daemon {}
@@ -24,9 +22,6 @@ impl State for Daemon {
     type Output = ();
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
-        let _service_discovery =
-            crate::network::service_discovery::get_service_discovery(context.config).await?;
-
         loop {
             let event = wait_event(context).await?;
             if let Err(err) = execute_event(context, event).await {
@@ -52,30 +47,24 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
     let mut full_sync_deadline = pin!(next_cron_schedule(context.config));
     let mut events = context
         .rpc
-        .subscribe(&[StartConsensus::ID, ConsensusReached::ID])
+        .subscribe(&[MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
         .await?;
 
-    let event = tokio::select! {
-        event = events.next() => {
-            let request = event.ok_or(StateMachineError::Abort)?;
-            match request.type_id() {
-                StartConsensus::ID => {
-                    DiscoverPeers::default()
-                       .and_then(ConnectAllPeers::new)
-                       .execute(context).await?;
-
-                    request.ack().await?;
-                    Ok(DaemonEvent::SyncWithConsensus)
-
-                }
-                ConsensusReached::ID => {
-                    let leader = request.node_id();
-                    request.ack().await?;
-
-                    Ok(DaemonEvent::BecomeFollower(leader))
-                }
-                _ => unreachable!()
+    async fn process_event(event: Option<RPCMessage>) -> Result<DaemonEvent> {
+        let request = event.ok_or(StateMachineError::Abort)?;
+        match request.type_id()? {
+            MessageTypes::StartConsensus => Ok(DaemonEvent::SyncWithConsensus(request)),
+            MessageTypes::ConsensusReached => {
+                let leader = request.node_id();
+                Ok(DaemonEvent::BecomeFollower(leader, request))
             }
+            _ => unreachable!(),
+        }
+    }
+
+    tokio::select! {
+        event = events.next() => {
+            process_event(event).await
         }
         Some(to_sync) = watcher_events.recv() => {
              Ok(DaemonEvent::SyncWithoutConsensus(SyncOptions::new(to_sync)))
@@ -83,22 +72,23 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
         _ = &mut full_sync_deadline => {
             Ok(DaemonEvent::SyncWithoutConsensus(Default::default()))
         }
-    };
-
-    event
+    }
 }
 
 #[derive(Debug)]
 enum DaemonEvent {
     SyncWithoutConsensus(SyncOptions),
-    SyncWithConsensus,
-    BecomeFollower(NodeId),
+    SyncWithConsensus(RPCMessage),
+    BecomeFollower(NodeId, RPCMessage),
 }
 
 async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
     match event {
-        DaemonEvent::SyncWithConsensus => {
-            Consensus::default()
+        DaemonEvent::SyncWithConsensus(request) => {
+            DiscoverPeers::default()
+                .and_then(ConnectAllPeers::new)
+                .and_then(|nodes| AckRequest { nodes, request })
+                .and_then(Consensus::new)
                 .and_then(|leader| SetSyncRole::new(leader, Default::default()))
                 .execute(context)
                 .await
@@ -112,9 +102,10 @@ async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
                 .await
         }
 
-        DaemonEvent::BecomeFollower(leader_id) => {
+        DaemonEvent::BecomeFollower(leader_id, request) => {
             DiscoverPeers::default()
                 .and_then(ConnectAllPeers::new)
+                .and_then(|nodes| AckRequest { nodes, request })
                 .and_then(|_| SetSyncRole::new(leader_id, Default::default()))
                 .execute(context)
                 .await
@@ -129,8 +120,28 @@ impl State for BypassConsensus {
     type Output = NodeId;
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
-        context.rpc.broadcast(ConsensusReached).ack().await?;
+        context
+            .rpc
+            .broadcast(ConsensusReached)
+            .timeout(Duration::from_secs(60))
+            .ack()
+            .await?;
         Ok(context.config.node_id_hashed)
+    }
+}
+
+#[derive(Debug)]
+struct AckRequest {
+    request: RPCMessage,
+    nodes: HashSet<NodeId>,
+}
+
+impl State for AckRequest {
+    type Output = HashSet<NodeId>;
+
+    async fn execute(self, _context: &Context) -> Result<Self::Output> {
+        self.request.ack().await?;
+        Ok(self.nodes)
     }
 }
 

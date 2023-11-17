@@ -3,13 +3,12 @@ use std::{collections::HashSet, fmt::Display};
 use tokio_stream::StreamExt;
 
 use crate::{
-    file_transfer::{TransferFiles, TransferFilesStart},
-    hash_type_id::HashTypeId,
+    file_transfer::TransferFiles,
     ignored_files::IgnoredFilesCache,
+    message_types::MessageTypes,
     network::rpc::RPCMessage,
     node_id::NodeId,
     state_machine::{Result, State},
-    states::sync::events::SyncCompleted,
     storage::FileInfo,
     Context, StateMachineError,
 };
@@ -45,12 +44,12 @@ impl State for Follower {
         let mut events = context
             .rpc
             .subscribe(&[
-                QueryStorageIndex::ID,
-                SyncCompleted::ID,
-                DeleteFile::ID,
-                MoveFile::ID,
-                SendFileTo::ID,
-                TransferFilesStart::ID,
+                MessageTypes::QueryStorageIndex,
+                MessageTypes::SyncCompleted,
+                MessageTypes::DeleteFile,
+                MessageTypes::MoveFile,
+                MessageTypes::SendFileTo,
+                MessageTypes::TransferFilesStart,
             ])
             .await?;
 
@@ -58,17 +57,17 @@ impl State for Follower {
 
         loop {
             let request = events.next().await.ok_or(StateMachineError::Abort)?;
-            match request.type_id() {
-                QueryStorageIndex::ID => {
+            match request.type_id()? {
+                MessageTypes::QueryStorageIndex => {
                     if let Err(err) = process_query_index_request(context, request).await {
                         log::error!("{err}")
                     }
                 }
-                SyncCompleted::ID => {
+                MessageTypes::SyncCompleted => {
                     request.ack().await?;
                     break;
                 }
-                DeleteFile::ID => {
+                MessageTypes::DeleteFile => {
                     if let Err(err) =
                         process_delete_file_request(context, &mut ignored_files_cache, request)
                             .await
@@ -76,21 +75,21 @@ impl State for Follower {
                         log::error!("{err}")
                     }
                 }
-                MoveFile::ID => {
+                MessageTypes::MoveFile => {
                     if let Err(err) =
                         process_move_file_request(context, &mut ignored_files_cache, request).await
                     {
                         log::error!("{err}")
                     }
                 }
-                SendFileTo::ID => {
+                MessageTypes::SendFileTo => {
                     if let Err(err) =
                         process_send_file_to_request(&mut files_to_send, request).await
                     {
                         log::error!("{err}")
                     }
                 }
-                TransferFilesStart::ID => {
+                MessageTypes::TransferFilesStart => {
                     request.ack().await?;
                     if let Err(err) = TransferFiles::new(
                         Some(self.sync_leader),

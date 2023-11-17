@@ -13,16 +13,16 @@ use tokio::{
 use tokio_stream::StreamExt;
 
 use crate::{
-    config::Config, constants::DEFAULT_NETWORK_TIMEOUT, hash_helper, hash_type_id::HashTypeId,
-    ignored_files::IgnoredFilesCache, network::rpc::RPCMessage, node_id::NodeId, storage::FileInfo,
-    Context,
+    config::Config, constants::DEFAULT_NETWORK_TIMEOUT, hash_helper,
+    ignored_files::IgnoredFilesCache, message_types::MessageTypes, network::rpc::RPCMessage,
+    node_id::NodeId, storage::FileInfo, Context,
 };
 
 use super::{
     block_index::{self},
     events::{
         QueryRequiredBlocks, QueryTransferType, RequiredBlocks, TransferBlock, TransferComplete,
-        TransferFilesCompleted, TransferResult, TransferType,
+        TransferResult, TransferType,
     },
     BlockIndexPosition, Transfer, TransferId,
 };
@@ -42,11 +42,11 @@ pub async fn receive_files(
     let mut events = context
         .rpc
         .subscribe(&[
-            QueryTransferType::ID,
-            QueryRequiredBlocks::ID,
-            TransferBlock::ID,
-            TransferComplete::ID,
-            TransferFilesCompleted::ID,
+            MessageTypes::QueryTransferType,
+            MessageTypes::QueryRequiredBlocks,
+            MessageTypes::TransferBlock,
+            MessageTypes::TransferComplete,
+            MessageTypes::TransferFilesCompleted,
         ])
         .await?;
 
@@ -55,7 +55,7 @@ pub async fn receive_files(
             request = events.next() => {
                 let Some(request) = request else { break; };
                 match request.type_id() {
-                    QueryTransferType::ID => {
+                    Ok(MessageTypes::QueryTransferType) => {
                         if let Err(err) = process_query_transfer_type(
                             context.config,
                             &mut ignored_files_cache,
@@ -66,26 +66,26 @@ pub async fn receive_files(
                             log::error!("{err}")
                         }
                     }
-                    QueryRequiredBlocks::ID => {
+                    Ok(MessageTypes::QueryRequiredBlocks) => {
                         if let Err(err) = process_query_required_blocks(&mut current_transfers, request).await {
                             log::error!("{err}")
                         }
                     }
-                    TransferBlock::ID => {
+                    Ok(MessageTypes::TransferBlock) => {
                         if let Err(err) = process_transfer_block(&mut current_transfers, request).await {
                             log::error!("{err}")
                         }
                     }
-                    TransferComplete::ID => {
+                    Ok(MessageTypes::TransferComplete) => {
                         if let Err(err) = process_transfer_complete(context.config, &mut current_transfers, request).await {
                             log::error!("{err}")
                         }
                     }
-                    TransferFilesCompleted::ID => {
+                    Ok(MessageTypes::TransferFilesCompleted) => {
                         wait_complete_signal_from.remove(&request.node_id());
                         request.ack().await?;
                     }
-                    _ => unreachable!()
+                    _ => {}
                 }
             }
             Some(current_transfer) = add_current_transfer_rx.recv() => {

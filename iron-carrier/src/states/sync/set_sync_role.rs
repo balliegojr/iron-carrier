@@ -26,13 +26,9 @@ impl State for SetSyncRole {
 
     async fn execute(self, context: &crate::Context) -> Result<Self::Output> {
         if self.leader_node_id == context.config.node_id_hashed {
-            (Leader::sync(self.sync_options))
-                .execute(context)
-                .await
+            (Leader::sync(self.sync_options)).execute(context).await
         } else {
-            Follower::new(self.leader_node_id)
-                .execute(context)
-                .await
+            Follower::new(self.leader_node_id).execute(context).await
         }
     }
 }

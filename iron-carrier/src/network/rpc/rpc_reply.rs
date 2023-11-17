@@ -1,4 +1,4 @@
-use crate::hash_type_id::HashTypeId;
+use crate::message_types::MessageType;
 use serde::de::Deserialize;
 
 use crate::node_id::NodeId;
@@ -23,7 +23,7 @@ impl RPCReply {
 
     pub fn data<'a, T>(&'a self) -> anyhow::Result<T>
     where
-        T: HashTypeId + Deserialize<'a>,
+        T: MessageType + Deserialize<'a>,
     {
         self.inner.data()
     }
