@@ -2,22 +2,39 @@ use simple_mdns::{async_discovery::ServiceDiscovery, InstanceInformation};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
+    time::Duration,
 };
 
-use crate::{config::Config, constants::VERSION, hash_helper, node_id::NodeId};
+use crate::{config::Config, constants::VERSION, context::Context, hash_helper, node_id::NodeId};
 use tokio::sync::OnceCell;
 
 static SERVICE_DISCOVERY: OnceCell<ServiceDiscovery> = OnceCell::const_new();
 
-pub async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&ServiceDiscovery>> {
+pub async fn init_service_discovery(config: &Config) {
+    let _ = get_service_discovery(config).await;
+}
+
+async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&ServiceDiscovery>> {
     if !config.enable_service_discovery {
         return Ok(None);
     }
 
     let sd: anyhow::Result<&ServiceDiscovery> = SERVICE_DISCOVERY
         .get_or_try_init(|| async {
-            let node_id = config.node_id.clone();
-            let mut sd = ServiceDiscovery::new(&node_id, "_ironcarrier._tcp.local", 600)?;
+            let backoff = backoff::ExponentialBackoffBuilder::new()
+                .with_max_elapsed_time(Some(Duration::from_secs(30)))
+                .build();
+
+            // this retry is here in case the network card isn't ready when initializing the daemon
+            let mut sd = backoff::future::retry(backoff, || async {
+                ServiceDiscovery::new(
+                    config.node_id_hashed.to_string().as_str(),
+                    "_ironcarrier._tcp.local",
+                    600,
+                )
+                .map_err(backoff::Error::from)
+            })
+            .await?;
 
             let mut service_info = simple_mdns::InstanceInformation::default();
             service_info.ports.push(config.port);
@@ -25,12 +42,11 @@ pub async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&Se
             service_info
                 .attributes
                 .insert("v".into(), Some(VERSION.into()));
-            service_info.attributes.insert("id".into(), Some(node_id));
 
             if config.group.is_some() {
                 service_info
                     .attributes
-                    .insert("g".into(), config.group.as_ref().map(hashed_group));
+                    .insert("g".into(), config.group.as_deref().map(hashed_group));
             }
 
             sd.add_service_info(service_info).await?;
@@ -62,35 +78,47 @@ pub fn get_my_ips() -> anyhow::Result<Vec<IpAddr>> {
     Ok(addrs)
 }
 
-pub async fn get_peers(
-    service_discovery: &ServiceDiscovery,
-    group: Option<&String>,
-) -> HashMap<SocketAddr, Option<NodeId>> {
+pub async fn get_nodes(context: &Context) -> anyhow::Result<HashMap<SocketAddr, Option<NodeId>>> {
     let mut addresses = HashMap::new();
-    let h_group = group.map(hashed_group);
 
-    let services = service_discovery
-        .get_known_services()
-        .await
-        .into_values()
-        .filter(|service| same_version(service) && same_group(service, &h_group));
+    if let Some(service_discovery) = get_service_discovery(context.config).await? {
+        let h_group = context.config.group.as_deref().map(hashed_group);
 
-    for mut instance_info in services {
-        let id = instance_info
-            .attributes
-            .remove("id")
-            .flatten()
-            .map(|id| hash_helper::hashed_str(id).into());
+        let services = get_known_services(service_discovery)
+            .await
+            .into_iter()
+            .filter(|(node_id, service)| {
+                *node_id != context.config.node_id_hashed.to_string()
+                    && same_version(service)
+                    && same_group(service, &h_group)
+            });
 
-        for addr in instance_info.get_socket_addresses() {
-            addresses.insert(addr, id);
+        for (node_id, instance_info) in services {
+            if let Ok(id) = node_id.parse::<u64>() {
+                for addr in instance_info.get_socket_addresses() {
+                    addresses.insert(addr, Some(id.into()));
+                }
+            }
         }
     }
 
-    addresses
+    Ok(addresses)
 }
 
-fn hashed_group(group: &String) -> String {
+/// Try to get known services, if no services are returned, wait 2 seconds and then try again
+async fn get_known_services(
+    service_discovery: &ServiceDiscovery,
+) -> HashMap<String, InstanceInformation> {
+    let services = service_discovery.get_known_services().await;
+    if !services.is_empty() {
+        return services;
+    }
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    service_discovery.get_known_services().await
+}
+
+fn hashed_group(group: &str) -> String {
     hash_helper::hashed_str(group).to_string()
 }
 

@@ -1,10 +1,11 @@
 use std::{
+    net::SocketAddr,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, AtomicU8},
+        atomic::{AtomicBool, AtomicU64, AtomicU8},
         Arc,
     },
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use chacha20poly1305::{
@@ -15,7 +16,12 @@ use pbkdf2::pbkdf2_hmac_array;
 use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
-use crate::{config::Config, constants::VERSION, hash_helper, node_id::NodeId};
+use crate::{
+    config::Config,
+    constants::{DEFAULT_NETWORK_TIMEOUT, VERSION},
+    hash_helper,
+    node_id::NodeId,
+};
 
 mod read_half;
 pub use read_half::ReadHalf;
@@ -60,6 +66,7 @@ impl Connection {
         let last_access = Arc::new(AtomicU64::new(crate::time::system_time_to_secs(
             SystemTime::now(),
         )));
+        let read_dropped = Arc::new(AtomicBool::new(false));
 
         (
             WriteHalf::new(
@@ -67,8 +74,9 @@ impl Connection {
                 node_id,
                 last_access.clone(),
                 self.dedup_control,
+                read_dropped.clone(),
             ),
-            ReadHalf::new(self.read_half, node_id, last_access),
+            ReadHalf::new(self.read_half, node_id, last_access, read_dropped),
         )
     }
 
@@ -83,6 +91,33 @@ impl std::fmt::Debug for Connection {
             .field("node_id", &self.node_id)
             .finish()
     }
+}
+
+pub async fn try_connect_and_identify(
+    config: &'static Config,
+    addr: SocketAddr,
+) -> anyhow::Result<Connection> {
+    let connect_and_identify = async {
+        let backoff = backoff::ExponentialBackoffBuilder::new()
+            .with_max_elapsed_time(Some(Duration::from_secs(DEFAULT_NETWORK_TIMEOUT / 2)))
+            .build();
+
+        let transport_stream = backoff::future::retry(backoff, || async {
+            tokio::net::TcpStream::connect(addr)
+                .await
+                .map_err(backoff::Error::from)
+        })
+        .await?;
+
+        handshake_and_identify_connection(config, transport_stream).await
+    };
+
+    tokio::time::timeout(
+        Duration::from_secs(DEFAULT_NETWORK_TIMEOUT),
+        connect_and_identify,
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Timeout when connecting to node"))?
 }
 
 pub async fn handshake_and_identify_connection(

@@ -36,6 +36,8 @@ tokio-stream = { version = "0.1.11", features = ["sync"] }
 tokio-util = { version = "0.7.4", features = ["codec"] }
 toml = "^0.8"
 iron-carrier-macros = { path = "../iron-carrier-macros" }
+num-traits = "0.2"
+num-derive = "0.4"
 
 async-encrypted-stream = { version = "0.1" }
 chacha20poly1305 = { version = "0.10", features = ["stream"] }

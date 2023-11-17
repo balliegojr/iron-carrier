@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{constants::DEFAULT_NETWORK_TIMEOUT, hash_type_id::HashTypeId};
+use crate::{constants::DEFAULT_NETWORK_TIMEOUT, message_types::MessageType};
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
@@ -22,7 +22,7 @@ pub struct Call<T> {
 
 impl<T> Call<T>
 where
-    T: HashTypeId + Serialize,
+    T: MessageType + Serialize,
 {
     pub fn new(
         data: T,

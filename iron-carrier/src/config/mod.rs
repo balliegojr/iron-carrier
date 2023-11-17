@@ -105,7 +105,9 @@ impl Config {
     }
 
     fn with_non_empty_group(mut self) -> Self {
-        if let Some(group) = &self.group && group.is_empty() {
+        if let Some(group) = &self.group
+            && group.is_empty()
+        {
             self.group = None;
         }
 
@@ -149,7 +151,9 @@ impl crate::validation::Verifiable for Config {
             }
         }
 
-        if let Some(group) = &self.group && group.len() > 255 {
+        if let Some(group) = &self.group
+            && group.len() > 255
+        {
             anyhow::bail!("Invalid config: Group name is too long");
         }
 

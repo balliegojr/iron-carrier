@@ -5,9 +5,7 @@
 #![feature(hash_extract_if)]
 #![feature(btree_extract_if)]
 #![feature(let_chains)]
-#![feature(result_option_inspect)]
 #![feature(is_sorted)]
-#![feature(async_fn_in_trait)]
 
 use context::Context;
 use node_id::NodeId;
@@ -18,12 +16,12 @@ use tokio::sync::mpsc::Sender;
 
 pub mod config;
 pub mod constants;
-pub mod hash_type_id;
 pub mod relative_path;
 
 mod context;
 mod hash_helper;
 mod ignored_files;
+mod message_types;
 mod node_id;
 mod stream;
 mod sync_options;
@@ -50,14 +48,14 @@ pub async fn run_full_sync(
     config: &'static validation::Validated<config::Config>,
 ) -> anyhow::Result<()> {
     let (connection_handler, rpc) = network::get_network_service(config);
-    connection_handler.start_listening();
+    connection_handler.start_accepting_connections();
 
     let transaction_log = transaction_log::TransactionLog::load(&config.log_path)?;
     let context = Context::new(config, connection_handler, rpc, transaction_log);
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
-        .and::<states::Consensus>()
+        .and_then(states::Consensus::new)
         .and_then(|leader_id| SetSyncRole::new(leader_id, SyncOptions::default()))
         .execute(&context)
         .await?;
@@ -72,7 +70,7 @@ pub async fn start_daemon(
     log::trace!("My id is {}", config.node_id);
 
     let (connection_handler, rpc) = network::get_network_service(config);
-    connection_handler.start_listening();
+    connection_handler.start_accepting_connections();
 
     let transaction_log = transaction_log::TransactionLog::load(&config.log_path)?;
     let mut context = Context::new(config, connection_handler, rpc, transaction_log);
@@ -83,7 +81,7 @@ pub async fn start_daemon(
 
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
-        .and::<states::Consensus>()
+        .and_then(states::Consensus::new)
         .and_then(|leader_id| SetSyncRole::new(leader_id, SyncOptions::default()))
         .then_default_to(states::Daemon::default)
         .execute(&context)

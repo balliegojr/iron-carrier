@@ -3,7 +3,7 @@ use std::fs;
 mod common;
 
 #[tokio::test]
-async fn test_full_sync() {
+async fn test_full_sync_plain() {
     common::enable_logs();
 
     let _ = fs::remove_dir_all("/tmp/full_sync");

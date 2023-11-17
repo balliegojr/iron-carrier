@@ -106,7 +106,7 @@ pub async fn walk_path(
             // Because of this, we need to remove the old file entry from the list, otherwise the
             // file can be deleted before being moved
             match moved_files.remove(&file_info.path) {
-                Some(moved_file) => {
+                Some(moved_file) if moved_file.get_date() >= file_info.get_date() => {
                     let old_path = match &moved_file.info_type {
                         FileInfoType::Moved { old_path, .. } => old_path,
                         _ => unreachable!(),

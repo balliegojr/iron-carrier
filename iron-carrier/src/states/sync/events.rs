@@ -1,17 +1,16 @@
 use std::collections::HashSet;
 
-use iron_carrier_macros::HashTypeId;
 use serde::{Deserialize, Serialize};
 
-use crate::{node_id::NodeId, storage::FileInfo};
+use crate::{message_types::MessageType, node_id::NodeId, storage::FileInfo};
 
-#[derive(Debug, Serialize, Deserialize, Clone, HashTypeId)]
+#[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
 pub struct QueryStorageIndex {
     pub name: String,
     pub hash: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, HashTypeId)]
+#[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
 pub struct StorageIndex {
     pub name: String,
     pub storage_index: StorageIndexStatus,
@@ -27,21 +26,21 @@ pub enum StorageIndexStatus {
     SyncNecessary(Vec<FileInfo>),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, HashTypeId)]
+#[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
 pub struct DeleteFile {
     pub file: FileInfo,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, HashTypeId)]
+#[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
 pub struct MoveFile {
     pub file: FileInfo,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, HashTypeId)]
+#[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
 pub struct SendFileTo {
     pub file: FileInfo,
     pub nodes: HashSet<NodeId>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Copy, Clone, HashTypeId)]
+#[derive(Debug, Serialize, Deserialize, Copy, Clone, MessageType)]
 pub struct SyncCompleted;

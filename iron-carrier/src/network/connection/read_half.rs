@@ -1,6 +1,9 @@
 use std::{
     pin::Pin,
-    sync::{atomic::AtomicU64, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        Arc,
+    },
     time::SystemTime,
 };
 
@@ -13,7 +16,8 @@ pin_project_lite::pin_project! {
         #[pin]
         inner: Pin<Box<dyn AsyncRead + Send>>,
         node_id: NodeId,
-        last_access: Arc<AtomicU64>
+        last_access: Arc<AtomicU64>,
+        is_dropped: Arc<AtomicBool>
     }
 }
 
@@ -22,16 +26,23 @@ impl ReadHalf {
         inner: Pin<Box<dyn AsyncRead + Send>>,
         node_id: NodeId,
         last_access: Arc<AtomicU64>,
+        is_dropped: Arc<AtomicBool>,
     ) -> Self {
         Self {
             inner,
             node_id,
             last_access,
+            is_dropped,
         }
     }
 
     pub fn node_id(&self) -> NodeId {
         self.node_id
+    }
+
+    pub fn set_dropped(&self) {
+        self.is_dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst)
     }
 
     fn touch(self: Pin<&mut Self>) {

@@ -69,6 +69,17 @@ pub fn get_file_watcher(
     tokio::task::spawn(async move {
         let mut ignored_files_cache = IgnoredFilesCache::default();
 
+        /* FIXME: debounce events for the same file
+            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Create(File), paths: ["/home/junior/Documents/.goutputstream-EIFNE2"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
+            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Metadata(Any)), paths: ["/home/junior/Documents/.goutputstream-EIFNE2"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
+            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Access(Close(Write)), paths: ["/home/junior/Documents/new_file.txt"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
+            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Data(Any)), paths: ["/home/junior/Documents/.goutputstream-EIFNE2"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
+            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Name(From)), paths: ["/home/junior/Documents/.goutputstream-EIFNE2"], attr:tracker: Some(29063), attr:flag: None, attr:info: None, attr:source: None }
+            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Name(To)), paths: ["/home/junior/Documents/new_file.txt"], attr:tracker: Some(29063), attr:flag: None, attr:info: None, attr:source: None }
+            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Name(Both)), paths: ["/home/junior/Documents/.goutputstream-EIFNE2", "/home/junior/Documents/new_file.txt"], attr:tracker: Some(29063), attr:flag: None, attr:info: None, attr:source: None }
+            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Access(Close(Write)), paths: ["/home/junior/Documents/new_file.txt"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
+        */
+
         while let Some(event) = rx.recv().await {
             log::debug!("File Watcher event: {event:?}");
             match register_event(
@@ -107,14 +118,14 @@ async fn register_event(
 ) -> anyhow::Result<Option<String>> {
     let storage = event
         .paths
-        .get(0)
+        .first()
         .and_then(|p| get_storage_for_path(storages, p))
         .ok_or_else(|| anyhow::anyhow!("Storage not found for path"))?;
 
     let storage_config = config.storages.get(&storage).unwrap();
     let ignored_files = ignored_files_cache.get(storage_config).await;
 
-    let src = event.paths.get(0);
+    let src = event.paths.first();
     let dst = event.paths.get(1);
 
     // We don't need to write every kind of event to the transaction log, just the ones that are

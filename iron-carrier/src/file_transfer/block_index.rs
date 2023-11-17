@@ -7,15 +7,13 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::hash_helper;
 
-const MIN_BLOCK_SIZE: u64 = 1024 * 128;
-const MAX_BLOCK_SIZE: u64 = 1024 * 1024 * 16;
+const MIN_BLOCK_SIZE: u64 = 1024 * 2;
+const MAX_BLOCK_SIZE: u64 = 1024 * 1024 * 2;
 
 /// Calculates the block size for a file with given `file_size`
 ///
-/// The minimum block size is `128 KB`
-/// The maximum block size is `16 MB`
-///
-/// if `file_size` is smaller than then minimum block size, then the file size will be used instead
+/// The minimum block size is `2 KB`
+/// The maximum block size is `2 MB`
 ///
 /// The block size is calculated on a way that there are no more than
 /// **2000** blocks per file.
@@ -151,6 +149,7 @@ mod tests {
 
     #[test]
     pub fn test_get_block_size() {
+        assert_eq!(get_block_size(83140), MIN_BLOCK_SIZE);
         assert_eq!(get_block_size(10), MIN_BLOCK_SIZE);
         assert_eq!(get_block_size(MIN_BLOCK_SIZE), MIN_BLOCK_SIZE);
         assert_eq!(get_block_size(MIN_BLOCK_SIZE * 2001), MIN_BLOCK_SIZE * 2);

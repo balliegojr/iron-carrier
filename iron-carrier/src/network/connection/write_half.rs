@@ -1,6 +1,9 @@
 use std::{
     pin::Pin,
-    sync::{atomic::AtomicU64, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        Arc,
+    },
     time::SystemTime,
 };
 
@@ -14,7 +17,8 @@ pin_project_lite::pin_project! {
         inner: Pin<Box<dyn AsyncWrite + Send + Sync>>,
         node_id: NodeId,
         last_access: Arc<AtomicU64>,
-        dedup_control: u8
+        dedup_control: u8,
+        read_dropped: Arc<AtomicBool>,
     }
 }
 
@@ -24,12 +28,14 @@ impl WriteHalf {
         node_id: NodeId,
         last_access: Arc<AtomicU64>,
         dedup_control: u8,
+        read_dropped: Arc<AtomicBool>,
     ) -> Self {
         Self {
             inner,
             node_id,
             last_access,
             dedup_control,
+            read_dropped,
         }
     }
 
@@ -41,9 +47,10 @@ impl WriteHalf {
     }
 
     pub fn is_stale(&self) -> bool {
+        let read_dropped = self.read_dropped.load(std::sync::atomic::Ordering::SeqCst);
         let last_access = self.last_access.load(std::sync::atomic::Ordering::SeqCst);
         let now = system_time_to_secs(SystemTime::now());
-        (now - last_access) > PEER_STALE_CONNECTION
+        read_dropped || (now - last_access) > PEER_STALE_CONNECTION
     }
 
     pub fn node_id(&self) -> NodeId {

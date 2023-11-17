@@ -30,7 +30,7 @@ impl Display for ConnectAllPeers {
 }
 
 impl State for ConnectAllPeers {
-    type Output = ();
+    type Output = HashSet<NodeId>;
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
         if self.addresses_to_connect.is_empty() {
@@ -49,28 +49,55 @@ impl State for ConnectAllPeers {
                 acc
             });
 
-        let handles = address_by_node
-            .into_values()
-            .map(|addresses| {
-                let connection_handler = context.connection_handler.clone();
-                tokio::spawn(async move {
-                    for addr in addresses {
-                        match connection_handler.connect(addr).await {
-                            Ok(_) => break,
-                            Err(err) => {
-                                log::error!("Failed to connect to {addr}: {err}");
+        let mut handles = Vec::new();
+        for (node_id, addresses) in address_by_node {
+            match node_id {
+                Some(node_id) => {
+                    if context.rpc.has_connection_to(node_id).await? {
+                        continue;
+                    }
+
+                    let connection_handler = context.connection_handler.clone();
+                    let handle = tokio::spawn(async move {
+                        for addr in addresses {
+                            match connection_handler.connect(addr).await {
+                                Ok(node_id) => return Ok(node_id),
+                                Err(err) => {
+                                    log::error!("Failed to connect to {addr}: {err}");
+                                }
                             }
                         }
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
 
-        for handle in handles {
-            let _ = handle.await;
+                        anyhow::bail!("Failed to connect to node")
+                    });
+                    handles.push(handle)
+                }
+                None => {
+                    for addr in addresses {
+                        let connection_handler = context.connection_handler.clone();
+                        let handle = tokio::spawn(async move {
+                            match connection_handler.connect(addr).await {
+                                Ok(node_id) => Ok(node_id),
+                                Err(err) => {
+                                    anyhow::bail!("Failed to connect to node {err}")
+                                }
+                            }
+                        });
+
+                        handles.push(handle);
+                    }
+                }
+            }
         }
 
-        Ok(())
+        let mut nodes = HashSet::new();
+        for handle in handles {
+            if let Ok(Ok(node_id)) = handle.await {
+                nodes.insert(node_id);
+            }
+        }
+
+        Ok(nodes)
     }
 }
 

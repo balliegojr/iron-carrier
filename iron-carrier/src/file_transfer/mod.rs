@@ -33,10 +33,8 @@ impl State for TransferFiles {
             None => context.rpc.broadcast(TransferFilesStart).ack().await?,
         };
 
-        let receive_task = tokio::spawn(receiver::receive_files(
-            context.clone(),
-            wait_complete_from,
-        ));
+        let receive_task =
+            tokio::spawn(receiver::receive_files(context.clone(), wait_complete_from));
 
         if let Err(err) = sender::send_files(context, self.files_to_send).await {
             log::error!("{err}")
@@ -58,11 +56,7 @@ impl State for TransferFiles {
                 if let Err(err) = receive_task.await {
                     log::error!("{err}")
                 }
-                let _ = context
-                    .rpc
-                    .broadcast(TransferFilesCompleted)
-                    .ack()
-                    .await;
+                let _ = context.rpc.broadcast(TransferFilesCompleted).ack().await;
             }
         }
 
