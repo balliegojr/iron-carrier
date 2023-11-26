@@ -40,14 +40,6 @@ pub async fn move_file<'b>(
     }
 
     let src_path_abs = src_path.absolute(path_config)?;
-    if dest_path_abs.exists() {
-        anyhow::bail!(
-            "Invalid Operation: destination already exists, cannot move {:?} to {:?}",
-            src_path_abs,
-            dest_path_abs
-        );
-    }
-
     if !src_path_abs.exists() {
         anyhow::bail!(
             "Invalid Operation: source does not exist, cannot move {:?} to {:?}",
