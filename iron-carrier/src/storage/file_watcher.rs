@@ -21,9 +21,16 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    event::{
+        AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind,
+        RenameMode,
+    },
+    Event, RecommendedWatcher, RecursiveMode, Watcher,
+};
 
 use crate::{
     config::{Config, PathConfig},
@@ -52,55 +59,54 @@ pub fn get_file_watcher(
         return Ok(None);
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(50);
     let mut watcher = notify::recommended_watcher(move |res| match res {
         Ok(event) => {
-            let _ = tx.blocking_send(event);
+            if let Ok(Some(event)) = map_event(&storages, event) {
+                let _ = tx.blocking_send(event);
+            }
         }
         Err(e) => {
             log::error!("Watcher error {e}");
         }
     })?;
 
-    for path in storages.keys() {
-        watcher.watch(path, RecursiveMode::Recursive)?;
+    for (_storage, storage_config) in config
+        .storages
+        .iter()
+        .filter(|(_, p)| p.enable_watcher.unwrap_or(config.enable_file_watcher))
+    {
+        let path = storage_config.path.canonicalize()?;
+        watcher.watch(&path, RecursiveMode::Recursive)?;
     }
 
     tokio::task::spawn(async move {
         let mut ignored_files_cache = IgnoredFilesCache::default();
 
-        /* FIXME: debounce events for the same file
-            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Create(File), paths: ["/home/junior/Documents/.goutputstream-EIFNE2"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
-            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Metadata(Any)), paths: ["/home/junior/Documents/.goutputstream-EIFNE2"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
-            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Access(Close(Write)), paths: ["/home/junior/Documents/new_file.txt"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
-            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Data(Any)), paths: ["/home/junior/Documents/.goutputstream-EIFNE2"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
-            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Name(From)), paths: ["/home/junior/Documents/.goutputstream-EIFNE2"], attr:tracker: Some(29063), attr:flag: None, attr:info: None, attr:source: None }
-            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Name(To)), paths: ["/home/junior/Documents/new_file.txt"], attr:tracker: Some(29063), attr:flag: None, attr:info: None, attr:source: None }
-            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Modify(Name(Both)), paths: ["/home/junior/Documents/.goutputstream-EIFNE2", "/home/junior/Documents/new_file.txt"], attr:tracker: Some(29063), attr:flag: None, attr:info: None, attr:source: None }
-            2023-11-18T00:45:02+01:00 - DEBUG - File Watcher event: Event { kind: Access(Close(Write)), paths: ["/home/junior/Documents/new_file.txt"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
-        */
-
+        let output = output;
         while let Some(event) = rx.recv().await {
-            log::debug!("File Watcher event: {event:?}");
-            match register_event(
-                &storages,
-                config,
-                &transaction_log,
-                event,
-                &mut ignored_files_cache,
-            )
-            .await
-            {
-                Ok(Some(storage)) => {
-                    if output.send(storage).await.is_err() {
-                        break;
+            let mut events = vec![event];
+
+            // tokio::time::sleep(Duration::from_millis(100)).await;
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
+            }
+
+            for event in dedup_events(events) {
+                match register_event(config, &transaction_log, event, &mut ignored_files_cache)
+                    .await
+                {
+                    Ok(Some(storage)) => {
+                        if output.send(storage).await.is_err() {
+                            break;
+                        }
                     }
-                }
-                Ok(_) => {
-                    log::error!("No storage found for the event");
-                }
-                Err(err) => {
-                    log::error!("There was an error registering the event {err}");
+                    Ok(_) => {
+                        log::error!("No storage found for the event");
+                    }
+                    Err(err) => {
+                        log::error!("There was an error registering the event {err}");
+                    }
                 }
             }
         }
@@ -109,75 +115,230 @@ pub fn get_file_watcher(
     Ok(Some(watcher))
 }
 
-async fn register_event(
+fn map_event(
     storages: &HashMap<PathBuf, String>,
-    config: &Config,
-    transaction_log: &TransactionLog,
     event: Event,
-    ignored_files_cache: &mut IgnoredFilesCache,
-) -> anyhow::Result<Option<String>> {
-    let storage = event
+) -> anyhow::Result<Option<EventType>> {
+    let path = event
         .paths
         .first()
-        .and_then(|p| get_storage_for_path(storages, p))
+        .ok_or_else(|| anyhow::anyhow!("Missing event path"))?
+        .to_path_buf();
+
+    let storage = get_storage_for_path(storages, &path)
         .ok_or_else(|| anyhow::anyhow!("Storage not found for path"))?;
 
-    let storage_config = config.storages.get(&storage).unwrap();
-    let ignored_files = ignored_files_cache.get(storage_config).await;
+    let timestamp = UNIX_EPOCH.elapsed()?.as_secs();
+    match event.kind {
+        // Write events
+        notify::EventKind::Create(CreateKind::File) => {
+            Ok(Some(EventType::Create { path, storage }))
+        }
+        notify::EventKind::Modify(
+            ModifyKind::Metadata(MetadataKind::Any) | ModifyKind::Data(DataChange::Any),
+        )
+        | notify::EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
+            Ok(Some(EventType::Write { path, storage }))
+        }
+        notify::EventKind::Modify(ModifyKind::Name(RenameMode::To))
+            if event.tracker().is_none() =>
+        {
+            Ok(Some(EventType::Write { path, storage }))
+        }
 
-    let src = event.paths.first();
-    let dst = event.paths.get(1);
+        notify::EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+            let to = event
+                .paths
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("Missing destination"))?
+                .to_path_buf();
 
-    // We don't need to write every kind of event to the transaction log, just the ones that are
-    // related to delete or move a file. These are important to keep track so we don't recreate the
+            let timestamp = to
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .map(crate::time::system_time_to_secs)
+                .unwrap_or(timestamp);
+
+            Ok(Some(EventType::Move {
+                from: path,
+                to,
+                storage,
+                timestamp,
+            }))
+        }
+        notify::EventKind::Modify(ModifyKind::Name(RenameMode::From))
+            if event.tracker().is_none() =>
+        {
+            Ok(Some(EventType::Delete {
+                path,
+                storage,
+                timestamp,
+            }))
+        }
+        notify::EventKind::Remove(RemoveKind::File) => Ok(Some(EventType::Delete {
+            path,
+            storage,
+            timestamp,
+        })),
+        _ => Ok(None),
+    }
+}
+
+#[derive(Debug)]
+enum EventType {
+    Create {
+        path: PathBuf,
+        storage: String,
+    },
+    Write {
+        path: PathBuf,
+        storage: String,
+    },
+    Delete {
+        path: PathBuf,
+        storage: String,
+        timestamp: u64,
+    },
+    Move {
+        from: PathBuf,
+        to: PathBuf,
+        storage: String,
+        timestamp: u64,
+    },
+}
+
+fn dedup_events(events: Vec<EventType>) -> Vec<EventType> {
+    let mut grouped_events = HashMap::new();
+    for event in events {
+        let path = match &event {
+            EventType::Create { path, .. }
+            | EventType::Write { path, .. }
+            | EventType::Delete { path, .. }
+            | EventType::Move { from: path, .. } => path.clone(),
+        };
+
+        match grouped_events.entry(path) {
+            std::collections::hash_map::Entry::Occupied(mut e) => match (&event, e.get()) {
+                (EventType::Delete { .. }, EventType::Create { .. }) => {
+                    e.remove_entry();
+                }
+                (EventType::Create { .. }, EventType::Delete { .. }) => {
+                    e.insert(event);
+                }
+
+                (EventType::Move { to, storage, .. }, EventType::Create { .. }) => {
+                    e.remove_entry();
+                    grouped_events.insert(
+                        to.clone(),
+                        EventType::Create {
+                            path: to.to_path_buf(),
+                            storage: storage.to_owned(),
+                        },
+                    );
+                }
+                (EventType::Move { to, storage, .. }, EventType::Delete { .. }) => {
+                    e.remove_entry();
+                    grouped_events.insert(
+                        to.clone(),
+                        EventType::Create {
+                            path: to.to_owned(),
+                            storage: storage.to_owned(),
+                        },
+                    );
+                }
+                (EventType::Create { .. }, EventType::Move { .. }) => {
+                    e.insert(event);
+                }
+                (EventType::Write { .. }, EventType::Delete { .. }) => {
+                    e.insert(event);
+                }
+                (EventType::Delete { .. }, EventType::Write { .. }) => {
+                    e.insert(event);
+                }
+                (EventType::Move { .. }, EventType::Write { .. }) => {
+                    e.insert(event);
+                }
+
+                (EventType::Write { .. }, EventType::Move { to, storage, .. }) => {
+                    let to = to.clone();
+                    let storage = storage.to_owned();
+
+                    e.insert(event);
+                    grouped_events.insert(to.clone(), EventType::Create { path: to, storage });
+                }
+
+                _ => {}
+            },
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(event);
+            }
+        }
+    }
+
+    grouped_events.into_values().collect()
+}
+
+async fn register_event(
+    config: &Config,
+    transaction_log: &TransactionLog,
+    event: EventType,
+    ignored_files_cache: &mut IgnoredFilesCache,
+) -> anyhow::Result<Option<String>> {
+    // There is no need to write every kind of event to the transaction log, just the ones that are
+    // related to delete or move a file. These are important to keep track to avoid recreating the
     // file when trying to sync with other nodes
 
-    match event.kind {
+    match event {
+        EventType::Write { storage, .. } | EventType::Create { storage, .. } => Ok(Some(storage)),
+        EventType::Delete {
+            path,
+            storage,
+            timestamp,
+        } => {
+            let storage_config = config.storages.get(&storage).unwrap();
+            let ignored_files = ignored_files_cache.get(storage_config).await;
+
+            let relative_path = RelativePathBuf::new(storage_config, path)?;
+            if !ignored_files.is_ignored(&relative_path) {
+                write_deleted_event(transaction_log, &storage, &relative_path, timestamp).await;
+            }
+
+            Ok(Some(storage))
+        }
+
         // This event represents a move where the origin and destination are both inside the same
         // watche directory.
         // Since this event don't make a distinction between a file or directory, it is necessary
         // to handle both scenarios
-        notify::EventKind::Modify(notify::event::ModifyKind::Name(
-            notify::event::RenameMode::Both,
-        )) => {
-            if let (Some(src_path), Some(dst_path)) = (&src, &dst) {
-                let timestamp = dst_path
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .map(super::system_time_to_secs)
-                    .ok();
+        EventType::Move {
+            from,
+            to,
+            storage,
+            timestamp,
+        } => {
+            let storage_config = config.storages.get(&storage).unwrap();
+            let ignored_files = ignored_files_cache.get(storage_config).await;
 
-                for file_moved in list_files_moved_pair(
-                    storage_config,
-                    dst_path.to_path_buf(),
-                    src_path.to_path_buf(),
-                )? {
-                    write_moved_event(
-                        transaction_log,
-                        ignored_files,
-                        &storage,
-                        file_moved,
-                        timestamp,
-                    )
-                    .await
-                }
+            // let timestamp = dst_path
+            //     .metadata()
+            //     .and_then(|m| m.modified())
+            //     .map(super::system_time_to_secs)
+            //     .ok();
+
+            for file_moved in list_files_moved_pair(storage_config, to, from)? {
+                write_moved_event(
+                    transaction_log,
+                    ignored_files,
+                    &storage,
+                    file_moved,
+                    timestamp,
+                )
+                .await
             }
+
+            Ok(Some(storage))
         }
-        notify::EventKind::Modify(notify::event::ModifyKind::Name(
-            notify::event::RenameMode::From,
-        ))
-        | notify::EventKind::Remove(notify::event::RemoveKind::File) => {
-            if let Some(path) = &src {
-                let relative_path = RelativePathBuf::new(storage_config, path.to_path_buf())?;
-                if !ignored_files.is_ignored(&relative_path) {
-                    write_deleted_event(transaction_log, &storage, &relative_path).await;
-                }
-            }
-        }
-        _ => {}
     }
-
-    Ok(Some(storage))
 }
 
 /// Write the delete event in the transaction log
@@ -185,17 +346,14 @@ async fn write_deleted_event(
     transaction_log: &TransactionLog,
     storage: &str,
     path: &RelativePathBuf,
+    timestamp: u64,
 ) {
     if let Err(err) = transaction_log
         .append_entry(
             storage,
             path,
             None,
-            LogEntry::new(
-                EntryType::Delete,
-                EntryStatus::Done,
-                std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
-            ),
+            LogEntry::new(EntryType::Delete, EntryStatus::Done, timestamp),
         )
         .await
     {
@@ -221,13 +379,13 @@ async fn write_moved_event(
     ignored_files: &IgnoredFiles,
     storage: &str,
     file_moved: MovedFilePair,
-    timestamp: Option<u64>,
+    timestamp: u64,
 ) {
     if ignored_files.is_ignored(&file_moved.from) {
         return;
     }
 
-    write_deleted_event(transaction_log, storage, &file_moved.from).await;
+    write_deleted_event(transaction_log, storage, &file_moved.from, timestamp).await;
 
     if ignored_files.is_ignored(&file_moved.to) {
         return;
@@ -238,11 +396,7 @@ async fn write_moved_event(
             storage,
             &file_moved.to,
             Some(&file_moved.from),
-            LogEntry::new(
-                EntryType::Move,
-                EntryStatus::Done,
-                timestamp.unwrap_or_else(|| std::time::UNIX_EPOCH.elapsed().unwrap().as_secs()),
-            ),
+            LogEntry::new(EntryType::Move, EntryStatus::Done, timestamp),
         )
         .await
     {
@@ -324,3 +478,84 @@ fn get_storage_for_path(storages: &HashMap<PathBuf, String>, file_path: &Path) -
 //
 // delete
 // event: Event { kind: Remove(File), paths: ["/home/junior/sources/iron-carrier/tmp/a/test2"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
+//
+
+#[cfg(test)]
+mod tests {
+    use notify::{
+        event::{CreateKind, EventAttributes},
+        EventKind,
+    };
+
+    use super::*;
+
+    #[test]
+    fn test_dedup_events() {
+        let storages = HashMap::from([("/home/junior/Documents".into(), "docs".to_string())]);
+        let mut tracker = EventAttributes::new();
+        tracker.set_tracker(1);
+
+        let events = [
+            Event {
+                kind: EventKind::Create(CreateKind::File),
+                paths: vec!["/home/junior/Documents/.goutputstream-EIFNE2".into()],
+                attrs: EventAttributes::new(),
+            },
+            Event {
+                kind: EventKind::Modify(ModifyKind::Metadata(notify::event::MetadataKind::Any)),
+                paths: vec!["/home/junior/Documents/.goutputstream-EIFNE2".into()],
+                attrs: EventAttributes::new(),
+            },
+            Event {
+                kind: EventKind::Access(notify::event::AccessKind::Close(
+                    notify::event::AccessMode::Write,
+                )),
+                paths: vec!["/home/junior/Documents/new_file.txt".into()],
+                attrs: EventAttributes::new(),
+            },
+            Event {
+                kind: EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any)),
+                paths: vec!["/home/junior/Documents/.goutputstream-EIFNE2".into()],
+                attrs: EventAttributes::new(),
+            },
+            Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                paths: vec!["/home/junior/Documents/.goutputstream-EIFNE2".into()],
+                attrs: tracker.clone(),
+            },
+            Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+                paths: vec!["/home/junior/Documents/new_file.txt".into()],
+                attrs: tracker.clone(),
+            },
+            Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                paths: vec![
+                    "/home/junior/Documents/.goutputstream-EIFNE2".into(),
+                    "/home/junior/Documents/new_file.txt".into(),
+                ],
+                attrs: tracker,
+            },
+            Event {
+                kind: EventKind::Access(notify::event::AccessKind::Close(
+                    notify::event::AccessMode::Write,
+                )),
+                paths: vec!["/home/junior/Documents/new_file.txt".into()],
+                attrs: EventAttributes::new(),
+            },
+        ]
+        .into_iter()
+        .filter_map(|e| map_event(&storages, e).unwrap())
+        .collect();
+
+        let deduped = dedup_events(events);
+        assert_eq!(1, deduped.len());
+        match deduped.first() {
+            Some(EventType::Create { path, storage, .. }) => {
+                assert_eq!(*path, PathBuf::from("/home/junior/Documents/new_file.txt"));
+                assert_eq!(storage, "docs");
+            }
+            _ => unreachable!(),
+        }
+    }
+}

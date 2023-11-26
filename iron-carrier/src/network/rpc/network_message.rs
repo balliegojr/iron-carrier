@@ -243,7 +243,7 @@ mod tests {
         };
 
         let message =
-            dbg!(NetworkMessage::encode(original_data.clone()).expect("Failed to encode message"));
+            NetworkMessage::encode(original_data.clone()).expect("Failed to encode message");
 
         let mut bytes = BytesMut::new();
         bytes.put(&message.content[..]);
