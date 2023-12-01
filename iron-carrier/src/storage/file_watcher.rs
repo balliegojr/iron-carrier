@@ -21,7 +21,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::{Duration, UNIX_EPOCH},
 };
 
 use notify::{
@@ -87,7 +87,7 @@ pub fn get_file_watcher(
         while let Some(event) = rx.recv().await {
             let mut events = vec![event];
 
-            // tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
             while let Ok(event) = rx.try_recv() {
                 events.push(event);
             }
