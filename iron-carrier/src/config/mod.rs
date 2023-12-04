@@ -42,6 +42,9 @@ pub struct Config {
     #[serde(default = "defaults::port")]
     pub port: u16,
 
+    #[serde(default = "defaults::bind")]
+    pub bind: String,
+
     /// Enable file watchers for real time syncs, defaults to true
     #[serde(default = "defaults::watcher_enabled")]
     pub enable_file_watcher: bool,
@@ -179,6 +182,11 @@ mod defaults {
     pub fn port() -> u16 {
         25230
     }
+
+    pub fn bind() -> String {
+        "0.0.0.0".into()
+    }
+
     pub fn watcher_enabled() -> bool {
         true
     }

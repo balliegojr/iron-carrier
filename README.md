@@ -36,6 +36,9 @@ group = "my_group"
 # Port to list to connections
 port = 25230
 
+# IP address to bind to
+bind = "0.0.0.0"
+
 # Optional list of nodes to connect to.
 # Only necessary if service discovery is not enabled
 peers = ["192.168.1.10:25230"]

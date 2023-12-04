@@ -38,7 +38,7 @@ async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&Servic
 
             let mut service_info = simple_mdns::InstanceInformation::default();
             service_info.ports.push(config.port);
-            service_info.ip_addresses = get_my_ips()?;
+            service_info.ip_addresses = get_my_ips(config)?;
             service_info
                 .attributes
                 .insert("v".into(), Some(VERSION.into()));
@@ -58,13 +58,15 @@ async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&Servic
     sd.map(Some)
 }
 
-pub fn get_my_ips() -> anyhow::Result<Vec<IpAddr>> {
+pub fn get_my_ips(config: &Config) -> anyhow::Result<Vec<IpAddr>> {
+    let bind_addr: IpAddr = config.bind.parse()?;
+
     let addrs = if_addrs::get_if_addrs()?
         .iter()
         .filter_map(|iface| {
             let should_add = match iface.ip() {
-                IpAddr::V4(ip) => !ip.is_loopback() && ip.is_private(),
-                IpAddr::V6(ip) => !ip.is_loopback(),
+                IpAddr::V4(ip) => bind_addr.is_ipv4() && !ip.is_loopback() && ip.is_private(),
+                IpAddr::V6(ip) => bind_addr.is_ipv6() && !ip.is_loopback(),
             };
 
             if should_add {
@@ -79,6 +81,7 @@ pub fn get_my_ips() -> anyhow::Result<Vec<IpAddr>> {
 }
 
 pub async fn get_nodes(context: &Context) -> anyhow::Result<HashMap<SocketAddr, Option<NodeId>>> {
+    let bind_addr: IpAddr = context.config.bind.parse()?;
     let mut addresses = HashMap::new();
 
     if let Some(service_discovery) = get_service_discovery(context.config).await? {
@@ -95,7 +98,10 @@ pub async fn get_nodes(context: &Context) -> anyhow::Result<HashMap<SocketAddr, 
 
         for (node_id, instance_info) in services {
             if let Ok(id) = node_id.parse::<u64>() {
-                for addr in instance_info.get_socket_addresses() {
+                for addr in instance_info
+                    .get_socket_addresses()
+                    .filter(|addr| addr.is_ipv4() == bind_addr.is_ipv4())
+                {
                     addresses.insert(addr, Some(id.into()));
                 }
             }
