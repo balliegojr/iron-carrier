@@ -137,6 +137,7 @@ pub async fn handshake_and_identify_connection(
         )
     };
 
+    let encryption_enabled = (config.encryption.is_enabled() as u8).to_be();
     let version = hash_helper::hashed_str(VERSION).to_be_bytes();
     let group = config
         .group
@@ -145,6 +146,7 @@ pub async fn handshake_and_identify_connection(
         .unwrap_or_default()
         .to_be_bytes();
 
+    write.write_u8(encryption_enabled).await?;
     write.write_all(&version).await?;
     write.write_all(&group).await?;
     write
@@ -152,18 +154,21 @@ pub async fn handshake_and_identify_connection(
         .await?;
     write.flush().await?;
 
-    let mut buf = [0u8; 24];
+    let mut buf = [0u8; 25];
     read.read_exact(&mut buf).await?;
+    if encryption_enabled.ne(&buf[0]) {
+        anyhow::bail!("Encryption config mismatch between nodes");
+    }
 
-    if version.ne(&buf[..8]) {
+    if version.ne(&buf[1..9]) {
         anyhow::bail!("Version mismatch");
     }
 
-    if group.ne(&buf[8..16]) {
+    if group.ne(&buf[9..17]) {
         anyhow::bail!("Group mismatch");
     }
 
-    let node_id = NodeId::from(u64::from_be_bytes(buf[16..].try_into()?));
+    let node_id = NodeId::from(u64::from_be_bytes(buf[17..].try_into()?));
     // Docker network interface will have the same ip on different nodes (172.17.0.1)
     // Trying to connect to it, with docker running, have the same effect of a loopback
     if node_id == config.node_id_hashed {
