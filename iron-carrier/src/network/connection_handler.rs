@@ -62,7 +62,8 @@ async fn accept_connections(
     on_connect: Sender<Connection>,
 ) -> anyhow::Result<()> {
     log::debug!("Listening on {}", config.port);
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
+    let listener =
+        tokio::net::TcpListener::bind(format!("{}:{}", config.bind, config.port)).await?;
 
     while let Ok((stream, _addr)) = listener.accept().await {
         let connection = match tokio::time::timeout(
