@@ -4,7 +4,9 @@ use crate::{
     file_transfer::TransferFiles,
     // file_transfer::TransferFiles,
     state_machine::{Result, State, StateComposer},
-    states::sync::{actions::Dispatcher, events::SyncCompleted, files_matcher::FilesMatcher},
+    states::sync::{
+        action_dispatcher::Dispatcher, events::SyncCompleted, fetch_storages::FetchStorages,
+    },
     sync_options::SyncOptions,
     Context,
     StateMachineError,
@@ -41,8 +43,8 @@ impl State for Leader {
             .iter()
             .filter(|(key, _)| self.storages_to_sync(key.as_str()))
         {
-            let sync_result = FilesMatcher::new(storage_name, storage_config)
-                .and_then(|(peers, matched)| Dispatcher::new(peers, matched))
+            let sync_result = FetchStorages::new(storage_name, storage_config)
+                .and_then(Dispatcher::new)
                 .and_then(|files_to_send| TransferFiles::new(None, files_to_send))
                 .execute(context)
                 .await;

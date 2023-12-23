@@ -43,7 +43,6 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
         watcher_events,
         Duration::from_secs(context.config.delay_watcher_events),
     );
-
     let mut full_sync_deadline = pin!(next_cron_schedule(context.config));
     let mut events = context
         .rpc
@@ -96,7 +95,7 @@ async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
         DaemonEvent::SyncWithoutConsensus(sync_options) => {
             DiscoverPeers::default()
                 .and_then(ConnectAllPeers::new)
-                .and_then(|_| BypassConsensus)
+                .and_then(BypassConsensus::new)
                 .and_then(|leader_id| SetSyncRole::new(leader_id, sync_options))
                 .execute(context)
                 .await
@@ -114,7 +113,15 @@ async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
 }
 
 #[derive(Debug)]
-struct BypassConsensus;
+struct BypassConsensus {
+    nodes: HashSet<NodeId>,
+}
+
+impl BypassConsensus {
+    fn new(nodes: HashSet<NodeId>) -> Self {
+        Self { nodes }
+    }
+}
 
 impl State for BypassConsensus {
     type Output = NodeId;
@@ -122,8 +129,8 @@ impl State for BypassConsensus {
     async fn execute(self, context: &Context) -> Result<Self::Output> {
         context
             .rpc
-            .broadcast(ConsensusReached)
-            .timeout(Duration::from_secs(60))
+            .multi_call(ConsensusReached, self.nodes)
+            .timeout(Duration::from_secs(30))
             .ack()
             .await?;
         Ok(context.config.node_id_hashed)

@@ -2,7 +2,11 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{message_types::MessageType, node_id::NodeId, storage::FileInfo};
+use crate::{
+    message_types::MessageType,
+    node_id::NodeId,
+    storage::{FileInfo, Storage},
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
 pub struct QueryStorageIndex {
@@ -23,7 +27,7 @@ pub enum StorageIndexStatus {
     /// Storage is in sync with the leader, further sync may be necessary
     StorageInSync,
     /// Storage is not in sync with leader, sync is necessary
-    SyncNecessary(Vec<FileInfo>),
+    SyncNecessary(Storage),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, MessageType)]

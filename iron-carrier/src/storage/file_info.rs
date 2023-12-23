@@ -81,11 +81,6 @@ impl FileInfo {
         }
     }
 
-    /// matches existent and moved files
-    pub fn is_existent(&self) -> bool {
-        !matches!(self.info_type, FileInfoType::Deleted { .. })
-    }
-
     /// Returns true if modification date, size or entry type are different
     pub fn is_out_of_sync(&self, other: &FileInfo) -> bool {
         match (&self.info_type, &other.info_type) {
@@ -186,6 +181,18 @@ impl FileInfo {
             FileInfoType::Existent { modified_at, .. } => modified_at,
             FileInfoType::Deleted { deleted_at } => deleted_at,
             FileInfoType::Moved { moved_at, .. } => moved_at,
+        }
+    }
+
+    /// Get a new [`FileInfo`] using the old path of the file if `info_type` is [`FileInfoType::Moved`]
+    pub fn as_deleted_file(&self) -> Option<FileInfo> {
+        match &self.info_type {
+            FileInfoType::Moved { old_path, moved_at } => Some(FileInfo::deleted(
+                self.storage.clone(),
+                old_path.clone(),
+                *moved_at,
+            )),
+            _ => None,
         }
     }
 }

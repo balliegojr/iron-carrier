@@ -65,6 +65,7 @@ impl State for Follower {
                 }
                 MessageTypes::SyncCompleted => {
                     request.ack().await?;
+                    context.transaction_log.flush().await?;
                     break;
                 }
                 MessageTypes::DeleteFile => {
@@ -105,7 +106,7 @@ impl State for Follower {
             }
         }
 
-        log::info!("end sync as follower");
+        log::debug!("end sync as follower");
 
         Ok(())
     }
@@ -124,7 +125,7 @@ async fn process_query_index_request(context: &Context, request: RPCMessage) -> 
             {
                 Ok(storage) => {
                     if storage.hash != query.hash {
-                        StorageIndexStatus::SyncNecessary(storage.files)
+                        StorageIndexStatus::SyncNecessary(storage)
                     } else {
                         StorageIndexStatus::StorageInSync
                     }
