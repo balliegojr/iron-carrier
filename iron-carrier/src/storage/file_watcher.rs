@@ -92,7 +92,7 @@ pub fn get_file_watcher(
                 events.push(event);
             }
 
-            for event in dedup_events(events) {
+            for event in events {
                 match register_event(config, &transaction_log, event, &mut ignored_files_cache)
                     .await
                 {
@@ -131,19 +131,15 @@ fn map_event(
     let timestamp = UNIX_EPOCH.elapsed()?.as_secs();
     match event.kind {
         // Write events
-        notify::EventKind::Create(CreateKind::File) => {
-            Ok(Some(EventType::Create { path, storage }))
-        }
+        notify::EventKind::Create(CreateKind::File) => Ok(Some(EventType::Create { storage })),
         notify::EventKind::Modify(
             ModifyKind::Metadata(MetadataKind::Any) | ModifyKind::Data(DataChange::Any),
         )
         | notify::EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
-            Ok(Some(EventType::Write { path, storage }))
+            Ok(Some(EventType::Write { storage }))
         }
-        notify::EventKind::Modify(ModifyKind::Name(RenameMode::To))
-            if event.tracker().is_none() =>
-        {
-            Ok(Some(EventType::Write { path, storage }))
+        notify::EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
+            Ok(Some(EventType::Write { storage }))
         }
 
         notify::EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
@@ -166,9 +162,7 @@ fn map_event(
                 timestamp,
             }))
         }
-        notify::EventKind::Modify(ModifyKind::Name(RenameMode::From))
-            if event.tracker().is_none() =>
-        {
+        notify::EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
             Ok(Some(EventType::Delete {
                 path,
                 storage,
@@ -187,11 +181,9 @@ fn map_event(
 #[derive(Debug)]
 enum EventType {
     Create {
-        path: PathBuf,
         storage: String,
     },
     Write {
-        path: PathBuf,
         storage: String,
     },
     Delete {
@@ -205,77 +197,6 @@ enum EventType {
         storage: String,
         timestamp: u64,
     },
-}
-
-fn dedup_events(events: Vec<EventType>) -> Vec<EventType> {
-    let mut grouped_events = HashMap::new();
-    for event in events {
-        let path = match &event {
-            EventType::Create { path, .. }
-            | EventType::Write { path, .. }
-            | EventType::Delete { path, .. }
-            | EventType::Move { from: path, .. } => path.clone(),
-        };
-
-        match grouped_events.entry(path) {
-            std::collections::hash_map::Entry::Occupied(mut e) => match (&event, e.get()) {
-                (EventType::Delete { .. }, EventType::Create { .. }) => {
-                    e.remove_entry();
-                }
-                (EventType::Create { .. }, EventType::Delete { .. }) => {
-                    e.insert(event);
-                }
-
-                (EventType::Move { to, storage, .. }, EventType::Create { .. }) => {
-                    e.remove_entry();
-                    grouped_events.insert(
-                        to.clone(),
-                        EventType::Create {
-                            path: to.to_path_buf(),
-                            storage: storage.to_owned(),
-                        },
-                    );
-                }
-                (EventType::Move { to, storage, .. }, EventType::Delete { .. }) => {
-                    e.remove_entry();
-                    grouped_events.insert(
-                        to.clone(),
-                        EventType::Create {
-                            path: to.to_owned(),
-                            storage: storage.to_owned(),
-                        },
-                    );
-                }
-                (EventType::Create { .. }, EventType::Move { .. }) => {
-                    e.insert(event);
-                }
-                (EventType::Write { .. }, EventType::Delete { .. }) => {
-                    e.insert(event);
-                }
-                (EventType::Delete { .. }, EventType::Write { .. }) => {
-                    e.insert(event);
-                }
-                (EventType::Move { .. }, EventType::Write { .. }) => {
-                    e.insert(event);
-                }
-
-                (EventType::Write { .. }, EventType::Move { to, storage, .. }) => {
-                    let to = to.clone();
-                    let storage = storage.to_owned();
-
-                    e.insert(event);
-                    grouped_events.insert(to.clone(), EventType::Create { path: to, storage });
-                }
-
-                _ => {}
-            },
-            std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(event);
-            }
-        }
-    }
-
-    grouped_events.into_values().collect()
 }
 
 async fn register_event(
@@ -479,83 +400,3 @@ fn get_storage_for_path(storages: &HashMap<PathBuf, String>, file_path: &Path) -
 // delete
 // event: Event { kind: Remove(File), paths: ["/home/junior/sources/iron-carrier/tmp/a/test2"], attr:tracker: None, attr:flag: None, attr:info: None, attr:source: None }
 //
-
-#[cfg(test)]
-mod tests {
-    use notify::{
-        event::{CreateKind, EventAttributes},
-        EventKind,
-    };
-
-    use super::*;
-
-    #[test]
-    fn test_dedup_events() {
-        let storages = HashMap::from([("/home/junior/Documents".into(), "docs".to_string())]);
-        let mut tracker = EventAttributes::new();
-        tracker.set_tracker(1);
-
-        let events = [
-            Event {
-                kind: EventKind::Create(CreateKind::File),
-                paths: vec!["/home/junior/Documents/.goutputstream-EIFNE2".into()],
-                attrs: EventAttributes::new(),
-            },
-            Event {
-                kind: EventKind::Modify(ModifyKind::Metadata(notify::event::MetadataKind::Any)),
-                paths: vec!["/home/junior/Documents/.goutputstream-EIFNE2".into()],
-                attrs: EventAttributes::new(),
-            },
-            Event {
-                kind: EventKind::Access(notify::event::AccessKind::Close(
-                    notify::event::AccessMode::Write,
-                )),
-                paths: vec!["/home/junior/Documents/new_file.txt".into()],
-                attrs: EventAttributes::new(),
-            },
-            Event {
-                kind: EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any)),
-                paths: vec!["/home/junior/Documents/.goutputstream-EIFNE2".into()],
-                attrs: EventAttributes::new(),
-            },
-            Event {
-                kind: EventKind::Modify(ModifyKind::Name(RenameMode::From)),
-                paths: vec!["/home/junior/Documents/.goutputstream-EIFNE2".into()],
-                attrs: tracker.clone(),
-            },
-            Event {
-                kind: EventKind::Modify(ModifyKind::Name(RenameMode::To)),
-                paths: vec!["/home/junior/Documents/new_file.txt".into()],
-                attrs: tracker.clone(),
-            },
-            Event {
-                kind: EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
-                paths: vec![
-                    "/home/junior/Documents/.goutputstream-EIFNE2".into(),
-                    "/home/junior/Documents/new_file.txt".into(),
-                ],
-                attrs: tracker,
-            },
-            Event {
-                kind: EventKind::Access(notify::event::AccessKind::Close(
-                    notify::event::AccessMode::Write,
-                )),
-                paths: vec!["/home/junior/Documents/new_file.txt".into()],
-                attrs: EventAttributes::new(),
-            },
-        ]
-        .into_iter()
-        .filter_map(|e| map_event(&storages, e).unwrap())
-        .collect();
-
-        let deduped = dedup_events(events);
-        assert_eq!(1, deduped.len());
-        match deduped.first() {
-            Some(EventType::Create { path, storage, .. }) => {
-                assert_eq!(*path, PathBuf::from("/home/junior/Documents/new_file.txt"));
-                assert_eq!(storage, "docs");
-            }
-            _ => unreachable!(),
-        }
-    }
-}

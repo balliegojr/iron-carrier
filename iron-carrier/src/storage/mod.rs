@@ -4,9 +4,10 @@ mod file_info;
 pub mod file_operations;
 pub mod file_watcher;
 pub use file_info::{FileInfo, FileInfoType};
+use serde::{Deserialize, Serialize};
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs,
     path::Path,
     time::{Duration, SystemTime},
@@ -19,15 +20,17 @@ use crate::{
     config::{Config, PathConfig},
     hash_helper::{self, HASHER},
     ignored_files::IgnoredFiles,
-    relative_path::RelativePathBuf,
     time::system_time_to_secs,
     transaction_log::TransactionLog,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Storage {
+    /// Hash is calculated with only existing files
     pub hash: u64,
-    pub files: Vec<FileInfo>,
+    pub files: HashSet<FileInfo>,
+    pub moved: HashSet<FileInfo>,
+    pub deleted: HashSet<FileInfo>,
 }
 
 /// Gets the file list and hash for the given storage
@@ -38,11 +41,19 @@ pub async fn get_storage_info(
 ) -> anyhow::Result<Storage> {
     let ignored_files = crate::ignored_files::IgnoredFiles::new(storage_path_config).await;
     let files = walk_path(transaction_log, name, storage_path_config, &ignored_files).await?;
-    let hash = calculate_storage_hash(files.iter());
+    let hash = calculate_storage_hash(&files);
+
+    let files: HashSet<FileInfo> = files.into_iter().collect();
+    let mut deleted = get_deleted_files(transaction_log, name).await?;
+    let mut moved = get_moved_files(transaction_log, name).await?;
+
+    deleted.retain(|f| !files.contains(f));
+    moved.retain(|f| files.contains(f));
 
     Ok(Storage {
-        // name,
         files,
+        deleted,
+        moved,
         hash,
     })
 }
@@ -57,8 +68,7 @@ pub async fn walk_path(
     ignored_files: &IgnoredFiles,
 ) -> anyhow::Result<Vec<FileInfo>> {
     let mut paths = vec![storage_config.path.to_owned()];
-    let mut files = get_deleted_files(transaction_log, storage_name).await?;
-    let mut moved_files = get_moved_files(transaction_log, storage_name).await?;
+    let mut files = Vec::new();
 
     let failed_writes = transaction_log.get_failed_writes(storage_name).await?;
 
@@ -99,30 +109,10 @@ pub async fn walk_path(
                 permissions,
             );
 
-            // When a file is moved, two entries are added to the log.
-            // A deleted entry for the old file path
-            // A moved entry for the new file path
-            //
-            // Because of this, we need to remove the old file entry from the list, otherwise the
-            // file can be deleted before being moved
-            match moved_files.remove(&file_info.path) {
-                Some(moved_file) if moved_file.get_date() >= file_info.get_date() => {
-                    let old_path = match &moved_file.info_type {
-                        FileInfoType::Moved { old_path, .. } => old_path,
-                        _ => unreachable!(),
-                    };
-
-                    files.retain(|f| !f.path.eq(old_path));
-                    files.replace(moved_file);
-                }
-                _ => {
-                    files.replace(file_info);
-                }
-            }
+            files.push(file_info);
         }
     }
 
-    let mut files: Vec<FileInfo> = files.into_iter().collect();
     files.sort();
 
     Ok(files)
@@ -130,10 +120,10 @@ pub async fn walk_path(
 
 /// Calculate a "shallow" hash for the files by hashing the attributes, it doesn't open the file to
 /// read the contents
-pub fn calculate_storage_hash<'a, T: Iterator<Item = &'a FileInfo>>(files: T) -> u64 {
+pub fn calculate_storage_hash(files: &[FileInfo]) -> u64 {
     let mut digest = HASHER.digest();
 
-    for file in files.filter(|f| f.is_existent()) {
+    for file in files {
         hash_helper::calculate_file_hash_digest(file, &mut digest);
     }
 
@@ -157,15 +147,12 @@ async fn get_deleted_files(
 async fn get_moved_files(
     transaction_log: &TransactionLog,
     storage: &str,
-) -> anyhow::Result<HashMap<RelativePathBuf, FileInfo>> {
+) -> anyhow::Result<HashSet<FileInfo>> {
     transaction_log.get_moved(storage).await.map(|files| {
         files
             .into_iter()
             .map(|(path, old_path, timestamp)| {
-                (
-                    path.clone(),
-                    FileInfo::moved(storage.to_string(), path, old_path, timestamp),
-                )
+                FileInfo::moved(storage.to_string(), path, old_path, timestamp)
             })
             .collect()
     })

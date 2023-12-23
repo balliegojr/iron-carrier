@@ -29,7 +29,6 @@ impl TransactionLog {
             .map_err(anyhow::Error::from)
     }
 
-    #[cfg(test)]
     pub fn memory() -> anyhow::Result<Self> {
         get_memory_storage()
             .map(|storage| Self {
@@ -87,6 +86,7 @@ impl TransactionLog {
         .map_err(anyhow::Error::from)
     }
 
+    /// get all the moved files in the log and returns a vec of (path, old path, timestamp)
     pub async fn get_moved(
         &self,
         storage: &str,
@@ -134,7 +134,6 @@ fn get_storage(log_path: &Path) -> rusqlite::Result<Connection> {
     .and_then(setup)
 }
 
-#[cfg(test)]
 fn get_memory_storage() -> rusqlite::Result<Connection> {
     Connection::open_in_memory().and_then(setup)
 }
