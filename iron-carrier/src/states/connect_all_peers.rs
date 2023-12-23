@@ -49,11 +49,13 @@ impl State for ConnectAllPeers {
                 acc
             });
 
+        let mut nodes = HashSet::new();
         let mut handles = Vec::new();
         for (node_id, addresses) in address_by_node {
             match node_id {
                 Some(node_id) => {
                     if context.rpc.has_connection_to(node_id).await? {
+                        nodes.insert(node_id);
                         continue;
                     }
 
@@ -90,7 +92,6 @@ impl State for ConnectAllPeers {
             }
         }
 
-        let mut nodes = HashSet::new();
         for handle in handles {
             if let Ok(Ok(node_id)) = handle.await {
                 nodes.insert(node_id);
