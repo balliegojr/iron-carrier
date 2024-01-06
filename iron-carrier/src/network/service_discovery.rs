@@ -1,6 +1,6 @@
 use simple_mdns::{async_discovery::ServiceDiscovery, InstanceInformation};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
@@ -25,19 +25,9 @@ async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&Servic
                 .with_max_elapsed_time(Some(Duration::from_secs(30)))
                 .build();
 
-            // this retry is here in case the network card isn't ready when initializing the daemon
-            let mut sd = backoff::future::retry(backoff, || async {
-                ServiceDiscovery::new(
-                    config.node_id_hashed.to_string().as_str(),
-                    "_ironcarrier._tcp.local",
-                    600,
-                )
-                .map_err(backoff::Error::from)
-            })
-            .await?;
-
-            let mut service_info = simple_mdns::InstanceInformation::default();
-            service_info.ports.push(config.port);
+            let mut service_info =
+                simple_mdns::InstanceInformation::new(config.node_id_hashed.to_string());
+            service_info.ports.insert(config.port);
             service_info.ip_addresses = get_my_ips(config)?;
             service_info
                 .attributes
@@ -48,8 +38,12 @@ async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&Servic
                     .attributes
                     .insert("g".into(), config.group.as_deref().map(hashed_group));
             }
-
-            sd.add_service_info(service_info).await?;
+            // this retry is here in case the network card isn't ready when initializing the daemon
+            let sd = backoff::future::retry(backoff, || async {
+                ServiceDiscovery::new(service_info.clone(), "_ironcarrier._tcp.local", 600)
+                    .map_err(backoff::Error::from)
+            })
+            .await?;
 
             Ok(sd)
         })
@@ -58,7 +52,7 @@ async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&Servic
     sd.map(Some)
 }
 
-pub fn get_my_ips(config: &Config) -> anyhow::Result<Vec<IpAddr>> {
+pub fn get_my_ips(config: &Config) -> anyhow::Result<HashSet<IpAddr>> {
     let bind_addr: IpAddr = config.bind.parse()?;
 
     let addrs = if_addrs::get_if_addrs()?
@@ -90,14 +84,14 @@ pub async fn get_nodes(context: &Context) -> anyhow::Result<HashMap<SocketAddr, 
         let services = get_known_services(service_discovery)
             .await
             .into_iter()
-            .filter(|(node_id, service)| {
-                *node_id != context.config.node_id_hashed.to_string()
+            .filter(|service| {
+                service.unescaped_instance_name() != context.config.node_id_hashed.to_string()
                     && same_version(service)
                     && same_group(service, &h_group)
             });
 
-        for (node_id, instance_info) in services {
-            if let Ok(id) = node_id.parse::<u64>() {
+        for instance_info in services {
+            if let Ok(id) = instance_info.unescaped_instance_name().parse::<u64>() {
                 for addr in instance_info
                     .get_socket_addresses()
                     .filter(|addr| addr.is_ipv4() == bind_addr.is_ipv4())
@@ -112,9 +106,7 @@ pub async fn get_nodes(context: &Context) -> anyhow::Result<HashMap<SocketAddr, 
 }
 
 /// Try to get known services, if no services are returned, wait 2 seconds and then try again
-async fn get_known_services(
-    service_discovery: &ServiceDiscovery,
-) -> HashMap<String, InstanceInformation> {
+async fn get_known_services(service_discovery: &ServiceDiscovery) -> HashSet<InstanceInformation> {
     let services = service_discovery.get_known_services().await;
     if !services.is_empty() {
         return services;
