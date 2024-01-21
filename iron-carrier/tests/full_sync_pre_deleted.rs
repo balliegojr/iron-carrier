@@ -20,7 +20,7 @@ async fn test_sync_deleted_files() {
 
     for file in files.iter().filter(|f| !common::is_ignored(f)) {
         transaction_log
-            .append_entry(
+            .append_log_entry(
                 "storage_0",
                 &RelativePathBuf::new(&configs[1].storages["storage_0"], file.to_path_buf())
                     .unwrap(),

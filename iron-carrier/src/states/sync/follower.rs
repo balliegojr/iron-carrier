@@ -14,7 +14,8 @@ use crate::{
 };
 
 use super::events::{
-    DeleteFile, MoveFile, QueryStorageIndex, SendFileTo, StorageIndex, StorageIndexStatus,
+    DeleteFile, MoveFile, QueryStorageIndex, SaveSyncStatus, SendFileTo, StorageIndex,
+    StorageIndexStatus,
 };
 
 #[derive(Debug)]
@@ -50,6 +51,7 @@ impl State for Follower {
                 MessageTypes::MoveFile,
                 MessageTypes::SendFileTo,
                 MessageTypes::TransferFilesStart,
+                MessageTypes::SaveSyncStatus,
             ])
             .await?;
 
@@ -100,6 +102,11 @@ impl State for Follower {
                     .await
                     {
                         log::error!("{err}")
+                    }
+                }
+                MessageTypes::SaveSyncStatus => {
+                    if let Err(err) = process_save_sync_status_request(context, request).await {
+                        log::error!("{err}");
                     }
                 }
                 _ => unreachable!(),
@@ -186,6 +193,25 @@ async fn process_send_file_to_request(
 ) -> anyhow::Result<()> {
     let op: SendFileTo = request.data()?;
     files_to_send.push((op.file, op.nodes));
+
+    request.ack().await
+}
+
+async fn process_save_sync_status_request(
+    context: &Context,
+    request: RPCMessage,
+) -> anyhow::Result<()> {
+    let save_sync_status: SaveSyncStatus = request.data()?;
+    for node in save_sync_status.nodes {
+        let _ = context
+            .transaction_log
+            .save_sync_status(
+                node.to_string().as_str(),
+                save_sync_status.storage_name,
+                save_sync_status.status,
+            )
+            .await;
+    }
 
     request.ack().await
 }

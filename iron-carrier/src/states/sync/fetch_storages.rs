@@ -5,11 +5,14 @@ use crate::{
     node_id::NodeId,
     state_machine::{Result, State, StateMachineError},
     storage::{self, Storage},
+    transaction_log::SyncStatus,
     Context,
 };
 
 use super::events::{QueryStorageIndex, StorageIndex, StorageIndexStatus};
 
+/// Fetch storage information from all nodes in the sync session. Only nodes that need to sync will
+/// reply with their storage info.
 #[derive(Debug)]
 pub struct FetchStorages {
     storage_name: &'static str,
@@ -49,10 +52,7 @@ impl FetchStorages {
                 }
 
                 match node_storage.storage_index {
-                    StorageIndexStatus::StorageMissing => {
-                        // peer doesn't have the storage...
-                        None
-                    }
+                    StorageIndexStatus::StorageMissing => None,
                     StorageIndexStatus::StorageInSync => Some((node, storage.clone())),
                     StorageIndexStatus::SyncNecessary(storage) => Some((node, storage)),
                 }
@@ -76,6 +76,17 @@ impl State for FetchStorages {
         if peers_storages.is_empty() {
             log::trace!("Storage already in sync with all peers");
             Err(StateMachineError::Abort)?
+        }
+
+        for node in peers_storages.keys() {
+            let _ = context
+                .transaction_log
+                .save_sync_status(
+                    node.to_string().as_str(),
+                    self.storage_name,
+                    SyncStatus::Started,
+                )
+                .await;
         }
 
         peers_storages.insert(context.config.node_id_hashed, storage);

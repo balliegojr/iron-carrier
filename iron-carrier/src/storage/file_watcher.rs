@@ -270,7 +270,7 @@ async fn write_deleted_event(
     timestamp: u64,
 ) {
     if let Err(err) = transaction_log
-        .append_entry(
+        .append_log_entry(
             storage,
             path,
             None,
@@ -313,7 +313,7 @@ async fn write_moved_event(
     }
 
     if let Err(err) = transaction_log
-        .append_entry(
+        .append_log_entry(
             storage,
             &file_moved.to,
             Some(&file_moved.from),

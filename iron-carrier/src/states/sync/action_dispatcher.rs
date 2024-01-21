@@ -21,7 +21,7 @@ pub enum SyncAction {
         nodes: HashSet<NodeId>,
     },
     DelegateSend {
-        delegate_to: NodeId, //FIXME: include all nodes that has the file in sync
+        delegate_to: NodeId,
         file: FileInfo,
         nodes: HashSet<NodeId>,
     },

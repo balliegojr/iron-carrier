@@ -16,6 +16,7 @@ pub enum MessageTypes {
     SyncCompleted,
     QueryStorageIndex,
     StorageIndex,
+    SaveSyncStatus,
 
     QueryTransferType,
     TransferType,
