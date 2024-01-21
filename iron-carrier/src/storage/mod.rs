@@ -135,12 +135,15 @@ async fn get_deleted_files(
     transaction_log: &TransactionLog,
     storage: &str,
 ) -> anyhow::Result<HashSet<FileInfo>> {
-    transaction_log.get_deleted(storage).await.map(|files| {
-        files
-            .into_iter()
-            .map(|(path, timestamp)| FileInfo::deleted(storage.to_string(), path, timestamp))
-            .collect()
-    })
+    transaction_log
+        .get_deleted_files(storage)
+        .await
+        .map(|files| {
+            files
+                .into_iter()
+                .map(|(path, timestamp)| FileInfo::deleted(storage.to_string(), path, timestamp))
+                .collect()
+        })
 }
 
 /// Fetch moved file events from the transaction log
@@ -148,7 +151,7 @@ async fn get_moved_files(
     transaction_log: &TransactionLog,
     storage: &str,
 ) -> anyhow::Result<HashSet<FileInfo>> {
-    transaction_log.get_moved(storage).await.map(|files| {
+    transaction_log.get_moved_files(storage).await.map(|files| {
         files
             .into_iter()
             .map(|(path, old_path, timestamp)| {

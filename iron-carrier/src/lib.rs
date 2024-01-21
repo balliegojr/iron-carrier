@@ -41,8 +41,6 @@ pub mod transaction_log;
 pub mod validation;
 
 // TODO: implement client mode if the daemon is running (basic a cli that shows sync status)
-// TODO: add sync information to the transaction log (when it was last synched and what nodes
-// participated
 
 pub async fn run_full_sync(
     config: &'static validation::Validated<config::Config>,

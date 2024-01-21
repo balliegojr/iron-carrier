@@ -67,7 +67,7 @@ pub async fn move_file<'b>(
     // become a write one, hence the old file will need to be deleted. It is possible to improve
     // this flow by chaining a move with a send action
     transaction_log
-        .append_entry(
+        .append_log_entry(
             &file.storage,
             src_path,
             None,
@@ -80,7 +80,7 @@ pub async fn move_file<'b>(
         .await?;
 
     transaction_log
-        .append_entry(
+        .append_log_entry(
             &file.storage,
             &file.path,
             Some(src_path),
@@ -119,7 +119,7 @@ pub async fn delete_file(
 
     log::info!("{:?} deleted", path);
     transaction_log
-        .append_entry(
+        .append_log_entry(
             &file_info.storage,
             &file_info.path,
             None,

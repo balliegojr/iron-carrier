@@ -1,15 +1,17 @@
-use std::fmt::Display;
+use std::{collections::HashSet, fmt::Display};
 
 use crate::{
     file_transfer::TransferFiles,
-    // file_transfer::TransferFiles,
+    node_id::NodeId,
     state_machine::{Result, State, StateComposer},
     states::sync::{
-        action_dispatcher::Dispatcher, events::SyncCompleted, fetch_storages::FetchStorages,
+        action_dispatcher::Dispatcher,
+        events::{SaveSyncStatus, SyncCompleted},
+        fetch_storages::FetchStorages,
     },
     sync_options::SyncOptions,
-    Context,
-    StateMachineError,
+    transaction_log::SyncStatus,
+    Context, StateMachineError,
 };
 
 #[derive(Debug, Default)]
@@ -43,14 +45,50 @@ impl State for Leader {
             .iter()
             .filter(|(key, _)| self.storages_to_sync(key.as_str()))
         {
+            let mut nodes_in_session: Option<HashSet<NodeId>> = Default::default();
             let sync_result = FetchStorages::new(storage_name, storage_config)
-                .and_then(Dispatcher::new)
+                .and_then(|storages| {
+                    nodes_in_session = Some(
+                        storages
+                            .keys()
+                            .filter(|node| **node != context.config.node_id_hashed)
+                            .copied()
+                            .collect(),
+                    );
+                    Dispatcher::new(storages)
+                })
                 .and_then(|files_to_send| TransferFiles::new(None, files_to_send))
                 .execute(context)
                 .await;
 
-            if let Err(StateMachineError::Err(err)) = sync_result {
-                log::error!("{err}");
+            let sync_status = match sync_result {
+                Err(StateMachineError::Err(err)) => {
+                    log::error!("{err}");
+                    SyncStatus::Fail
+                }
+                _ => SyncStatus::Done,
+            };
+
+            if let Some(nodes_in_session) = nodes_in_session {
+                for node in nodes_in_session.iter() {
+                    let _ = context
+                        .transaction_log
+                        .save_sync_status(node.to_string().as_str(), storage_name, sync_status)
+                        .await;
+                }
+
+                let _ = context
+                    .rpc
+                    .multi_call(
+                        SaveSyncStatus {
+                            nodes: nodes_in_session.clone(),
+                            storage_name,
+                            status: sync_status,
+                        },
+                        nodes_in_session,
+                    )
+                    .ack()
+                    .await;
             }
         }
 

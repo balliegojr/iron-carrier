@@ -6,6 +6,7 @@ use crate::{
     message_types::MessageType,
     node_id::NodeId,
     storage::{FileInfo, Storage},
+    transaction_log::SyncStatus,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
@@ -48,3 +49,10 @@ pub struct SendFileTo {
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, MessageType)]
 pub struct SyncCompleted;
+
+#[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
+pub struct SaveSyncStatus<'a> {
+    pub nodes: HashSet<NodeId>,
+    pub storage_name: &'a str,
+    pub status: SyncStatus,
+}

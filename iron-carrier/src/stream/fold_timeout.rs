@@ -2,8 +2,6 @@ use std::{collections::HashSet, time::Duration};
 
 use tokio::sync::mpsc::Receiver;
 
-// TODO: implement a stream
-
 pub fn fold_timeout(mut inbound: Receiver<String>, timeout: Duration) -> Receiver<HashSet<String>> {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
 
