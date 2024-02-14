@@ -1,34 +1,34 @@
 use std::{collections::HashSet, sync::Arc};
 
-use crate::message_types::{MessageType, MessageTypes};
+use crate::{
+    message_types::{MessageType, MessageTypes},
+    network::connection::Connection,
+};
 use serde::Serialize;
 use tokio::sync::{mpsc::Sender, Semaphore};
 
 use crate::node_id::NodeId;
 
 use super::{
-    call::Call, group_call::GroupCall, network_message::NetworkMessage, rpc_message::RPCMessage,
-    subscription::Subscription, OutboundNetworkMessageType,
+    call::Call, group_call::GroupCall, network_message::NetworkMessage, subscription::Subscription,
+    Command, CommandTx, OutboundNetworkMessageType,
 };
 
 /// Handler to the RPC service. If all copies of this are dropped, the service will shutdown.
 #[derive(Debug, Clone)]
 pub struct RPCHandler {
     network_output: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
-    consumers: Sender<(Vec<MessageTypes>, Sender<RPCMessage>, Arc<Semaphore>)>,
-    connection_query: Sender<(NodeId, tokio::sync::oneshot::Sender<bool>)>,
+    command_tx: CommandTx,
 }
 
 impl RPCHandler {
     pub fn new(
         network_output: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
-        consumers: Sender<(Vec<MessageTypes>, Sender<RPCMessage>, Arc<Semaphore>)>,
-        connection_query: Sender<(NodeId, tokio::sync::oneshot::Sender<bool>)>,
+        command_tx: CommandTx,
     ) -> Self {
         Self {
             network_output,
-            consumers,
-            connection_query,
+            command_tx,
         }
     }
 
@@ -56,18 +56,48 @@ impl RPCHandler {
         GroupCall::new(data, self.network_output.clone(), None)
     }
 
+    pub async fn add_connection(&self, connection: Connection) -> anyhow::Result<()> {
+        self.command_tx
+            .send(Command::AddConnection(connection))
+            .await?;
+        Ok(())
+    }
+
     pub async fn has_connection_to(&self, node_id: NodeId) -> anyhow::Result<bool> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.connection_query.send((node_id, tx)).await?;
+        self.command_tx
+            .send(Command::QueryIsConnectedTo(node_id, tx))
+            .await?;
         rx.await.map_err(anyhow::Error::from)
     }
 
-    /// Subscribe to events from the network
+    /// Subscribe to events from the network. When all connections are closed, the Subscription
+    /// event stream will return None.
     pub async fn subscribe(&self, types: &[MessageTypes]) -> anyhow::Result<Subscription> {
-        let semaphore = Arc::new(Semaphore::new(1));
-        let permit = semaphore.clone().acquire_owned().await?;
+        self.send_subscription_command(types, true).await
+    }
+
+    /// Subscribe to events from the network.
+    pub async fn subscribe_forever(&self, types: &[MessageTypes]) -> anyhow::Result<Subscription> {
+        self.send_subscription_command(types, false).await
+    }
+
+    async fn send_subscription_command(
+        &self,
+        types: &[MessageTypes],
+        need_connections: bool,
+    ) -> anyhow::Result<Subscription> {
+        let drop_guard = Arc::new(Semaphore::new(1));
+        let permit = drop_guard.clone().acquire_owned().await?;
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        self.consumers.send((types.to_vec(), tx, semaphore)).await?;
+        self.command_tx
+            .send(Command::AddSubscription {
+                message_types: types.to_vec(),
+                tx,
+                drop_guard,
+                need_connections,
+            })
+            .await?;
         Ok(Subscription::new(rx, permit))
     }
 }

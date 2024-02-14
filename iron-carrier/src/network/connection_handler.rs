@@ -1,7 +1,5 @@
 use std::{net::SocketAddr, time::Duration};
 
-use tokio::sync::mpsc::Sender;
-
 use crate::{
     config::Config,
     constants::DEFAULT_NETWORK_TIMEOUT,
@@ -9,21 +7,21 @@ use crate::{
     node_id::NodeId,
 };
 
-use super::connection::Connection;
+use super::rpc::RPCHandler;
 
 #[derive(Debug, Clone)]
 pub struct ConnectionHandler {
     config: &'static Config,
-    on_connect: Sender<Connection>,
+    rpc: RPCHandler,
 }
 
 impl ConnectionHandler {
-    pub fn new(config: &'static Config, on_connect: Sender<Connection>) -> Self {
-        Self { config, on_connect }
+    pub fn new(config: &'static Config, rpc: RPCHandler) -> Self {
+        Self { config, rpc }
     }
 
     pub fn start_accepting_connections(&self) {
-        let inbound_fut = accept_connections(self.config, self.on_connect.clone());
+        let inbound_fut = accept_connections(self.config, self.rpc.clone());
         tokio::spawn(async move {
             if let Err(err) = inbound_fut.await {
                 log::error!("{err}");
@@ -41,15 +39,15 @@ impl ConnectionHandler {
         let (self_conn, other_conn) =
             local_connection_pair(self.config.node_id_hashed, other.config.node_id_hashed);
 
-        let _ = self.on_connect.send(other_conn).await;
-        let _ = other.connection_handler.on_connect.send(self_conn).await;
+        let _ = self.rpc.add_connection(other_conn).await;
+        let _ = other.connection_handler.rpc.add_connection(self_conn).await;
     }
 
     pub async fn connect(&self, addr: SocketAddr) -> anyhow::Result<NodeId> {
         let connection = connection::try_connect_and_identify(self.config, addr).await?;
 
         let node_id = connection.node_id();
-        if let Err(err) = self.on_connect.send(connection).await {
+        if let Err(err) = self.rpc.add_connection(connection).await {
             log::error!("{err}")
         }
 
@@ -57,10 +55,7 @@ impl ConnectionHandler {
     }
 }
 
-async fn accept_connections(
-    config: &'static Config,
-    on_connect: Sender<Connection>,
-) -> anyhow::Result<()> {
+async fn accept_connections(config: &'static Config, rpc: RPCHandler) -> anyhow::Result<()> {
     log::debug!("Listening on {}", config.port);
     let listener =
         tokio::net::TcpListener::bind(format!("{}:{}", config.bind, config.port)).await?;
@@ -83,7 +78,7 @@ async fn accept_connections(
             }
         };
 
-        if let Err(err) = on_connect.send(connection).await {
+        if let Err(err) = rpc.add_connection(connection).await {
             log::error!("{err}");
             break;
         }

@@ -1,7 +1,7 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const DEFAULT_NETWORK_TIMEOUT: u64 = 10;
-pub const PEER_STALE_CONNECTION: u64 = 120;
+pub const PEER_STALE_CONNECTION: u64 = 60;
 pub const IGNORE_FILE_NAME: &str = ".ignore";
 
 pub const MAX_ELECTION_TERMS: u32 = 100;

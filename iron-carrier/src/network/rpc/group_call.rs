@@ -44,7 +44,7 @@ where
                     if replies.iter().all(|reply| reply.is_ack()) {
                         Ok(replies.into_iter().map(|r| r.node_id()).collect())
                     } else {
-                        anyhow::bail!("Received invalid reply");
+                        anyhow::bail!("Received invalid reply")
                     }
                 }
             })
