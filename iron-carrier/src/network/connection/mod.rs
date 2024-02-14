@@ -38,7 +38,7 @@ pub use write_half::WriteHalf;
 static CONNECTION_DEDUP_CONTROL: AtomicU8 = AtomicU8::new(0);
 
 pub struct Connection {
-    read_half: Pin<Box<dyn AsyncRead + Send>>,
+    read_half: Pin<Box<dyn AsyncRead + Send + Sync>>,
     write_half: Pin<Box<dyn AsyncWrite + Send + Sync>>,
     node_id: NodeId,
     /// Dedup control is used to decide which connection will be dropped
@@ -48,7 +48,7 @@ pub struct Connection {
 
 impl Connection {
     pub fn new(
-        read_half: Pin<Box<dyn AsyncRead + Send>>,
+        read_half: Pin<Box<dyn AsyncRead + Send + Sync>>,
         write_half: Pin<Box<dyn AsyncWrite + Send + Sync>>,
         node_id: NodeId,
         dedup_control: u8,
@@ -126,7 +126,7 @@ pub async fn handshake_and_identify_connection(
 ) -> anyhow::Result<Connection> {
     let (read, write) = stream.into_split();
     let (mut read, mut write): (
-        Pin<Box<dyn AsyncRead + Send>>,
+        Pin<Box<dyn AsyncRead + Send + Sync>>,
         Pin<Box<dyn AsyncWrite + Send + Sync>>,
     ) = if config.encryption.is_enabled() {
         get_encrypted_connection(read, write, config.encryption.encryption_key()).await?
@@ -195,11 +195,11 @@ async fn get_encrypted_connection<R, W>(
     mut write: W,
     pre_defined_key: Option<&str>,
 ) -> anyhow::Result<(
-    Pin<Box<dyn AsyncRead + Send>>,
+    Pin<Box<dyn AsyncRead + Send + Sync>>,
     Pin<Box<dyn AsyncWrite + Send + Sync>>,
 )>
 where
-    R: AsyncRead + Send + Unpin + 'static,
+    R: AsyncRead + Send + Unpin + Sync + 'static,
     W: AsyncWrite + Send + Unpin + Sync + 'static,
 {
     use rand_core::OsRng;

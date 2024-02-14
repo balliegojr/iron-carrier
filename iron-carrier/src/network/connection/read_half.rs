@@ -21,6 +21,16 @@ pin_project_lite::pin_project! {
     }
 }
 
+impl std::fmt::Debug for ReadHalf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadHalf")
+            .field("node_id", &self.node_id)
+            .field("last_access", &self.last_access)
+            .field("is_dropped", &self.is_dropped)
+            .finish()
+    }
+}
+
 impl ReadHalf {
     pub fn new(
         inner: Pin<Box<dyn AsyncRead + Send>>,

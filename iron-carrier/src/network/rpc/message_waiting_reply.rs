@@ -5,14 +5,14 @@ use super::{rpc_reply::RPCReply, Deadline};
 use crate::{constants::DEFAULT_NETWORK_TIMEOUT, NodeId};
 
 /// Represents a message that is waiting for replies of one or more nodes.
-pub struct MessageWaitingReply {
+pub struct InFlightMessage {
     id: u16,
     nodes: HashSet<NodeId>,
     reply_channel: Sender<ReplyType>,
     deadline: Deadline,
 }
 
-impl MessageWaitingReply {
+impl InFlightMessage {
     pub fn new(
         id: u16,
         nodes: HashSet<NodeId>,

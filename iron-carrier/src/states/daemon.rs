@@ -46,7 +46,7 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
     let mut full_sync_deadline = pin!(next_cron_schedule(context.config));
     let mut events = context
         .rpc
-        .subscribe(&[MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
+        .subscribe_forever(&[MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
         .await?;
 
     async fn process_event(event: Option<RPCMessage>) -> Result<DaemonEvent> {
