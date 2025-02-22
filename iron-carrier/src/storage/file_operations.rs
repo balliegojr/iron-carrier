@@ -6,13 +6,13 @@ use crate::{
     transaction_log::{LogEntry, TransactionLog},
 };
 
-use super::{fix_times_and_permissions, FileInfo, FileInfoType};
+use super::{FileInfo, FileInfoType, fix_times_and_permissions};
 
 /// Move the file in the storage, this  operation files if FileInfoType is not Moved
-pub async fn move_file<'b>(
+pub async fn move_file(
     config: &Config,
     transaction_log: &TransactionLog,
-    file: &'b FileInfo,
+    file: &FileInfo,
     ignored_files_cache: &mut IgnoredFilesCache,
 ) -> anyhow::Result<()> {
     let path_config = config
@@ -158,6 +158,7 @@ pub async fn open_file_for_writing(
     OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(true)
         .read(true)
         .open(file_path)
         .await

@@ -7,7 +7,7 @@ use std::{
 use rand::Rng;
 
 use crate::{
-    node_id::NodeId, state_machine::Result, state_machine::State, Context, StateMachineError,
+    Context, StateMachineError, node_id::NodeId, state_machine::Result, state_machine::State,
 };
 
 #[derive(Debug)]
@@ -103,6 +103,6 @@ impl State for ConnectAllPeers {
 }
 
 fn random_wait_time() -> u64 {
-    let mut rng = rand::thread_rng();
-    rng.gen_range(150..500)
+    let mut rng = rand::rng();
+    rng.random_range(150..500)
 }

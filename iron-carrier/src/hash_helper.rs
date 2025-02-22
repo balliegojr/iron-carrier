@@ -1,6 +1,6 @@
 //! Hash related functions
 
-use crc::{Crc, Digest, CRC_64_GO_ISO};
+use crc::{CRC_64_GO_ISO, Crc, Digest};
 use rand::Rng;
 
 use crate::storage::{FileInfo, FileInfoType};
@@ -58,8 +58,8 @@ pub fn get_node_id(peer_port: u16) -> u64 {
     match machine_uid::get() {
         Ok(machine_id) => calculate_checksum(format!("{machine_id}:::{peer_port}").as_bytes()),
         Err(_) => {
-            let mut rng = rand::thread_rng();
-            rng.gen::<u64>() + peer_port as u64
+            let mut rng = rand::rng();
+            rng.random::<u64>() + peer_port as u64
         }
     }
 }

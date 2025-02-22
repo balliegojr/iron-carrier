@@ -10,11 +10,11 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
 use crate::{
+    Context,
     constants::MAX_ELECTION_TERMS,
     message_types::MessageType,
     node_id::NodeId,
     state_machine::{Result, State, StateMachineError},
-    Context,
 };
 
 /// Possible states that a node can be
@@ -207,8 +207,8 @@ struct TermVote {
 }
 
 fn random_wait_time() -> u64 {
-    let mut rng = rand::thread_rng();
-    rng.gen_range(100..250)
+    let mut rng = rand::rng();
+    rng.random_range(100..250)
 }
 
 #[cfg(test)]

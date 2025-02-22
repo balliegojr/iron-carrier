@@ -1,6 +1,6 @@
 //! Handles configuration
 
-use serde::{de::Visitor, Deserialize};
+use serde::{Deserialize, de::Visitor};
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub enum Encryption {
@@ -16,7 +16,7 @@ impl Encryption {
     }
 
     pub fn encryption_key(&self) -> Option<&str> {
-        if let Encryption::EnabledWithKey(ref key) = self {
+        if let Encryption::EnabledWithKey(key) = self {
             Some(key.as_str())
         } else {
             None
@@ -33,7 +33,7 @@ impl<'de> Deserialize<'de> for Encryption {
     }
 }
 struct EncryptionVisitor;
-impl<'de> Visitor<'de> for EncryptionVisitor {
+impl Visitor<'_> for EncryptionVisitor {
     type Value = Encryption;
 
     fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>

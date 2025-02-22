@@ -12,8 +12,8 @@ use std::{
 use iron_carrier::config::Config;
 use iron_carrier::leak::Leak;
 use iron_carrier::validation::{Unvalidated, Validated};
-use rand::distributions::{Alphanumeric, Standard};
 use rand::Rng;
+use rand::distr::{Alphanumeric, StandardUniform};
 
 const FOLDERS: usize = 1;
 const FILES_PER_FOLDER: usize = 2;
@@ -264,7 +264,7 @@ pub fn generate_files<P: AsRef<Path>>(path: P, prefix: &str) -> Vec<PathBuf> {
 }
 
 pub fn unchecked_generate_files<P: AsRef<Path>>(path: P, prefix: &str) -> Vec<PathBuf> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut files = Vec::new();
 
     gen_ignore_file_at(path.as_ref());
@@ -330,7 +330,7 @@ fn gen_file_with_rnd_content<P: AsRef<Path>, R: Rng>(
     file_path: P,
     file_length: usize,
 ) {
-    let file_content: Vec<u8> = rng.sample_iter(Standard).take(file_length).collect();
+    let file_content: Vec<u8> = rng.sample_iter(StandardUniform).take(file_length).collect();
 
     let _ = std::fs::write(&file_path, file_content);
     std::thread::sleep(Duration::from_millis(100))

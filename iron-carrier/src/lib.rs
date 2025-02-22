@@ -1,11 +1,9 @@
 //! Keep your files in sync!
 //!
 //! Synchronize your files in differents machines on the same network
-#![allow(incomplete_features)]
 #![feature(hash_extract_if)]
 #![feature(btree_extract_if)]
 #![feature(let_chains)]
-#![feature(is_sorted)]
 
 use context::Context;
 use node_id::NodeId;

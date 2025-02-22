@@ -1,13 +1,13 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
     sync::Arc,
     time::Duration,
 };
 
 use crate::{constants::DEFAULT_NETWORK_TIMEOUT, message_types::MessageTypes};
 use tokio::sync::{
-    mpsc::{Receiver, Sender},
     Semaphore,
+    mpsc::{Receiver, Sender},
 };
 use tokio_stream::StreamExt;
 
