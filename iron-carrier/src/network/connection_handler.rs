@@ -61,9 +61,10 @@ async fn accept_connections(config: &'static Config, rpc: RPCHandler) -> anyhow:
         tokio::net::TcpListener::bind(format!("{}:{}", config.bind, config.port)).await?;
 
     while let Ok((stream, _addr)) = listener.accept().await {
+        let (read, write) = stream.into_split();
         let connection = match tokio::time::timeout(
             Duration::from_secs(DEFAULT_NETWORK_TIMEOUT),
-            connection::handshake_and_identify_connection(config, stream),
+            connection::handshake(config, Box::pin(read), Box::pin(write)),
         )
         .await
         {

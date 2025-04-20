@@ -1,14 +1,17 @@
-use simple_mdns::{async_discovery::ServiceDiscovery, InstanceInformation};
+use simple_mdns::{InstanceInformation, async_discovery::ServiceDiscovery};
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
 
-use crate::{config::Config, constants::VERSION, context::Context, hash_helper, node_id::NodeId};
+use crate::{config::Config, constants::VERSION, context::Context, node_id::NodeId};
 use tokio::sync::OnceCell;
 
+use super::backoff_retry;
+
 static SERVICE_DISCOVERY: OnceCell<ServiceDiscovery> = OnceCell::const_new();
+const SERVICE_DISCOVERY_TIMEOUT: u64 = 30;
 
 pub async fn init_service_discovery(config: &Config) {
     let _ = get_service_discovery(config).await;
@@ -21,12 +24,7 @@ async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&Servic
 
     let sd: anyhow::Result<&ServiceDiscovery> = SERVICE_DISCOVERY
         .get_or_try_init(|| async {
-            let backoff = backoff::ExponentialBackoffBuilder::new()
-                .with_max_elapsed_time(Some(Duration::from_secs(30)))
-                .build();
-
-            let mut service_info =
-                simple_mdns::InstanceInformation::new(config.node_id_hashed.to_string());
+            let mut service_info = simple_mdns::InstanceInformation::new(config.node_id.clone());
             service_info.ports.insert(config.port);
             service_info.ip_addresses = get_my_ips(config)?;
             service_info
@@ -36,10 +34,10 @@ async fn get_service_discovery(config: &Config) -> anyhow::Result<Option<&Servic
             if config.group.is_some() {
                 service_info
                     .attributes
-                    .insert("g".into(), config.group.as_deref().map(hashed_group));
+                    .insert("g".into(), config.group.clone());
             }
             // this retry is here in case the network card isn't ready when initializing the daemon
-            let sd = backoff::future::retry(backoff, || async {
+            let sd = backoff_retry(SERVICE_DISCOVERY_TIMEOUT, || async {
                 ServiceDiscovery::new(service_info.clone(), "_ironcarrier._tcp.local", 600)
                     .map_err(backoff::Error::from)
             })
@@ -79,15 +77,13 @@ pub async fn get_nodes(context: &Context) -> anyhow::Result<HashMap<SocketAddr, 
     let mut addresses = HashMap::new();
 
     if let Some(service_discovery) = get_service_discovery(context.config).await? {
-        let h_group = context.config.group.as_deref().map(hashed_group);
-
         let services = get_known_services(service_discovery)
             .await
             .into_iter()
             .filter(|service| {
-                service.unescaped_instance_name() != context.config.node_id_hashed.to_string()
+                service.unescaped_instance_name() != context.config.node_id
                     && same_version(service)
-                    && same_group(service, &h_group)
+                    && same_group(service, &context.config.group)
             });
 
         for instance_info in services {
@@ -116,10 +112,6 @@ async fn get_known_services(service_discovery: &ServiceDiscovery) -> HashSet<Ins
     service_discovery.get_known_services().await
 }
 
-fn hashed_group(group: &str) -> String {
-    hash_helper::hashed_str(group).to_string()
-}
-
 fn same_version(service: &InstanceInformation) -> bool {
     service
         .attributes
@@ -128,12 +120,12 @@ fn same_version(service: &InstanceInformation) -> bool {
         .unwrap_or_default()
 }
 
-fn same_group(service: &InstanceInformation, h_group: &Option<String>) -> bool {
-    match h_group {
+fn same_group(service: &InstanceInformation, group: &Option<String>) -> bool {
+    match group {
         Some(_) => service
             .attributes
             .get("g")
-            .map(|g| g.eq(h_group))
+            .map(|g| g.eq(group))
             .unwrap_or_default(),
         None => !service.attributes.contains_key("g"),
     }
