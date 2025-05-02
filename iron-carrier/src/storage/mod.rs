@@ -6,21 +6,14 @@ pub mod file_watcher;
 pub use file_info::{FileInfo, FileInfoType};
 use serde::{Deserialize, Serialize};
 
-use std::{
-    collections::HashSet,
-    fs,
-    path::Path,
-    time::{Duration, SystemTime},
-};
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::{collections::HashSet, path::Path};
 
 use crate::{
-    config::{Config, PathConfig},
+    config::PathConfig,
+    context::Context,
     hash_helper::{self, HASHER},
     ignored_files::IgnoredFiles,
-    time::system_time_to_secs,
+    relative_path::RelativePathBuf,
     transaction_log::TransactionLog,
 };
 
@@ -35,17 +28,17 @@ pub struct Storage {
 
 /// Gets the file list and hash for the given storage
 pub async fn get_storage_info(
+    context: &Context,
     name: &str,
-    storage_path_config: &PathConfig,
-    transaction_log: &TransactionLog,
+    storage_path_config: &'static PathConfig,
 ) -> anyhow::Result<Storage> {
-    let ignored_files = crate::ignored_files::IgnoredFiles::new(storage_path_config).await;
-    let files = walk_path(transaction_log, name, storage_path_config, &ignored_files).await?;
+    let ignored_files = crate::ignored_files::IgnoredFiles::new(context, storage_path_config).await;
+    let files = walk_path(context, name, &ignored_files).await?;
     let hash = calculate_storage_hash(&files);
 
     let files: HashSet<FileInfo> = files.into_iter().collect();
-    let mut deleted = get_deleted_files(transaction_log, name).await?;
-    let mut moved = get_moved_files(transaction_log, name).await?;
+    let mut deleted = get_deleted_files(&context.transaction_log, name).await?;
+    let mut moved = get_moved_files(&context.transaction_log, name).await?;
 
     deleted.retain(|f| !files.contains(f));
     moved.retain(|f| files.contains(f));
@@ -58,51 +51,59 @@ pub async fn get_storage_info(
     })
 }
 
-/// Returns a sorted vector with the entire folder structure (recursive read) for the given path.  
+/// Returns a sorted vector with the entire directory structure (recursive read) for the given path.  
 ///
 /// The list will contain deleted and moved files, by reading the transaction log.  
 pub async fn walk_path(
-    transaction_log: &TransactionLog,
+    context: &Context,
     storage_name: &str,
-    storage_config: &PathConfig,
     ignored_files: &IgnoredFiles,
 ) -> anyhow::Result<Vec<FileInfo>> {
-    let mut paths = vec![storage_config.path.to_owned()];
+    let mut paths = vec![RelativePathBuf::root()];
     let mut files = Vec::new();
 
-    let failed_writes = transaction_log.get_failed_writes(storage_name).await?;
+    let failed_writes = context
+        .transaction_log
+        .get_failed_writes(storage_name)
+        .await?;
 
-    while let Some(path) = paths.pop() {
-        for entry in fs::read_dir(path)? {
-            let path = entry?.path();
+    let storage_config = context
+        .config
+        .storages
+        .get(storage_name)
+        .ok_or_else(|| anyhow::anyhow!("Storage {storage_name} not found"))?;
 
-            if is_special_file(&path) {
+    while let Some(dir) = paths.pop() {
+        let entries = context.fs.read_dir(storage_config, &dir).await?;
+        for entry in entries {
+            let entry = entry?;
+
+            if is_special_file(entry.path().as_path()) {
                 continue;
             }
 
-            if path.is_dir() {
-                paths.push(path);
+            let metadata = entry.metadata();
+            if metadata.is_dir() {
+                paths.push(entry.into_path());
                 continue;
             }
 
-            let metadata = path.metadata()?;
-            let relative_path = storage_config.get_relative_path(path)?;
-            if ignored_files.is_ignored(&relative_path) {
+            if ignored_files.is_ignored(entry.path()) {
                 continue;
             }
 
-            if failed_writes.contains(&relative_path) {
+            if failed_writes.contains(entry.path()) {
                 continue;
             }
 
-            let permissions = get_permissions(&metadata);
-            let created_at = metadata.created().map(system_time_to_secs)?;
-            let modified_at = metadata.modified().map(system_time_to_secs)?;
+            let permissions = metadata.permissions();
+            let created_at = metadata.created_as_secs();
+            let modified_at = metadata.modified_as_secs();
             let size = metadata.len();
 
             let file_info = FileInfo::existent(
                 storage_name.to_owned(),
-                relative_path,
+                entry.into_path(),
                 modified_at,
                 created_at,
                 size,
@@ -161,47 +162,6 @@ async fn get_moved_files(
     })
 }
 
-pub fn fix_times_and_permissions(file_info: &FileInfo, config: &Config) -> anyhow::Result<()> {
-    let file_path = file_info.get_absolute_path(config)?;
-    if file_info.permissions > 0 {
-        set_file_permissions(&file_path, file_info.permissions)?;
-    }
-
-    let mod_time = filetime::FileTime::from_system_time(
-        SystemTime::UNIX_EPOCH + Duration::from_secs(file_info.get_date()),
-    );
-    log::trace!(
-        "setting {:?} modification time to {mod_time}",
-        file_info.path
-    );
-    filetime::set_file_mtime(&file_path, mod_time)?;
-
-    Ok(())
-}
-
-#[cfg(unix)]
-fn get_permissions(metadata: &std::fs::Metadata) -> u32 {
-    metadata.permissions().mode()
-}
-
-#[cfg(not(unix))]
-fn get_permissions(metadata: &std::fs::Metadata) -> u32 {
-    //TODO: figure out how to handle windows permissions
-    0
-}
-
-#[cfg(unix)]
-fn set_file_permissions(path: &Path, perm: u32) -> std::io::Result<()> {
-    let perm = std::fs::Permissions::from_mode(perm);
-    std::fs::set_permissions(path, perm)
-}
-
-#[cfg(not(unix))]
-fn set_file_permissions(path: &Path, perm: u32) -> std::io::Result<()> {
-    //TODO: figure out how to handle windows permissions
-    Ok(())
-}
-
 /// Returns true if `path` name or extension are .ironcarrier
 pub fn is_special_file(path: &Path) -> bool {
     path.file_name()
@@ -212,31 +172,94 @@ pub fn is_special_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::{leak::Leak, validation::Unvalidated};
+    use std::str::FromStr;
+
+    use crate::{
+        config::Config, context::test_context, fs::MetadataB, leak::Leak, validation::Validated,
+    };
 
     use super::*;
 
     #[tokio::test]
-    async fn can_read_local_files() -> anyhow::Result<()> {
-        let config = r#"
-[storages]
-a = "./src/"
-"#
-        .parse::<Unvalidated<Config>>()?
+    async fn walk_can_read_local_files() -> anyhow::Result<()> {
+        let config = crate::validation::Validated::new(Config {
+            storages: [("a".to_string(), PathConfig::from_str("./src/").unwrap())].into(),
+            ..Default::default()
+        })
         .leak();
 
-        let storage = config.storages.get("a").unwrap();
-
-        let files = walk_path(
-            &TransactionLog::memory()?,
-            "a",
-            storage,
-            &crate::ignored_files::IgnoredFiles::empty(),
-        )
-        .await?;
+        let context = test_context(config, crate::fs::TokioFS.leak()).leak();
+        let files = walk_path(context, "a", &crate::ignored_files::IgnoredFiles::empty()).await?;
 
         assert!(!files.is_empty());
         assert!(files.is_sorted());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn walk_exclude_ignored_files() -> anyhow::Result<()> {
+        let config = get_config();
+        let context = test_context(config, mem_fs()).leak();
+
+        let ignored = crate::ignored_files::IgnoredFiles::new(
+            context,
+            context.config.storages.get("a").unwrap(),
+        )
+        .await;
+
+        let files = walk_path(context, "a", &ignored).await?;
+        assert_eq!(3, files.len());
+
+        files.iter().for_each(|file| {
+            assert!(
+                file.path
+                    .as_path()
+                    .file_name()
+                    .is_none_or(|ext| ext != "b.ig")
+            );
+        });
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn walk_exclude_failed_writes() -> anyhow::Result<()> {
+        let config = get_config();
+        let context = test_context(config, mem_fs()).leak();
+
+        append_failed_write(context, "/a").await;
+        append_failed_write(context, "/dir/a").await;
+
+        let ignored = crate::ignored_files::IgnoredFiles::new(
+            context,
+            context.config.storages.get("a").unwrap(),
+        )
+        .await;
+
+        let files = walk_path(context, "a", &ignored).await?;
+        assert_eq!(1, files.len());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_storage_include_deleted_files() -> anyhow::Result<()> {
+        let config = get_config();
+        let context = test_context(config, mem_fs()).leak();
+
+        append_deleted(context, "/deleted").await;
+
+        let info = get_storage_info(context, "a", config.storages.get("a").unwrap())
+            .await
+            .expect("Failed to get storage info");
+
+        assert_eq!(1, info.deleted.len());
+        assert!(
+            info.deleted
+                .iter()
+                .any(|file| file.path == RelativePathBuf::from("deleted"))
+        );
 
         Ok(())
     }
@@ -246,5 +269,79 @@ a = "./src/"
         assert!(!is_special_file(Path::new("some_file.txt")));
         assert!(is_special_file(Path::new("some_file.ironcarrier")));
         assert!(is_special_file(Path::new(".ironcarrier")));
+    }
+
+    fn get_config() -> &'static Validated<Config> {
+        Validated::new(Config {
+            storages: [("a".to_string(), PathConfig::from_str("/").unwrap())].into(),
+            ..Default::default()
+        })
+        .leak()
+    }
+
+    fn mem_fs() -> &'static crate::fs::MemFS {
+        let ignore = r#"**.ig
+        "#;
+
+        let files = [
+            (
+                "/.ignore",
+                ignore.bytes().collect(),
+                MetadataB::new().build(),
+            ),
+            ("/dir/", Vec::new(), MetadataB::dir().build()),
+            ("/dir/a", Vec::new(), MetadataB::new().build()),
+            ("/dir/b.ig", Vec::new(), MetadataB::new().build()),
+            ("/a", Vec::new(), MetadataB::new().build()),
+            ("/b.ig", Vec::new(), MetadataB::new().build()),
+        ]
+        .into_iter();
+        crate::fs::MemFS::new(files).leak()
+    }
+
+    async fn append_failed_write(context: &Context, path: &str) {
+        context
+            .transaction_log
+            .append_log_entry(
+                "a",
+                &context
+                    .config
+                    .storages
+                    .get("a")
+                    .unwrap()
+                    .get_relative_path(Path::new(path).to_owned())
+                    .unwrap(),
+                None,
+                crate::transaction_log::LogEntry {
+                    timestamp: 0,
+                    event_type: crate::transaction_log::EntryType::Write,
+                    event_status: crate::transaction_log::EntryStatus::Pending,
+                },
+            )
+            .await
+            .expect("Failed to append log entry");
+    }
+
+    async fn append_deleted(context: &Context, path: &str) {
+        context
+            .transaction_log
+            .append_log_entry(
+                "a",
+                &context
+                    .config
+                    .storages
+                    .get("a")
+                    .unwrap()
+                    .get_relative_path(Path::new(path).to_owned())
+                    .unwrap(),
+                None,
+                crate::transaction_log::LogEntry {
+                    timestamp: 0,
+                    event_type: crate::transaction_log::EntryType::Delete,
+                    event_status: crate::transaction_log::EntryStatus::Done,
+                },
+            )
+            .await
+            .expect("Failed to append log entry");
     }
 }

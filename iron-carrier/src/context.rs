@@ -1,6 +1,8 @@
 use crate::{
     config::Config,
-    network::{rpc::RPCHandler, ConnectionHandler},
+    fs::FS,
+    leak::Leak,
+    network::{ConnectionHandler, rpc::RPCHandler},
     transaction_log::TransactionLog,
     validation::Validated,
 };
@@ -13,6 +15,7 @@ pub struct Context {
     pub connection_handler: ConnectionHandler,
     pub transaction_log: TransactionLog,
     pub when_done: Option<Sender<()>>,
+    pub fs: &'static (dyn FS + Send + Sync),
 }
 
 impl Context {
@@ -22,12 +25,15 @@ impl Context {
         rpc: RPCHandler,
         transaction_log: TransactionLog,
     ) -> Self {
+        let fs = crate::fs::TokioFS.leak();
+
         Self {
             config,
             connection_handler,
             rpc,
             transaction_log,
             when_done: None,
+            fs,
         }
     }
 
@@ -38,10 +44,19 @@ impl Context {
 }
 
 #[cfg(test)]
-pub async fn local_contexts<const LENGTH: usize>() -> anyhow::Result<[Context; LENGTH]> {
-    let mut contexts = vec![testing_context(0)?];
+pub async fn local_contexts<const LENGTH: usize>() -> [Context; LENGTH] {
+    fn config(id: u64) -> &'static Validated<Config> {
+        Validated::new(Config {
+            node_id_hashed: id.into(),
+            ..Default::default()
+        })
+        .leak()
+    }
+
+    let fs = crate::fs::MemFS::empty().leak();
+    let mut contexts = vec![test_context(config(0), fs)];
     for i in 1..LENGTH {
-        let context = testing_context(i as u64)?;
+        let context = test_context(config(i as u64), fs);
         for c in contexts.iter() {
             c.connection_handler.connect_context(&context).await;
         }
@@ -49,26 +64,23 @@ pub async fn local_contexts<const LENGTH: usize>() -> anyhow::Result<[Context; L
         contexts.push(context);
     }
 
-    Ok(contexts.try_into().unwrap_or_else(|v: Vec<Context>| {
+    contexts.try_into().unwrap_or_else(|v: Vec<Context>| {
         panic!("Expected a Vec of length {} but it was {}", LENGTH, v.len())
-    }))
+    })
 }
 
 #[cfg(test)]
-fn testing_context(id: u64) -> anyhow::Result<Context> {
-    let config = crate::leak::Leak::leak(Validated::new(Config {
-        node_id_hashed: id.into(),
-        ..Default::default()
-    }));
-
-    let transaction_log = crate::transaction_log::TransactionLog::memory()?;
+pub fn test_context(config: &'static Validated<Config>, fs: &'static dyn FS) -> Context {
+    let transaction_log =
+        crate::transaction_log::TransactionLog::memory().expect("Failed to start transaction log");
     let (connection_handler, rpc) = crate::network::get_network_service(config);
 
-    Ok(Context {
+    Context {
         config,
         rpc,
         connection_handler,
         transaction_log,
         when_done: None,
-    })
+        fs,
+    }
 }

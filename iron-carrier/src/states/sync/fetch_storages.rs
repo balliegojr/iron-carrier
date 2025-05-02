@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use crate::{
+    Context,
     config::PathConfig,
     node_id::NodeId,
     state_machine::{Result, State, StateMachineError},
     storage::{self, Storage},
     transaction_log::SyncStatus,
-    Context,
 };
 
 use super::events::{QueryStorageIndex, StorageIndex, StorageIndexStatus};
@@ -65,12 +65,8 @@ impl State for FetchStorages {
     type Output = HashMap<NodeId, Storage>;
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
-        let storage = storage::get_storage_info(
-            self.storage_name,
-            self.storage_config,
-            &context.transaction_log,
-        )
-        .await?;
+        let storage =
+            storage::get_storage_info(context, self.storage_name, self.storage_config).await?;
 
         let mut peers_storages = self.get_storage_from_nodes(context, &storage).await?;
         if peers_storages.is_empty() {

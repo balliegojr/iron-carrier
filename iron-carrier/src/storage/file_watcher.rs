@@ -25,15 +25,16 @@ use std::{
 };
 
 use notify::{
+    Event, RecommendedWatcher, RecursiveMode, Watcher,
     event::{
         AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind,
         RenameMode,
     },
-    Event, RecommendedWatcher, RecursiveMode, Watcher,
 };
 
 use crate::{
-    config::{Config, PathConfig},
+    config::PathConfig,
+    context::Context,
     ignored_files::{IgnoredFiles, IgnoredFilesCache},
     relative_path::RelativePathBuf,
     transaction_log::{EntryStatus, EntryType, LogEntry, TransactionLog},
@@ -42,16 +43,14 @@ use crate::{
 /// Creates and return a file watcher that watch for file changes in all the storages that have the
 /// watcher enabled.
 pub fn get_file_watcher(
-    config: &'static Config,
-    transaction_log: TransactionLog,
+    context: &Context,
     output: tokio::sync::mpsc::Sender<String>,
 ) -> anyhow::Result<Option<RecommendedWatcher>> {
     let mut storages: HashMap<PathBuf, String> = Default::default();
-    for (storage, storage_config) in config
-        .storages
-        .iter()
-        .filter(|(_, p)| p.enable_watcher.unwrap_or(config.enable_file_watcher))
-    {
+    for (storage, storage_config) in context.config.storages.iter().filter(|(_, p)| {
+        p.enable_watcher
+            .unwrap_or(context.config.enable_file_watcher)
+    }) {
         storages.insert(storage_config.path.canonicalize()?, storage.clone());
     }
 
@@ -71,15 +70,15 @@ pub fn get_file_watcher(
         }
     })?;
 
-    for (_storage, storage_config) in config
-        .storages
-        .iter()
-        .filter(|(_, p)| p.enable_watcher.unwrap_or(config.enable_file_watcher))
-    {
+    for (_storage, storage_config) in context.config.storages.iter().filter(|(_, p)| {
+        p.enable_watcher
+            .unwrap_or(context.config.enable_file_watcher)
+    }) {
         let path = storage_config.path.canonicalize()?;
         watcher.watch(&path, RecursiveMode::Recursive)?;
     }
 
+    let context = context.clone();
     tokio::task::spawn(async move {
         let mut ignored_files_cache = IgnoredFilesCache::default();
 
@@ -93,9 +92,7 @@ pub fn get_file_watcher(
             }
 
             for event in events {
-                match register_event(config, &transaction_log, event, &mut ignored_files_cache)
-                    .await
-                {
+                match register_event(&context, event, &mut ignored_files_cache).await {
                     Ok(Some(storage)) => {
                         if output.send(storage).await.is_err() {
                             break;
@@ -200,8 +197,7 @@ enum EventType {
 }
 
 async fn register_event(
-    config: &Config,
-    transaction_log: &TransactionLog,
+    context: &Context,
     event: EventType,
     ignored_files_cache: &mut IgnoredFilesCache,
 ) -> anyhow::Result<Option<String>> {
@@ -216,12 +212,18 @@ async fn register_event(
             storage,
             timestamp,
         } => {
-            let storage_config = config.storages.get(&storage).unwrap();
-            let ignored_files = ignored_files_cache.get(storage_config).await;
+            let storage_config = context.config.storages.get(&storage).unwrap();
+            let ignored_files = ignored_files_cache.get(context, storage_config).await;
 
             let relative_path = RelativePathBuf::new(storage_config, path)?;
             if !ignored_files.is_ignored(&relative_path) {
-                write_deleted_event(transaction_log, &storage, &relative_path, timestamp).await;
+                write_deleted_event(
+                    &context.transaction_log,
+                    &storage,
+                    &relative_path,
+                    timestamp,
+                )
+                .await;
             }
 
             Ok(Some(storage))
@@ -237,8 +239,8 @@ async fn register_event(
             storage,
             timestamp,
         } => {
-            let storage_config = config.storages.get(&storage).unwrap();
-            let ignored_files = ignored_files_cache.get(storage_config).await;
+            let storage_config = context.config.storages.get(&storage).unwrap();
+            let ignored_files = ignored_files_cache.get(context, storage_config).await;
 
             // let timestamp = dst_path
             //     .metadata()
@@ -248,7 +250,7 @@ async fn register_event(
 
             for file_moved in list_files_moved_pair(storage_config, to, from)? {
                 write_moved_event(
-                    transaction_log,
+                    &context.transaction_log,
                     ignored_files,
                     &storage,
                     file_moved,

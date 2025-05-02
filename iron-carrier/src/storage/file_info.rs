@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use std::{cmp::Ord, hash::Hash, path::PathBuf};
 
-use crate::{config::Config, relative_path::RelativePathBuf};
-
-use super::{get_permissions, system_time_to_secs};
+use crate::{config::Config, context::Context, relative_path::RelativePathBuf};
 
 /// Represents a file in the storage.  
 ///
@@ -16,7 +14,6 @@ pub struct FileInfo {
     pub path: RelativePathBuf,
 
     pub info_type: FileInfoType,
-    pub permissions: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -26,6 +23,7 @@ pub enum FileInfoType {
         modified_at: u64,
         created_at: u64,
         size: u64,
+        permissions: u32,
     },
 
     /// Represent a deleted file, this information comes from the transaction log
@@ -54,8 +52,8 @@ impl FileInfo {
                 modified_at,
                 created_at,
                 size,
+                permissions,
             },
-            permissions,
         }
     }
     pub fn deleted(storage: String, path: RelativePathBuf, deleted_at: u64) -> Self {
@@ -63,7 +61,6 @@ impl FileInfo {
             storage,
             path,
             info_type: FileInfoType::Deleted { deleted_at },
-            permissions: 0,
         }
     }
 
@@ -77,7 +74,6 @@ impl FileInfo {
             storage,
             path,
             info_type: FileInfoType::Moved { old_path, moved_at },
-            permissions: 0,
         }
     }
 
@@ -154,20 +150,19 @@ impl FileInfo {
         self_date.cmp(&other_date)
     }
 
-    pub fn get_local_file_info(&self, config: &Config) -> anyhow::Result<Self> {
-        let metadata = self.get_absolute_path(config)?.metadata()?;
-
-        let modified_at = metadata.modified().map(system_time_to_secs)?;
-        let created_at = metadata.created().map(system_time_to_secs)?;
-        let size = metadata.len();
+    pub async fn get_local_file_info(&self, context: &Context) -> anyhow::Result<Self> {
+        let metadata = context
+            .fs
+            .metadata(&self.get_absolute_path(context.config)?)
+            .await?;
 
         Ok(Self::existent(
             self.storage.clone(),
             self.path.clone(),
-            modified_at,
-            created_at,
-            size,
-            get_permissions(&metadata),
+            metadata.modified_as_secs(),
+            metadata.created_as_secs(),
+            metadata.len(),
+            metadata.permissions(),
         ))
     }
 
@@ -181,6 +176,16 @@ impl FileInfo {
             FileInfoType::Existent { modified_at, .. } => modified_at,
             FileInfoType::Deleted { deleted_at } => deleted_at,
             FileInfoType::Moved { moved_at, .. } => moved_at,
+        }
+    }
+
+    /// Get the permissions of the file.
+    ///
+    /// For deleted and moved files, this will return 0
+    pub fn get_permissions(&self) -> u32 {
+        match &self.info_type {
+            FileInfoType::Existent { permissions, .. } => *permissions,
+            _ => 0,
         }
     }
 
@@ -239,8 +244,8 @@ mod tests {
                 modified_at: 0,
                 created_at: 0,
                 size: 0,
+                permissions: 0,
             },
-            permissions: 0,
         };
 
         assert_eq!(hash_helper::calculate_file_hash(&file), 4552872816654674580);
@@ -254,8 +259,8 @@ mod tests {
         let mut file_info = FileInfo {
             storage: "a".to_owned(),
             path: "./some_file_path".into(),
-            permissions: 0,
             info_type: FileInfoType::Existent {
+                permissions: 0,
                 modified_at: 0,
                 created_at: 0,
                 size: 100,
@@ -269,6 +274,7 @@ mod tests {
             modified_at: 1,
             created_at: 1,
             size: 100,
+            permissions: 1,
         };
         assert!(file_info.is_out_of_sync(&other_file));
 
@@ -276,6 +282,7 @@ mod tests {
             modified_at: 0,
             created_at: 1,
             size: 101,
+            permissions: 1,
         };
         assert!(file_info.is_out_of_sync(&other_file));
 

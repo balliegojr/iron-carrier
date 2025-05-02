@@ -1,30 +1,30 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     io::SeekFrom,
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
 
 use tokio::{
-    fs::File,
     io::{AsyncSeekExt, AsyncWriteExt},
-    sync::{mpsc::Sender, OwnedSemaphorePermit, Semaphore},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc::Sender},
 };
 use tokio_stream::StreamExt;
 
 use crate::{
-    config::Config, constants::DEFAULT_NETWORK_TIMEOUT, hash_helper,
+    Context, constants::DEFAULT_NETWORK_TIMEOUT, fs::FileW, hash_helper,
     ignored_files::IgnoredFilesCache, message_types::MessageTypes, network::rpc::RPCMessage,
-    node_id::NodeId, storage::FileInfo, Context,
+    node_id::NodeId, storage::FileInfo,
 };
 
 use super::{
+    BlockIndexPosition, Transfer, TransferId,
     block_index::{self},
     events::{
         QueryRequiredBlocks, QueryTransferType, RequiredBlocks, TransferBlock, TransferComplete,
         TransferResult, TransferType,
     },
-    BlockIndexPosition, Transfer, TransferId,
 };
 
 pub async fn receive_files(
@@ -57,7 +57,7 @@ pub async fn receive_files(
                 match request.type_id() {
                     Ok(MessageTypes::QueryTransferType) => {
                         if let Err(err) = process_query_transfer_type(
-                            context.config,
+                            &context,
                             &mut ignored_files_cache,
                             &add_current_transfer_tx,
                             transfers_semaphore.clone(),
@@ -77,7 +77,7 @@ pub async fn receive_files(
                         }
                     }
                     Ok(MessageTypes::TransferComplete) => {
-                        if let Err(err) = process_transfer_complete(context.config, &mut current_transfers, request).await {
+                        if let Err(err) = process_transfer_complete(&context, &mut current_transfers, request).await {
                             log::error!("{err}")
                         }
                     }
@@ -99,31 +99,37 @@ pub async fn receive_files(
 
 struct ActiveTransfer {
     transfer: Transfer,
-    handle: File,
+    handle: Pin<Box<dyn FileW>>,
     block_index: BTreeSet<BlockIndexPosition>,
 }
 
 async fn process_query_transfer_type(
-    config: &'static Config,
+    context: &Context,
     ignored_files_cache: &mut IgnoredFilesCache,
     add_current_transfer: &Sender<ActiveTransfer>,
     transfers_semaphore: Arc<Semaphore>,
     request: RPCMessage,
 ) -> anyhow::Result<()> {
     let data = request.data::<QueryTransferType>()?;
-    let transfer_type = get_transfer_type(&data.file, config, ignored_files_cache).await?;
+    let transfer_type = get_transfer_type(&data.file, context, ignored_files_cache).await?;
 
     if matches!(transfer_type, TransferType::NoTransfer) {
         return request.reply(transfer_type).await;
     }
 
+    let context = context.clone();
+
     let add_current_transfer = add_current_transfer.clone();
     tokio::spawn(async move {
         let permit = acquire_permit(transfers_semaphore, &request).await?;
         let transfer = Transfer::new(data.file, permit)?;
-        let handle =
-            crate::storage::file_operations::open_file_for_writing(config, &transfer.file).await?;
-        adjust_file_size(&transfer, &handle).await?;
+        let handle = context
+            .fs
+            .open_w(
+                transfer.file.get_absolute_path(context.config)?.as_path(),
+                transfer.file.file_size()?,
+            )
+            .await?;
 
         match transfer_type {
             TransferType::FullFile => {
@@ -184,12 +190,12 @@ async fn acquire_permit(
 
 async fn get_transfer_type(
     remote_file: &FileInfo,
-    config: &'static Config,
+    context: &Context,
     ignored_files_cache: &mut IgnoredFilesCache,
 ) -> anyhow::Result<TransferType> {
-    if let Some(storage_config) = config.storages.get(&remote_file.storage) {
+    if let Some(storage_config) = context.config.storages.get(&remote_file.storage) {
         if ignored_files_cache
-            .get(storage_config)
+            .get(context, storage_config)
             .await
             .is_ignored(&remote_file.path)
         {
@@ -197,12 +203,12 @@ async fn get_transfer_type(
         }
     }
 
-    let file_path = remote_file.get_absolute_path(config)?;
+    let file_path = remote_file.get_absolute_path(context.config)?;
     if !file_path.exists() {
         return Ok(TransferType::FullFile);
     }
 
-    let local_file = remote_file.get_local_file_info(config)?;
+    let local_file = remote_file.get_local_file_info(context).await?;
     if hash_helper::calculate_file_hash(remote_file)
         != hash_helper::calculate_file_hash(&local_file)
     {
@@ -220,8 +226,10 @@ async fn process_query_required_blocks(
 
     match current_transfers.get_mut(&data.transfer_id) {
         Some(active_transfer) => {
-            let local_file_size = active_transfer.handle.metadata().await?.len();
             let file_size = active_transfer.transfer.file.file_size()?;
+            // local file size will be the same as the remote
+            // file size because we set the file length when opening the file for writing
+            let local_file_size = file_size;
 
             let local_index = block_index::get_file_block_index(
                 &mut active_transfer.handle,
@@ -251,16 +259,6 @@ fn calculate_expected_blocks_for_full_file(
     let expected_blocks = (file_size / block_size) + 1;
 
     Ok((0..expected_blocks).map(Into::into).collect())
-}
-
-async fn adjust_file_size(transfer: &Transfer, file_handle: &File) -> anyhow::Result<()> {
-    let file_size = transfer.file.file_size()?;
-    if file_size != file_handle.metadata().await?.len() {
-        file_handle.set_len(file_size).await?;
-        log::trace!("set {:?} len to {file_size}", transfer.file.path);
-    }
-
-    Ok(())
 }
 
 async fn process_transfer_block(
@@ -294,7 +292,7 @@ async fn process_transfer_block(
 }
 
 async fn process_transfer_complete(
-    config: &'static Config,
+    context: &Context,
     current_transfers: &mut HashMap<TransferId, ActiveTransfer>,
     request: RPCMessage,
 ) -> anyhow::Result<()> {
@@ -303,8 +301,16 @@ async fn process_transfer_complete(
         std::collections::hash_map::Entry::Occupied(mut entry) => {
             let active_transfer = entry.get_mut();
             if active_transfer.block_index.is_empty() {
-                active_transfer.handle.sync_all().await?;
-                crate::storage::fix_times_and_permissions(&active_transfer.transfer.file, config)?;
+                active_transfer.handle.as_ref().sync_all().await?;
+
+                let modified = active_transfer.transfer.file.get_date();
+                let permissions = active_transfer.transfer.file.get_permissions();
+                let path = active_transfer
+                    .transfer
+                    .file
+                    .get_absolute_path(context.config)?;
+
+                context.fs.set_metadata(&path, permissions, modified)?;
 
                 entry.remove();
                 request.reply(TransferResult::Success).await

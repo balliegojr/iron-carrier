@@ -3,6 +3,7 @@ use std::{collections::HashSet, fmt::Display};
 use tokio_stream::StreamExt;
 
 use crate::{
+    Context, StateMachineError,
     file_transfer::TransferFiles,
     ignored_files::IgnoredFilesCache,
     message_types::MessageTypes,
@@ -10,7 +11,6 @@ use crate::{
     node_id::NodeId,
     state_machine::{Result, State},
     storage::FileInfo,
-    Context, StateMachineError,
 };
 
 use super::events::{
@@ -123,13 +123,7 @@ async fn process_query_index_request(context: &Context, request: RPCMessage) -> 
     let query: QueryStorageIndex = request.data()?;
     let storage_index = match context.config.storages.get(&query.name) {
         Some(storage_config) => {
-            match crate::storage::get_storage_info(
-                &query.name,
-                storage_config,
-                &context.transaction_log,
-            )
-            .await
-            {
+            match crate::storage::get_storage_info(context, &query.name, storage_config).await {
                 Ok(storage) => {
                     if storage.hash != query.hash {
                         StorageIndexStatus::SyncNecessary(storage)
@@ -160,13 +154,7 @@ async fn process_delete_file_request(
     request: RPCMessage,
 ) -> anyhow::Result<()> {
     let op: DeleteFile = request.data()?;
-    crate::storage::file_operations::delete_file(
-        context.config,
-        &context.transaction_log,
-        &op.file,
-        ignored_files_cache,
-    )
-    .await?;
+    crate::storage::file_operations::delete_file(context, &op.file, ignored_files_cache).await?;
     request.ack().await
 }
 
@@ -176,13 +164,7 @@ async fn process_move_file_request(
     request: RPCMessage,
 ) -> anyhow::Result<()> {
     let op: MoveFile = request.data()?;
-    crate::storage::file_operations::move_file(
-        context.config,
-        &context.transaction_log,
-        &op.file,
-        ignored_files_cache,
-    )
-    .await?;
+    crate::storage::file_operations::move_file(context, &op.file, ignored_files_cache).await?;
 
     request.ack().await
 }

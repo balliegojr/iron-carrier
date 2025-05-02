@@ -17,6 +17,7 @@ pub mod constants;
 pub mod relative_path;
 
 mod context;
+mod fs;
 mod hash_helper;
 mod ignored_files;
 mod message_types;

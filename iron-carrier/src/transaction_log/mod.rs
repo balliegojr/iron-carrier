@@ -10,7 +10,7 @@ pub use {
     sync_status::SyncStatus,
 };
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 use tokio::sync::Mutex;
 
 use std::{collections::HashSet, path::Path, sync::Arc, time::Duration};
@@ -51,8 +51,8 @@ impl TransactionLog {
         self.storage.lock().await
             .execute("INSERT OR REPLACE INTO LogEntry (storage, path, old_path, entry_type, status, timestamp) VALUES (?,?,?,?,?,?)", params![
                 storage,
-                path.to_str(),
-                old_path.map(|p| p.to_str()),
+                path.as_path().to_str(),
+                old_path.map(|p| p.as_path().to_str()),
                 &entry.event_type.to_string(),
                 &entry.event_status.to_string(),
                 entry.timestamp as i64

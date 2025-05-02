@@ -3,6 +3,7 @@ use std::{collections::HashSet, future, pin::pin, str::FromStr, time::Duration};
 use tokio_stream::StreamExt;
 
 use crate::{
+    Context,
     config::Config,
     message_types::MessageTypes,
     network::rpc::RPCMessage,
@@ -10,10 +11,9 @@ use crate::{
     state_machine::{Result, State, StateComposer, StateMachineError},
     stream,
     sync_options::SyncOptions,
-    Context,
 };
 
-use super::{consensus::ConsensusReached, ConnectAllPeers, Consensus, DiscoverPeers, SetSyncRole};
+use super::{ConnectAllPeers, Consensus, DiscoverPeers, SetSyncRole, consensus::ConsensusReached};
 
 #[derive(Default, Debug)]
 pub struct Daemon {}
@@ -33,11 +33,7 @@ impl State for Daemon {
 
 async fn wait_event(context: &Context) -> Result<DaemonEvent> {
     let (watcher_events_sender, watcher_events) = tokio::sync::mpsc::channel(1);
-    let _watcher = crate::storage::file_watcher::get_file_watcher(
-        context.config,
-        context.transaction_log.clone(),
-        watcher_events_sender,
-    )?;
+    let _watcher = crate::storage::file_watcher::get_file_watcher(context, watcher_events_sender)?;
 
     let mut watcher_events = stream::fold_timeout(
         watcher_events,

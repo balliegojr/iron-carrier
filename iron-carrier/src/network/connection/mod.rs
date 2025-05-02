@@ -465,8 +465,8 @@ mod tests {
             handshake(cfg_two, rx, tx).await
         });
 
-        let hs_one = dbg!(fut_hs_one.await.unwrap());
-        let hs_two = dbg!(fut_hs_two.await.unwrap());
+        let hs_one = fut_hs_one.await.unwrap();
+        let hs_two = fut_hs_two.await.unwrap();
 
         (hs_one, hs_two)
     }

@@ -1,4 +1,7 @@
-use crate::{config::PathConfig, constants::IGNORE_FILE_NAME, relative_path::RelativePathBuf};
+use crate::{
+    config::PathConfig, constants::IGNORE_FILE_NAME, context::Context,
+    relative_path::RelativePathBuf,
+};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::{
     collections::HashMap,
@@ -11,9 +14,9 @@ pub struct IgnoredFilesCache {
 }
 
 impl IgnoredFilesCache {
-    pub async fn get(&mut self, path_config: &PathConfig) -> &IgnoredFiles {
+    pub async fn get(&mut self, context: &Context, path_config: &PathConfig) -> &IgnoredFiles {
         if !self.loaded.contains_key(&path_config.path) {
-            let ignored_files = IgnoredFiles::new(path_config).await;
+            let ignored_files = IgnoredFiles::new(context, path_config).await;
             self.loaded.insert(path_config.path.clone(), ignored_files);
         }
 
@@ -28,9 +31,9 @@ pub struct IgnoredFiles {
 }
 
 impl IgnoredFiles {
-    pub async fn new(path_config: &PathConfig) -> Self {
+    pub async fn new(context: &Context, path_config: &PathConfig) -> Self {
         IgnoredFiles {
-            ignore_sets: get_glob_set(&path_config.path).await,
+            ignore_sets: get_glob_set(context, &path_config.path).await,
         }
     }
 
@@ -42,13 +45,13 @@ impl IgnoredFiles {
     pub fn is_ignored(&self, path: &RelativePathBuf) -> bool {
         self.ignore_sets
             .as_ref()
-            .map(|set| set.is_match(&**path))
+            .map(|set| set.is_match(path.as_path()))
             .unwrap_or_default()
     }
 }
 
-async fn get_glob_set(path: impl AsRef<Path>) -> Option<GlobSet> {
-    let patterns = get_ignore_patterns(path.as_ref()).await?;
+async fn get_glob_set(context: &Context, path: impl AsRef<Path>) -> Option<GlobSet> {
+    let patterns = get_ignore_patterns(context, path.as_ref()).await?;
 
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
@@ -76,13 +79,13 @@ async fn get_glob_set(path: impl AsRef<Path>) -> Option<GlobSet> {
     }
 }
 
-async fn get_ignore_patterns(path: impl AsRef<Path>) -> Option<Vec<String>> {
+async fn get_ignore_patterns(context: &Context, path: impl AsRef<Path>) -> Option<Vec<String>> {
     let ignore_file_path = path.as_ref().join(IGNORE_FILE_NAME);
-    if !ignore_file_path.exists() {
+    if !context.fs.exists(&ignore_file_path).await {
         return None;
     }
 
-    let content = match tokio::fs::read_to_string(ignore_file_path).await {
+    let content = match context.fs.read_to_string(&ignore_file_path).await {
         Ok(content) => content,
         Err(_) => {
             log::error!("Failed to read ignore file at {:?}", path.as_ref());

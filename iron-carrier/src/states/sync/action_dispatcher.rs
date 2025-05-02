@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    Context,
     ignored_files::IgnoredFilesCache,
     node_id::NodeId,
     state_machine::{Result, State},
     states::sync::events::{DeleteFile, MoveFile, SendFileTo},
     storage::{FileInfo, Storage},
-    Context,
 };
 
 /// Possible actions necessary to synchronize a file
@@ -256,13 +256,8 @@ pub async fn execute_action(
     match action {
         SyncAction::Delete { file, mut nodes } => {
             if nodes.remove(&context.config.node_id_hashed) {
-                crate::storage::file_operations::delete_file(
-                    context.config,
-                    &context.transaction_log,
-                    &file,
-                    ignored_files_cache,
-                )
-                .await?;
+                crate::storage::file_operations::delete_file(context, &file, ignored_files_cache)
+                    .await?;
             }
 
             if !nodes.is_empty() {
@@ -276,13 +271,8 @@ pub async fn execute_action(
         }
         SyncAction::Move { file, mut nodes } => {
             if nodes.remove(&context.config.node_id_hashed) {
-                crate::storage::file_operations::move_file(
-                    context.config,
-                    &context.transaction_log,
-                    &file,
-                    ignored_files_cache,
-                )
-                .await?;
+                crate::storage::file_operations::move_file(context, &file, ignored_files_cache)
+                    .await?;
             }
 
             if !nodes.is_empty() {
@@ -333,6 +323,7 @@ mod tests {
                 modified_at: 0,
                 created_at: 0,
                 size: 0,
+                permissions: 0,
             },
         );
 
@@ -402,6 +393,7 @@ mod tests {
                 modified_at: 20,
                 created_at: 20,
                 size: 0,
+                permissions: 0,
             },
         );
 
@@ -518,6 +510,7 @@ mod tests {
                 modified_at: 20,
                 created_at: 20,
                 size: 0,
+                permissions: 0,
             },
         );
 
@@ -564,6 +557,7 @@ mod tests {
                 modified_at: 20,
                 created_at: 20,
                 size: 0,
+                permissions: 0,
             },
         );
 
@@ -595,6 +589,7 @@ mod tests {
                 modified_at: 20,
                 created_at: 20,
                 size: 0,
+                permissions: 0,
             },
         );
 
@@ -650,6 +645,7 @@ mod tests {
                 modified_at: 20,
                 created_at: 20,
                 size: 10,
+                permissions: 0,
             },
         );
         let moved_deleted = test_file("origin", FileInfoType::Deleted { deleted_at: 10 });
@@ -666,6 +662,7 @@ mod tests {
                 modified_at: 10,
                 created_at: 10,
                 size: 10,
+                permissions: 0,
             },
         );
 
@@ -721,6 +718,7 @@ mod tests {
                 modified_at: 5,
                 created_at: 5,
                 size: 10,
+                permissions: 0,
             },
         );
         let origin = test_file(
@@ -729,6 +727,7 @@ mod tests {
                 modified_at: 10,
                 created_at: 10,
                 size: 10,
+                permissions: 0,
             },
         );
 
@@ -746,6 +745,7 @@ mod tests {
                 modified_at: 10,
                 created_at: 10,
                 size: 10,
+                permissions: 0,
             },
         );
 
@@ -792,6 +792,7 @@ mod tests {
                 modified_at: 20,
                 created_at: 20,
                 size: 0,
+                permissions: 0,
             },
         );
 
@@ -826,6 +827,7 @@ mod tests {
                 modified_at: 10,
                 created_at: 10,
                 size: 10,
+                permissions: 0,
             },
         );
         let moved_deleted = test_file("origin", FileInfoType::Deleted { deleted_at: 10 });
@@ -842,6 +844,7 @@ mod tests {
                 modified_at: 10,
                 created_at: 10,
                 size: 10,
+                permissions: 0,
             },
         );
 
@@ -916,7 +919,6 @@ mod tests {
             storage: "".to_string(),
             path: path.into(),
             info_type,
-            permissions: 0,
         }
     }
 }

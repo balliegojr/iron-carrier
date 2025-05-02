@@ -1,7 +1,4 @@
-use std::{
-    ops::Deref,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +11,12 @@ pub struct RelativePathBuf {
 }
 
 impl RelativePathBuf {
+    pub fn root() -> Self {
+        Self {
+            inner: PathBuf::new(),
+        }
+    }
+
     pub fn new(path_config: &PathConfig, mut path: PathBuf) -> anyhow::Result<Self> {
         if !path.has_root() {
             path = path.canonicalize()?;
@@ -34,12 +37,8 @@ impl RelativePathBuf {
             .map(|root_path| root_path.join(&self.inner))
             .map_err(anyhow::Error::from)
     }
-}
 
-impl Deref for RelativePathBuf {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
+    pub fn as_path(&self) -> &Path {
         &self.inner
     }
 }

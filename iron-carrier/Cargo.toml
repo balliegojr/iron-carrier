@@ -1,7 +1,6 @@
-cargo-features = ["edition2024"]
 [package]
 name = "iron-carrier"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Ilson Roberto Balliego Junior"]
 edition = "2024"
 
@@ -46,3 +45,4 @@ pbkdf2 = "0.12.1"
 sha2 = "0.10.6"
 x25519-dalek = "2.0.0"
 rand_core = "0.6.4"
+async-trait = "0.1.88"

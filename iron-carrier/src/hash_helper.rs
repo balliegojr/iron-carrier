@@ -26,7 +26,7 @@ pub fn calculate_file_hash(file: &FileInfo) -> u64 {
 /// Calculate the hash of `file` by using the file attributes only, file content is NOT considered
 pub fn calculate_file_hash_digest(file: &FileInfo, digest: &mut Digest<u64>) {
     digest.update(file.storage.as_bytes());
-    file.path.to_str().inspect(|path| {
+    file.path.as_path().to_str().inspect(|path| {
         digest.update(path.as_bytes());
     });
 
@@ -42,7 +42,7 @@ pub fn calculate_file_hash_digest(file: &FileInfo, digest: &mut Digest<u64>) {
         }
         FileInfoType::Moved { old_path, moved_at } => {
             digest.update(&moved_at.to_le_bytes());
-            old_path.to_str().inspect(|path| {
+            old_path.as_path().to_str().inspect(|path| {
                 digest.update(path.as_bytes());
             });
         }

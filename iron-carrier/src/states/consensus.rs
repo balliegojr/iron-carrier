@@ -217,7 +217,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_can_reach_consensus() -> anyhow::Result<()> {
-        let [one, two, three] = crate::context::local_contexts().await?;
+        let [one, two, three] = crate::context::local_contexts().await;
         let n_one = one.config.node_id_hashed;
         let n_two = two.config.node_id_hashed;
         let n_three = three.config.node_id_hashed;

@@ -434,16 +434,17 @@ mod tests {
 
     #[tokio::test]
     pub async fn ensure_rpc_single_call_times_out() -> anyhow::Result<()> {
-        let [zero, one] = crate::context::local_contexts().await?;
+        let [zero, one] = crate::context::local_contexts().await;
 
         ping_rpc(Duration::from_secs(1), one);
 
-        assert!(zero
-            .rpc
-            .call(ConsensusReached, 1.into())
-            .ack()
-            .await
-            .is_ok());
+        assert!(
+            zero.rpc
+                .call(ConsensusReached, 1.into())
+                .ack()
+                .await
+                .is_ok()
+        );
         assert!(zero.rpc.call(StartConsensus, 1.into()).ack().await.is_err());
 
         Ok(())
@@ -451,7 +452,7 @@ mod tests {
 
     #[tokio::test]
     pub async fn ensure_rpc_multi_call_times_out() -> anyhow::Result<()> {
-        let [zero, one, two] = crate::context::local_contexts().await?;
+        let [zero, one, two] = crate::context::local_contexts().await;
 
         ping_rpc(Duration::from_millis(100), one);
         ping_rpc(Duration::from_secs(3), two);
@@ -514,7 +515,7 @@ mod tests {
 
     #[tokio::test]
     pub async fn ensure_rpc_broadcast_times_out() -> anyhow::Result<()> {
-        let [zero, one, two] = crate::context::local_contexts().await?;
+        let [zero, one, two] = crate::context::local_contexts().await;
 
         ping_rpc(Duration::from_millis(100), one);
         ping_rpc(Duration::from_secs(3), two);
@@ -547,7 +548,7 @@ mod tests {
 
     #[tokio::test]
     pub async fn ensure_subscription_aborts_when_no_connections() -> anyhow::Result<()> {
-        let [zero, one, two] = crate::context::local_contexts().await?;
+        let [zero, one, two] = crate::context::local_contexts().await;
         let task = tokio::spawn(async move {
             let context = zero;
 

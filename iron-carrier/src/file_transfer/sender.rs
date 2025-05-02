@@ -2,6 +2,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::SeekFrom,
+    pin::Pin,
     sync::Arc,
 };
 
@@ -12,21 +13,21 @@ use std::{
 
 // mod transfer_blocks;
 use tokio::{
-    fs::File,
     io::{AsyncReadExt, AsyncSeekExt},
     sync::Semaphore,
 };
 // pub use transfer_blocks::TransferBlocks;
 
-use crate::{network::rpc::GroupCallResponse, node_id::NodeId, storage::FileInfo, Context};
+use crate::{
+    Context, fs::Metadata, network::rpc::GroupCallResponse, node_id::NodeId, storage::FileInfo,
+};
 
 use super::{
-    block_index,
+    BlockIndexPosition, Transfer, block_index,
     events::{
         self, QueryTransferType, RequiredBlocks, TransferBlock, TransferComplete, TransferResult,
         TransferType,
     },
-    BlockIndexPosition, Transfer,
 };
 
 pub async fn send_files(
@@ -71,12 +72,21 @@ async fn send_file(
         return Ok(());
     }
 
-    let mut file_handle =
-        crate::storage::file_operations::open_file_for_reading(context.config, &transfer.file)
-            .await?;
+    let absolute_path = transfer.file.get_absolute_path(context.config)?;
+    let metadata = context.fs.metadata(&absolute_path).await?;
+    let mut file_handle = context
+        .fs
+        .open_r(transfer.file.get_absolute_path(context.config)?.as_path())
+        .await?;
 
-    let mut nodes_blocks =
-        query_required_blocks(&context, &transfer, &mut file_handle, transfer_types).await?;
+    let mut nodes_blocks = query_required_blocks(
+        &context,
+        &transfer,
+        &mut file_handle,
+        transfer_types,
+        metadata,
+    )
+    .await?;
 
     while !nodes_blocks.is_empty() {
         transfer_blocks(&context, &transfer, &mut file_handle, &mut nodes_blocks).await?;
@@ -127,14 +137,15 @@ async fn query_transfer_type(
 async fn query_required_blocks(
     context: &Context,
     transfer: &Transfer,
-    file_handle: &mut File,
+    file_handle: &mut Pin<Box<dyn crate::fs::FileR>>,
     mut transfer_types: HashMap<NodeId, TransferType>,
+    metadata: Metadata,
 ) -> anyhow::Result<HashMap<NodeId, BTreeSet<BlockIndexPosition>>> {
     let full_index = block_index::get_file_block_index(
         file_handle,
         transfer.block_size,
         transfer.file.file_size()?,
-        file_handle.metadata().await?.len(),
+        metadata.len(),
     )
     .await?;
 
@@ -181,7 +192,7 @@ async fn query_required_blocks(
 async fn transfer_blocks(
     context: &crate::Context,
     transfer: &Transfer,
-    file_handle: &mut File,
+    file_handle: &mut Pin<Box<dyn crate::fs::FileR>>,
     nodes_blocks: &mut HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
 ) -> anyhow::Result<()> {
     log::debug!("Sending {:?} blocks to nodes", transfer.file.path);
