@@ -43,17 +43,21 @@ pub async fn get_file_block_index<T: AsyncRead + Unpin>(
         return Ok(Default::default());
     }
 
-    let total_blocks = (target_file_size / block_size) + 1;
+    let total_blocks = (target_file_size / block_size) + (target_file_size % block_size > 0) as u64;
     let mut block_index = Vec::with_capacity(total_blocks as usize);
 
     let mut buf = vec![0u8; block_size as usize];
     let mut position = 0;
 
-    while position < local_file_size {
+    while position < local_file_size && block_index.len() < total_blocks as usize {
         let to_read = block_size.min(local_file_size - position) as usize;
         let actually_read = file.read_exact(&mut buf[..to_read]).await?;
         block_index.push(hash_helper::calculate_checksum(&buf[..actually_read]).into());
         position += actually_read as u64;
+    }
+
+    while block_index.len() < total_blocks as usize {
+        block_index.push(0.into());
     }
 
     Ok(FullIndex { inner: block_index })
@@ -69,14 +73,17 @@ impl FullIndex {
         (0..self.inner.len() as u64).map(Into::into).collect()
     }
 
-    pub fn generate_diff(self, other: FullIndex) -> BTreeSet<BlockIndexPosition> {
-        assert_eq!(
-            self.inner.len(),
-            other.inner.len(),
-            "both full indexes must have the same length"
-        );
+    pub fn generate_diff(self, other: FullIndex) -> anyhow::Result<BTreeSet<BlockIndexPosition>> {
+        if self.inner.len() != other.inner.len() {
+            anyhow::bail!(
+                "both full indexes must have the same length, {} != {}",
+                self.inner.len(),
+                other.inner.len()
+            );
+        }
 
-        self.inner
+        Ok(self
+            .inner
             .into_iter()
             .zip(other.inner)
             .enumerate()
@@ -87,7 +94,7 @@ impl FullIndex {
                     None
                 }
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -154,5 +161,160 @@ mod tests {
         assert_eq!(get_block_size(MIN_BLOCK_SIZE), MIN_BLOCK_SIZE);
         assert_eq!(get_block_size(MIN_BLOCK_SIZE * 2001), MIN_BLOCK_SIZE * 2);
         assert_eq!(get_block_size(MAX_BLOCK_SIZE * 2001), MAX_BLOCK_SIZE);
+    }
+
+    #[tokio::test]
+    pub async fn get_file_block_index_should_generate_a_full_index_of_length_4() {
+        let index = get_file_block_index(
+            &mut [0u8; MIN_BLOCK_SIZE as usize * 4].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE * 4,
+            MIN_BLOCK_SIZE * 4,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        assert_eq!(4, index.inner.len());
+    }
+
+    #[tokio::test]
+    pub async fn get_file_block_index_should_generate_a_full_index_of_length_2() {
+        let index = get_file_block_index(
+            &mut [0u8; MIN_BLOCK_SIZE as usize + 1].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE + 1,
+            MIN_BLOCK_SIZE + 1,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        assert_eq!(2, index.inner.len());
+    }
+
+    #[tokio::test]
+    pub async fn get_file_block_index_should_generate_index_longer_than_file() {
+        let index = get_file_block_index(
+            &mut [0u8; MIN_BLOCK_SIZE as usize * 4].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE * 6,
+            MIN_BLOCK_SIZE * 4,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        assert_eq!(6, index.inner.len());
+    }
+
+    #[tokio::test]
+    pub async fn get_file_block_index_should_generate_index_shorter_than_file() {
+        let index = get_file_block_index(
+            &mut [0u8; MIN_BLOCK_SIZE as usize * 6].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE * 4,
+            MIN_BLOCK_SIZE * 6,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        assert_eq!(4, index.inner.len());
+    }
+
+    #[tokio::test]
+    pub async fn full_index_generate_diff_should_be_empty_if_index_is_same() {
+        let file = [0u8; MIN_BLOCK_SIZE as usize * 4];
+
+        let index = get_file_block_index(
+            &mut file.as_slice(),
+            MIN_BLOCK_SIZE,
+            file.len() as u64,
+            file.len() as u64,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        let other_index = index.clone();
+        let diff = index
+            .generate_diff(other_index)
+            .expect("failed to generate diff");
+
+        assert!(diff.is_empty());
+    }
+
+    #[tokio::test]
+    pub async fn full_index_generate_diff_should_generate_full_length_diff() {
+        let index = get_file_block_index(
+            &mut [0u8; MIN_BLOCK_SIZE as usize * 4].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE * 4,
+            MIN_BLOCK_SIZE * 4,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        let other_index = get_file_block_index(
+            &mut [1u8; MIN_BLOCK_SIZE as usize * 4].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE * 4,
+            MIN_BLOCK_SIZE * 4,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        let diff = index
+            .generate_diff(other_index)
+            .expect("failed to generate diff");
+        assert_eq!(4, diff.len());
+    }
+
+    #[tokio::test]
+    pub async fn full_index_generate_diff_should_generate_diff_for_shorter_file() {
+        let index = get_file_block_index(
+            &mut [0u8; MIN_BLOCK_SIZE as usize * 6].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE * 6,
+            MIN_BLOCK_SIZE * 6,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        let other_index = get_file_block_index(
+            &mut [0u8; MIN_BLOCK_SIZE as usize * 4].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE * 6,
+            MIN_BLOCK_SIZE * 4,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        let diff = index
+            .generate_diff(other_index)
+            .expect("failed to generate diff");
+        assert_eq!(2, diff.len());
+    }
+
+    #[tokio::test]
+    pub async fn full_index_generate_diff_should_generate_diff_ignoring_longer_file() {
+        let index = get_file_block_index(
+            &mut [0u8; MIN_BLOCK_SIZE as usize * 4].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE * 4,
+            MIN_BLOCK_SIZE * 4,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        let other_index = get_file_block_index(
+            &mut [0u8; MIN_BLOCK_SIZE as usize * 6].as_slice(),
+            MIN_BLOCK_SIZE,
+            MIN_BLOCK_SIZE * 4,
+            MIN_BLOCK_SIZE * 6,
+        )
+        .await
+        .expect("failed to get file block index");
+
+        let diff = index
+            .generate_diff(other_index)
+            .expect("failed to generate diff");
+        assert_eq!(0, diff.len());
     }
 }

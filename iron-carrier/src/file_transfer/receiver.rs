@@ -239,7 +239,7 @@ async fn process_query_required_blocks(
             )
             .await?;
 
-            let required_blocks = data.sender_block_index.generate_diff(local_index);
+            let required_blocks = data.sender_block_index.generate_diff(local_index)?;
             active_transfer.block_index = required_blocks.clone();
 
             request.reply(RequiredBlocks { required_blocks }).await

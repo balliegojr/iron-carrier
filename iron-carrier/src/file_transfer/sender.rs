@@ -1,4 +1,3 @@
-// mod query_required_blocks;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::SeekFrom,
@@ -6,17 +5,10 @@ use std::{
     sync::Arc,
 };
 
-// pub use query_required_blocks::QueryRequiredBlocks;
-
-// mod query_transfer_type;
-// pub use query_transfer_type::QueryTransfer;
-
-// mod transfer_blocks;
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
     sync::Semaphore,
 };
-// pub use transfer_blocks::TransferBlocks;
 
 use crate::{
     Context, fs::Metadata, network::rpc::GroupCallResponse, node_id::NodeId, storage::FileInfo,
