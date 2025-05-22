@@ -1,4 +1,3 @@
-cargo-features = ["edition2024"]
 [package]
 name = "iron-carrier-macros"
 version = "0.1.0"

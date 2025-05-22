@@ -197,3 +197,5 @@ async fn process_save_sync_status_request(
 
     request.ack().await
 }
+
+// TODO: implement tests for Follower

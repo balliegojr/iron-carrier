@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{message_types::MessageType, storage::FileInfo};
 
 use super::{
-    block_index::{BlockIndexPosition, FullIndex},
     TransferId,
+    block_index::{BlockIndexPosition, FullIndex},
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
@@ -57,36 +57,3 @@ pub enum TransferResult {
         required_blocks: BTreeSet<BlockIndexPosition>,
     },
 }
-
-// #[derive(Debug, Serialize, Deserialize, Clone)]
-// pub enum FileTransferEvent {
-//     QueryTransferType {
-//         file: FileInfo,
-//     },
-//     ReplyTransferType {
-//         transfer_type: TransferType,
-//     },
-//
-//     QueryRequiredBlocks {
-//         sender_block_index: FullIndex,
-//     },
-//     ReplyRequiredBlocks {
-//         required_blocks: BTreeSet<BlockIndexPosition>,
-//     },
-//
-//     TransferBlock {
-//         block_index: BlockIndexPosition,
-//         block: Arc<Vec<u8>>,
-//     },
-//     TransferComplete,
-//     TransferSucceeded,
-//     TransferFailed {
-//         required_blocks: BTreeSet<BlockIndexPosition>,
-//     },
-//     SendFileTo {
-//         file: FileInfo,
-//         nodes: Vec<u64>,
-//     },
-//
-//     RemovePeer,
-// }

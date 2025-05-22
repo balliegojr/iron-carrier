@@ -45,18 +45,24 @@ impl Context {
 
 #[cfg(test)]
 pub async fn local_contexts<const LENGTH: usize>() -> [Context; LENGTH] {
+    use std::str::FromStr;
+
     fn config(id: u64) -> &'static Validated<Config> {
         Validated::new(Config {
             node_id_hashed: id.into(),
+            storages: [(
+                "a".to_string(),
+                crate::config::PathConfig::from_str("/").unwrap(),
+            )]
+            .into(),
             ..Default::default()
         })
         .leak()
     }
 
-    let fs = crate::fs::MemFS::empty().leak();
-    let mut contexts = vec![test_context(config(0), fs)];
+    let mut contexts = vec![test_context(config(0), crate::fs::MemFS::empty().leak())];
     for i in 1..LENGTH {
-        let context = test_context(config(i as u64), fs);
+        let context = test_context(config(i as u64), crate::fs::MemFS::empty().leak());
         for c in contexts.iter() {
             c.connection_handler.connect_context(&context).await;
         }

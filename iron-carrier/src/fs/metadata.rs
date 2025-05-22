@@ -2,7 +2,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Metadata {
     len: u64,
     created: u64,
@@ -72,10 +72,6 @@ impl MetadataB {
 
     pub fn len(mut self, len: u64) -> Self {
         self.inner.len = len;
-        self
-    }
-    pub fn created(mut self, created: u64) -> Self {
-        self.inner.created = created;
         self
     }
     pub fn modified(mut self, modified: u64) -> Self {

@@ -3,7 +3,7 @@ use std::{sync::atomic::AtomicU16, vec};
 use crate::message_types::{MessageType, MessageTypes};
 use bytes::{Buf, BytesMut};
 use num_traits::FromPrimitive;
-use serde::{de::Deserialize, Serialize};
+use serde::{Serialize, de::Deserialize};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 const MAX_MESSAGE_SIZE: usize = u32::MAX as usize;
@@ -30,16 +30,27 @@ pub struct NetworkMessage {
 
 impl std::fmt::Debug for NetworkMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NetworkMessage")
-            .field("content_len", &self.content.len())
-            .field("id", &self.id())
-            .field("type_id", &self.type_id())
-            .field("is_reply", &self.is_reply())
-            .field("is_ack", &self.is_ack())
-            .field("is_ping", &self.is_ping())
-            .field("is_cancel", &self.is_cancel())
-            // .field("content", &&self.content[..self.content.len().min(10)])
-            .finish()
+        let mut d = f.debug_struct("NetworkMessage");
+
+        d.field("content_len", &self.content.len())
+            .field("id", &self.id());
+
+        if let Ok(type_id) = &self.type_id() {
+            d.field("type_id", type_id);
+        }
+        if self.is_reply() {
+            d.field("is_reply", &self.is_reply());
+        }
+        if self.is_ack() {
+            d.field("is_ack", &self.is_ack());
+        }
+        if self.is_ping() {
+            d.field("is_ping", &self.is_ping());
+        }
+        if self.is_cancel() {
+            d.field("is_cancel", &self.is_cancel());
+        }
+        d.finish()
     }
 }
 

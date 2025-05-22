@@ -41,7 +41,8 @@ pub async fn move_file(
     let modified = file.get_date();
     context
         .fs
-        .set_metadata(&dest_path_abs, permissions, modified)?;
+        .set_metadata(&dest_path_abs, permissions, modified)
+        .await?;
 
     log::info!("{src_path_abs:?} moved to {dest_path_abs:?}");
 

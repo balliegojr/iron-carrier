@@ -26,7 +26,9 @@ pub async fn send_files(
     context: &Context,
     files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
 ) -> anyhow::Result<()> {
-    let sending_limit = Arc::new(Semaphore::new(context.config.max_parallel_sending.into()));
+    let sending_limit = Arc::new(Semaphore::new(
+        1.max(context.config.max_parallel_sending.into()),
+    ));
 
     let tasks: Vec<_> = files_to_send
         .into_iter()
@@ -66,10 +68,7 @@ async fn send_file(
 
     let absolute_path = transfer.file.get_absolute_path(context.config)?;
     let metadata = context.fs.metadata(&absolute_path).await?;
-    let mut file_handle = context
-        .fs
-        .open_r(transfer.file.get_absolute_path(context.config)?.as_path())
-        .await?;
+    let mut file_handle = context.fs.open_r(&absolute_path).await?;
 
     let mut nodes_blocks = query_required_blocks(
         &context,

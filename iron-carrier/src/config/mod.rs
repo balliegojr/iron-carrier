@@ -8,7 +8,7 @@ use std::{
 
 use crate::{hash_helper, node_id::NodeId, validation::Unvalidated};
 use serde::Deserialize;
-use serde_with::{serde_as, DisplayFromStr, PickFirst};
+use serde_with::{DisplayFromStr, PickFirst, serde_as};
 
 mod encryption;
 pub use encryption::Encryption;
@@ -160,16 +160,16 @@ impl crate::validation::Verifiable for Config {
             anyhow::bail!("Invalid config: Group name is too long");
         }
 
-        if let Some(schedule_cron) = self.schedule_sync.as_ref() {
-            if cron::Schedule::from_str(schedule_cron).is_err() {
-                anyhow::bail!("Invalid config: schedule_sync contains an invalid cron");
-            }
+        if let Some(schedule_cron) = self.schedule_sync.as_ref()
+            && cron::Schedule::from_str(schedule_cron).is_err()
+        {
+            anyhow::bail!("Invalid config: schedule_sync contains an invalid cron");
         }
 
-        if let Encryption::EnabledWithKey(key) = &self.encryption {
-            if key.is_empty() {
-                anyhow::bail!("Invalid config: Encryption key must be non empty");
-            }
+        if let Encryption::EnabledWithKey(key) = &self.encryption
+            && key.is_empty()
+        {
+            anyhow::bail!("Invalid config: Encryption key must be non empty");
         }
 
         Ok(())

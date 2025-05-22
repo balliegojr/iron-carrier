@@ -34,8 +34,9 @@ pub async fn receive_files(
     let mut ignored_files_cache = IgnoredFilesCache::default();
     let mut current_transfers: HashMap<TransferId, ActiveTransfer> = Default::default();
 
-    let transfers_semaphore =
-        Arc::new(Semaphore::new(context.config.max_parallel_receiving.into()));
+    let transfers_semaphore = Arc::new(Semaphore::new(
+        1.max(context.config.max_parallel_receiving.into()),
+    ));
 
     let (add_current_transfer_tx, mut add_current_transfer_rx) = tokio::sync::mpsc::channel(1);
 
@@ -193,18 +194,17 @@ async fn get_transfer_type(
     context: &Context,
     ignored_files_cache: &mut IgnoredFilesCache,
 ) -> anyhow::Result<TransferType> {
-    if let Some(storage_config) = context.config.storages.get(&remote_file.storage) {
-        if ignored_files_cache
+    if let Some(storage_config) = context.config.storages.get(&remote_file.storage)
+        && ignored_files_cache
             .get(context, storage_config)
             .await
             .is_ignored(&remote_file.path)
-        {
-            return Ok(TransferType::NoTransfer);
-        }
+    {
+        return Ok(TransferType::NoTransfer);
     }
 
     let file_path = remote_file.get_absolute_path(context.config)?;
-    if !file_path.exists() {
+    if !context.fs.exists(&file_path).await {
         return Ok(TransferType::FullFile);
     }
 
@@ -310,7 +310,10 @@ async fn process_transfer_complete(
                     .file
                     .get_absolute_path(context.config)?;
 
-                context.fs.set_metadata(&path, permissions, modified)?;
+                context
+                    .fs
+                    .set_metadata(&path, permissions, modified)
+                    .await?;
 
                 entry.remove();
                 request.reply(TransferResult::Success).await

@@ -6,7 +6,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::node_id::NodeId;
 
-use super::{network_message::NetworkMessage, rpc_reply::RPCReply, OutboundNetworkMessageType};
+use super::{OutboundNetworkMessageType, network_message::NetworkMessage, rpc_reply::RPCReply};
 
 /// Represents a RPC for multiple nodes or a broadcast
 #[must_use]
@@ -83,7 +83,7 @@ where
                     canceled_nodes.insert(node_id);
                 }
                 super::message_waiting_reply::ReplyType::Timeout(nodes) => {
-                    return Ok(GroupCallResponse::Partial(replies, nodes))
+                    return Ok(GroupCallResponse::Partial(replies, nodes));
                 }
             }
         }
