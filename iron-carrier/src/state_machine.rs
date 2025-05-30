@@ -43,6 +43,7 @@ pub trait State: std::fmt::Debug {
     async fn execute(self, context: &Context) -> Result<Self::Output>;
 }
 
+#[allow(dead_code)]
 pub trait StateComposer {
     fn and<T>(self) -> And<Self, T>
     where

@@ -1,7 +1,11 @@
 use std::collections::HashSet;
 
 use crate::{
-    Context, node_id::NodeId, state_machine::Result, state_machine::State, storage::FileInfo,
+    Context,
+    node_id::NodeId,
+    relative_path::RelativePathBuf,
+    state_machine::{Result, State},
+    storage::storage_tree::ExistingFileInfo,
 };
 
 mod block_index;
@@ -13,13 +17,14 @@ mod sender;
 mod transfer;
 
 pub use events::TransferFilesStart;
-pub use transfer::{Transfer, TransferId};
+use serde::{Deserialize, Serialize};
+pub use transfer::Transfer;
 
 use self::events::TransferFilesCompleted;
 
 #[derive(Debug)]
 pub struct TransferFiles {
-    files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
+    files_to_send: Vec<(SyncFile, HashSet<NodeId>)>,
     sync_leader_id: Option<NodeId>,
 }
 
@@ -72,7 +77,7 @@ impl State for TransferFiles {
 impl TransferFiles {
     pub fn new(
         sync_leader_id: Option<NodeId>,
-        files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
+        files_to_send: Vec<(SyncFile, HashSet<NodeId>)>,
     ) -> Self {
         Self {
             files_to_send,
@@ -81,9 +86,16 @@ impl TransferFiles {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyncFile {
+    pub storage: String,
+    pub path: RelativePathBuf,
+    pub info: ExistingFileInfo,
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::message_types::MessageTypes;
+    use crate::{fs::MetadataB, message_types::MessageTypes, relative_path::RelativePath};
 
     use super::*;
     use rand::Rng;
@@ -111,7 +123,7 @@ mod tests {
         assert!(leader_result.is_ok());
         assert!(node_result.is_ok());
 
-        compare_files(&leader, &node, &file).await;
+        compare_files(&leader, &node, file.path.as_path()).await;
     }
 
     #[tokio::test]
@@ -138,7 +150,7 @@ mod tests {
         assert!(leader_result.is_ok());
         assert!(node_result.is_ok());
 
-        compare_files(&leader, &node, &leader_file).await;
+        compare_files(&leader, &node, leader_file.path.as_path()).await;
     }
 
     #[tokio::test]
@@ -174,8 +186,8 @@ mod tests {
         assert!(node_one_result.is_ok());
         assert!(node_two_result.is_ok());
 
-        compare_files(&leader, &node_one, &leader_file).await;
-        compare_files(&leader, &node_two, &leader_file).await;
+        compare_files(&leader, &node_one, leader_file.path.as_path()).await;
+        compare_files(&leader, &node_two, leader_file.path.as_path()).await;
     }
 
     #[tokio::test]
@@ -219,8 +231,8 @@ mod tests {
         assert!(node_one_result.is_ok());
         assert!(node_two_result.is_ok());
 
-        compare_files(&leader, &node_one, &leader_file).await;
-        compare_files(&leader, &node_two, &leader_file).await;
+        compare_files(&leader, &node_one, leader_file.path.as_path()).await;
+        compare_files(&leader, &node_two, leader_file.path.as_path()).await;
     }
 
     #[tokio::test]
@@ -259,8 +271,8 @@ mod tests {
         assert!(node_result.is_ok());
 
         // Verify files were transferred in both directions
-        compare_files(&leader, &node, &leader_send_file).await;
-        compare_files(&node, &leader, &node_send_file).await;
+        compare_files(&leader, &node, leader_send_file.path.as_path()).await;
+        compare_files(&node, &leader, node_send_file.path.as_path()).await;
     }
 
     #[tokio::test]
@@ -286,7 +298,7 @@ mod tests {
         assert!(leader_result.is_ok());
         assert!(node_result.is_ok());
 
-        compare_files(&node, &leader, &node_file).await;
+        compare_files(&node, &leader, node_file.path.as_path()).await;
     }
 
     #[tokio::test]
@@ -323,8 +335,8 @@ mod tests {
         assert!(node_one_result.is_ok());
         assert!(node_two_result.is_ok());
 
-        compare_files(&node_one, &leader, &node_one_file).await;
-        compare_files(&node_two, &leader, &node_two_file).await;
+        compare_files(&node_one, &leader, node_one_file.path.as_path()).await;
+        compare_files(&node_two, &leader, node_two_file.path.as_path()).await;
     }
 
     #[tokio::test]
@@ -360,8 +372,8 @@ mod tests {
         assert!(node_one_result.is_ok());
         assert!(node_two_result.is_ok());
 
-        compare_files(&leader, &node_one, &leader_file).await;
-        compare_files(&node_two, &leader, &node_two_file).await;
+        compare_files(&leader, &node_one, leader_file.path.as_path()).await;
+        compare_files(&node_two, &leader, node_two_file.path.as_path()).await;
     }
 
     #[tokio::test]
@@ -409,12 +421,12 @@ mod tests {
         assert!(node_two_result.is_ok());
 
         // Verify that node one's file is present on both leader and node two
-        compare_files(&node_one, &leader, &node_one_file).await;
-        compare_files(&node_one, &node_two, &node_one_file).await;
+        compare_files(&node_one, &leader, node_one_file.path.as_path()).await;
+        compare_files(&node_one, &node_two, node_one_file.path.as_path()).await;
 
         // Verify that node two's file is present on both leader and node one
-        compare_files(&node_two, &leader, &node_two_file).await;
-        compare_files(&node_two, &node_one, &node_two_file).await;
+        compare_files(&node_two, &leader, node_two_file.path.as_path()).await;
+        compare_files(&node_two, &node_one, node_two_file.path.as_path()).await;
     }
 
     #[tokio::test]
@@ -448,19 +460,25 @@ mod tests {
         assert!(node_result.is_ok());
 
         // Verify that the existing node received the file
-        compare_files(&leader, &node_one, &leader_file).await;
+        compare_files(&leader, &node_one, leader_file.path.as_path()).await;
     }
 
     async fn generate_file(
         context: &Context,
         file_name: &str,
         desired_size: u64,
-    ) -> anyhow::Result<FileInfo> {
-        let file_info = FileInfo::existent("a".into(), file_name.into(), 0, 0, desired_size, 777);
-        let path = file_info.get_absolute_path(context.config)?;
+    ) -> anyhow::Result<SyncFile> {
+        let path = RelativePathBuf::from(file_name);
+        let metadata = MetadataB::new()
+            .len(desired_size)
+            .permissions(777)
+            .modified(1)
+            .build();
+
+        let info = ExistingFileInfo::new(path.as_path(), &metadata);
         let mut file = context
             .fs
-            .open_w(path.as_path(), file_info.file_size()?)
+            .open_w(&path.build_path(), metadata.len())
             .await?;
 
         // Generate random content in chunks to avoid allocating too much memory at once
@@ -476,28 +494,37 @@ mod tests {
             remaining = remaining.saturating_sub(current_chunk_size);
         }
 
-        context.fs.set_metadata(&path, 777, 1).await?;
+        context
+            .fs
+            .set_metadata(
+                &path.build_path(),
+                metadata.permissions(),
+                metadata.modified_as_secs(),
+            )
+            .await?;
 
-        Ok(file_info)
+        Ok(SyncFile {
+            storage: "a".to_string(),
+            path,
+            info,
+        })
     }
 
-    async fn compare_files(src: &Context, dst: &Context, file_info: &FileInfo) {
-        let src_p = file_info.get_absolute_path(src.config).unwrap();
-
-        let src_m = src.fs.metadata(&src_p).await.unwrap();
-        let dst_m = src.fs.metadata(&src_p).await.unwrap();
+    async fn compare_files(src: &Context, dst: &Context, path: RelativePath<'_>) {
+        let src_m = src.fs.metadata(&path.build_path()).await.unwrap();
+        let dst_m = src.fs.metadata(&path.build_path()).await.unwrap();
 
         assert_eq!(src_m, dst_m);
 
-        let src_c = src.fs.read_to_string(&src_p).await.unwrap();
-        let dst_c = dst.fs.read_to_string(&src_p).await.unwrap();
+        let src_c = src.fs.read_to_string(&path.build_path()).await.unwrap();
+        let dst_c = dst.fs.read_to_string(&path.build_path()).await.unwrap();
 
         assert_eq!(src_c, dst_c);
     }
 
     fn spawn_l(
         context: Context,
-        files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
+        files_to_send: Vec<(SyncFile, HashSet<NodeId>)>,
     ) -> tokio::task::JoinHandle<std::result::Result<(), crate::StateMachineError>> {
         tokio::spawn(async move {
             TransferFiles::new(None, files_to_send)
@@ -509,7 +536,7 @@ mod tests {
     fn spawn_f(
         context: Context,
         sync_leader_id: NodeId,
-        files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
+        files_to_send: Vec<(SyncFile, HashSet<NodeId>)>,
     ) -> tokio::task::JoinHandle<std::result::Result<(), crate::StateMachineError>> {
         tokio::spawn(async move {
             let mut events = context
@@ -529,6 +556,4 @@ mod tests {
             }
         })
     }
-
-    // failure cases ?
 }

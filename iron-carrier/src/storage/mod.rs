@@ -1,15 +1,8 @@
 //! This module is responsible for handling file system operations
 
-mod file_info;
-pub mod file_operations;
-pub mod file_watcher;
-pub use file_info::{FileInfo, FileInfoType};
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashSet, path::Path};
-
 use crate::{
-    config::PathConfig,
     context::Context,
     hash_helper::{self, HASHER},
     ignored_files::IgnoredFiles,
@@ -17,68 +10,68 @@ use crate::{
     transaction_log::TransactionLog,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub mod file_operations;
+pub mod file_watcher;
+use storage_tree::{DeletedFileInfo, ExistingFileInfo, MovedFileInfo, StorageFile, StorageTree};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Storage {
-    /// Hash is calculated with only existing files
+    /// A hash of the current files
     pub hash: u64,
-    pub files: HashSet<FileInfo>,
-    pub moved: HashSet<FileInfo>,
-    pub deleted: HashSet<FileInfo>,
+    pub name: String,
+
+    pub current: StorageTree<ExistingFileInfo>,
+    pub moved: StorageTree<MovedFileInfo>,
+    pub deleted: StorageTree<DeletedFileInfo>,
 }
 
+pub mod storage_tree;
+
 /// Gets the file list and hash for the given storage
-pub async fn get_storage_info(
-    context: &Context,
-    name: &str,
-    storage_path_config: &'static PathConfig,
-) -> anyhow::Result<Storage> {
-    let ignored_files = crate::ignored_files::IgnoredFiles::new(context, storage_path_config).await;
-    let files = walk_path(context, name, &ignored_files).await?;
-    let hash = calculate_storage_hash(&files);
+pub async fn build(context: &Context, name: &str) -> anyhow::Result<Storage> {
+    let storage_config = context.config.path(name)?;
 
-    let files: HashSet<FileInfo> = files.into_iter().collect();
-    let mut deleted = get_deleted_files(&context.transaction_log, name).await?;
-    let mut moved = get_moved_files(&context.transaction_log, name).await?;
+    let ignored_files = crate::ignored_files::IgnoredFiles::new(context, storage_config).await;
+    let current = walk_path(context, name, &ignored_files).await?;
 
-    deleted.retain(|f| !files.contains(f));
-    moved.retain(|f| files.contains(f));
+    let hash = calculate_storage_hash(&current);
+
+    let deleted = get_deleted_files(&context.transaction_log, name, &current).await?;
+    let moved = get_moved_files(&context.transaction_log, name, &current).await?;
 
     Ok(Storage {
-        files,
-        deleted,
-        moved,
         hash,
+        name: name.to_string(),
+        current,
+        moved,
+        deleted,
     })
 }
 
 /// Returns a sorted vector with the entire directory structure (recursive read) for the given path.  
-///
-/// The list will contain deleted and moved files, by reading the transaction log.  
 pub async fn walk_path(
     context: &Context,
     storage_name: &str,
     ignored_files: &IgnoredFiles,
-) -> anyhow::Result<Vec<FileInfo>> {
+) -> anyhow::Result<StorageTree<ExistingFileInfo>> {
     let mut paths = vec![RelativePathBuf::root()];
-    let mut files = Vec::new();
+    let mut tree = StorageTree::<ExistingFileInfo>::new();
 
     let failed_writes = context
         .transaction_log
         .get_failed_writes(storage_name)
         .await?;
 
-    let storage_config = context
-        .config
-        .storages
-        .get(storage_name)
-        .ok_or_else(|| anyhow::anyhow!("Storage {storage_name} not found"))?;
-
+    let storage_config = context.config.path(storage_name)?;
     while let Some(dir) = paths.pop() {
-        let entries = context.fs.read_dir(storage_config, &dir).await?;
+        let entries = context
+            .fs
+            .read_dir(storage_config, &dir, ignored_files)
+            .await?;
+
         for entry in entries {
             let entry = entry?;
-
-            if is_special_file(entry.path().as_path()) {
+            if is_special_file(entry.path()) || failed_writes.contains(entry.path()) {
                 continue;
             }
 
@@ -88,44 +81,27 @@ pub async fn walk_path(
                 continue;
             }
 
-            if ignored_files.is_ignored(entry.path()) {
-                continue;
-            }
-
-            if failed_writes.contains(entry.path()) {
-                continue;
-            }
-
-            let permissions = metadata.permissions();
-            let created_at = metadata.created_as_secs();
-            let modified_at = metadata.modified_as_secs();
-            let size = metadata.len();
-
-            let file_info = FileInfo::existent(
-                storage_name.to_owned(),
-                entry.into_path(),
-                modified_at,
-                created_at,
-                size,
-                permissions,
-            );
-
-            files.push(file_info);
+            let file = ExistingFileInfo::new(entry.path().as_path(), metadata);
+            tree.insert(file, entry.path().parent());
         }
     }
 
-    files.sort();
-
-    Ok(files)
+    Ok(tree)
 }
 
 /// Calculate a "shallow" hash for the files by hashing the attributes, it doesn't open the file to
 /// read the contents
-pub fn calculate_storage_hash(files: &[FileInfo]) -> u64 {
+pub fn calculate_storage_hash(files: &StorageTree<ExistingFileInfo>) -> u64 {
     let mut digest = HASHER.digest();
 
-    for file in files {
-        hash_helper::calculate_file_hash_digest(file, &mut digest);
+    for file in files.files() {
+        hash_helper::calculate_file_hash_digest(
+            &mut digest,
+            file.parent(),
+            file.id(),
+            file.size(),
+            file.date(),
+        );
     }
 
     digest.finalize()
@@ -135,36 +111,48 @@ pub fn calculate_storage_hash(files: &[FileInfo]) -> u64 {
 async fn get_deleted_files(
     transaction_log: &TransactionLog,
     storage: &str,
-) -> anyhow::Result<HashSet<FileInfo>> {
-    transaction_log
-        .get_deleted_files(storage)
-        .await
-        .map(|files| {
-            files
-                .into_iter()
-                .map(|(path, timestamp)| FileInfo::deleted(storage.to_string(), path, timestamp))
-                .collect()
-        })
+    current: &StorageTree<ExistingFileInfo>,
+) -> anyhow::Result<StorageTree<DeletedFileInfo>> {
+    let files = transaction_log.get_deleted_files(storage).await?;
+    let mut tree = StorageTree::new();
+
+    for (path, deleted_at) in files {
+        let file = DeletedFileInfo::new(path.as_path(), deleted_at);
+        if current.contains_id(file.id()) {
+            continue;
+        }
+
+        tree.insert(file, path.parent());
+    }
+
+    Ok(tree)
 }
 
 /// Fetch moved file events from the transaction log
 async fn get_moved_files(
     transaction_log: &TransactionLog,
     storage: &str,
-) -> anyhow::Result<HashSet<FileInfo>> {
-    transaction_log.get_moved_files(storage).await.map(|files| {
-        files
-            .into_iter()
-            .map(|(path, old_path, timestamp)| {
-                FileInfo::moved(storage.to_string(), path, old_path, timestamp)
-            })
-            .collect()
-    })
+    current: &StorageTree<ExistingFileInfo>,
+) -> anyhow::Result<StorageTree<MovedFileInfo>> {
+    let files = transaction_log.get_moved_files(storage).await?;
+    let mut tree = StorageTree::new();
+
+    for (path, old_path, moved_at) in files {
+        let file = MovedFileInfo::new(path.as_path(), old_path, moved_at);
+        if !current.contains_id(file.id()) {
+            continue;
+        }
+
+        tree.insert(file, path.parent());
+    }
+
+    Ok(tree)
 }
 
 /// Returns true if `path` name or extension are .ironcarrier
-pub fn is_special_file(path: &Path) -> bool {
-    path.file_name()
+pub fn is_special_file(path: &RelativePathBuf) -> bool {
+    path.build_path()
+        .file_name()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.ends_with("ironcarrier"))
         .unwrap_or_default()
@@ -172,10 +160,15 @@ pub fn is_special_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{collections::HashSet, str::FromStr};
 
     use crate::{
-        config::Config, context::test_context, fs::MetadataB, leak::Leak, validation::Validated,
+        config::{Config, PathConfig},
+        context::test_context,
+        fs::MetadataB,
+        leak::Leak,
+        transaction_log::{append_deleted, append_failed_write},
+        validation::Validated,
     };
 
     use super::*;
@@ -189,10 +182,9 @@ mod tests {
         .leak();
 
         let context = test_context(config, crate::fs::TokioFS.leak()).leak();
-        let files = walk_path(context, "a", &crate::ignored_files::IgnoredFiles::empty()).await?;
+        let tree = walk_path(context, "a", &crate::ignored_files::IgnoredFiles::empty()).await?;
 
-        assert!(!files.is_empty());
-        assert!(files.is_sorted());
+        assert!(!tree.is_empty());
 
         Ok(())
     }
@@ -211,13 +203,8 @@ mod tests {
         let files = walk_path(context, "a", &ignored).await?;
         assert_eq!(3, files.len());
 
-        files.iter().for_each(|file| {
-            assert!(
-                file.path
-                    .as_path()
-                    .file_name()
-                    .is_none_or(|ext| ext != "b.ig")
-            );
+        files.files().for_each(|file| {
+            assert!(file.name() != "b.ig");
         });
 
         Ok(())
@@ -228,8 +215,8 @@ mod tests {
         let config = get_config();
         let context = test_context(config, mem_fs()).leak();
 
-        append_failed_write(context, "/a").await;
-        append_failed_write(context, "/dir/a").await;
+        append_failed_write(context, "a", 0).await;
+        append_failed_write(context, "dir/a", 0).await;
 
         let ignored = crate::ignored_files::IgnoredFiles::new(
             context,
@@ -238,110 +225,68 @@ mod tests {
         .await;
 
         let files = walk_path(context, "a", &ignored).await?;
-        assert_eq!(1, files.len());
+        let paths: HashSet<_> = files
+            .files()
+            .filter_map(|f| files.get_path(f.id()))
+            .collect();
+
+        assert!(!paths.contains(&RelativePathBuf::from("a")));
+        assert!(!paths.contains(&RelativePathBuf::from("dir/a")));
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn get_storage_include_deleted_files() -> anyhow::Result<()> {
+    async fn build_include_deleted_files() -> anyhow::Result<()> {
         let config = get_config();
         let context = test_context(config, mem_fs()).leak();
 
-        append_deleted(context, "/deleted").await;
+        append_deleted(context, "deleted", 0).await;
 
-        let info = get_storage_info(context, "a", config.storages.get("a").unwrap())
+        let info = build(context, "a")
             .await
             .expect("Failed to get storage info");
 
         assert_eq!(1, info.deleted.len());
-        assert!(
-            info.deleted
-                .iter()
-                .any(|file| file.path == RelativePathBuf::from("deleted"))
-        );
+        assert!(info.deleted.files().any(|file| file.name() == "deleted"));
 
         Ok(())
     }
 
     #[test]
     fn test_is_special_file() {
-        assert!(!is_special_file(Path::new("some_file.txt")));
-        assert!(is_special_file(Path::new("some_file.ironcarrier")));
-        assert!(is_special_file(Path::new(".ironcarrier")));
+        assert!(!is_special_file(&"some_file.txt".into()));
+        assert!(is_special_file(&"some_file.ironcarrier".into()));
+        assert!(is_special_file(&".ironcarrier".into()));
     }
 
     fn get_config() -> &'static Validated<Config> {
         Validated::new(Config {
-            storages: [("a".to_string(), PathConfig::from_str("/").unwrap())].into(),
+            storages: [("a".to_string(), PathConfig::from_str("").unwrap())].into(),
             ..Default::default()
         })
         .leak()
     }
 
     fn mem_fs() -> &'static crate::fs::MemFS {
-        let ignore = r#"**.ig
-        "#;
+        let ignore = r#"
+*.ig
+**.ig
+"#;
 
         let files = [
             (
-                "/.ignore",
+                ".ignore",
                 ignore.bytes().collect(),
                 MetadataB::new().build(),
             ),
-            ("/dir/", Vec::new(), MetadataB::dir().build()),
-            ("/dir/a", Vec::new(), MetadataB::new().build()),
-            ("/dir/b.ig", Vec::new(), MetadataB::new().build()),
-            ("/a", Vec::new(), MetadataB::new().build()),
-            ("/b.ig", Vec::new(), MetadataB::new().build()),
+            ("dir/", Vec::new(), MetadataB::dir().build()),
+            ("dir/a", Vec::new(), MetadataB::new().build()),
+            ("dir/b.ig", Vec::new(), MetadataB::new().build()),
+            ("a", Vec::new(), MetadataB::new().build()),
+            ("b.ig", Vec::new(), MetadataB::new().build()),
         ]
         .into_iter();
         crate::fs::MemFS::new(files).leak()
-    }
-
-    async fn append_failed_write(context: &Context, path: &str) {
-        context
-            .transaction_log
-            .append_log_entry(
-                "a",
-                &context
-                    .config
-                    .storages
-                    .get("a")
-                    .unwrap()
-                    .get_relative_path(Path::new(path).to_owned())
-                    .unwrap(),
-                None,
-                crate::transaction_log::LogEntry {
-                    timestamp: 0,
-                    event_type: crate::transaction_log::EntryType::Write,
-                    event_status: crate::transaction_log::EntryStatus::Pending,
-                },
-            )
-            .await
-            .expect("Failed to append log entry");
-    }
-
-    async fn append_deleted(context: &Context, path: &str) {
-        context
-            .transaction_log
-            .append_log_entry(
-                "a",
-                &context
-                    .config
-                    .storages
-                    .get("a")
-                    .unwrap()
-                    .get_relative_path(Path::new(path).to_owned())
-                    .unwrap(),
-                None,
-                crate::transaction_log::LogEntry {
-                    timestamp: 0,
-                    event_type: crate::transaction_log::EntryType::Delete,
-                    event_status: crate::transaction_log::EntryStatus::Done,
-                },
-            )
-            .await
-            .expect("Failed to append log entry");
     }
 }

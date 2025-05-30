@@ -1,17 +1,17 @@
 use std::{collections::HashSet, fmt::Display};
 
 use crate::{
+    Context, StateMachineError,
     file_transfer::TransferFiles,
     node_id::NodeId,
     state_machine::{Result, State, StateComposer},
     states::sync::{
-        action_dispatcher::Dispatcher,
+        action_dispatcher::ActionDispatcher,
         events::{SaveSyncStatus, SyncCompleted},
         fetch_storages::FetchStorages,
     },
     sync_options::SyncOptions,
     transaction_log::SyncStatus,
-    Context, StateMachineError,
 };
 
 #[derive(Debug, Default)]
@@ -39,14 +39,14 @@ impl State for Leader {
     type Output = ();
     async fn execute(self, context: &Context) -> Result<Self::Output> {
         log::debug!("start sync as leader");
-        for (storage_name, storage_config) in context
+        for storage_name in context
             .config
             .storages
-            .iter()
-            .filter(|(key, _)| self.storages_to_sync(key.as_str()))
+            .keys()
+            .filter(|key| self.storages_to_sync(key.as_str()))
         {
             let mut nodes_in_session: Option<HashSet<NodeId>> = Default::default();
-            let sync_result = FetchStorages::new(storage_name, storage_config)
+            let sync_result = FetchStorages::new(storage_name)
                 .and_then(|storages| {
                     nodes_in_session = Some(
                         storages
@@ -55,7 +55,7 @@ impl State for Leader {
                             .copied()
                             .collect(),
                     );
-                    Dispatcher::new(storages)
+                    ActionDispatcher::new(storages)
                 })
                 .and_then(|files_to_send| TransferFiles::new(None, files_to_send))
                 .execute(context)

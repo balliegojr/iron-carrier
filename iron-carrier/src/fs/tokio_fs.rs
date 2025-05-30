@@ -9,7 +9,7 @@ use tokio::{
     io::{self},
 };
 
-use crate::{config::PathConfig, relative_path::RelativePathBuf};
+use crate::{config::PathConfig, ignored_files::IgnoredFiles, relative_path::RelativePathBuf};
 
 use super::{DirEntry, FS, FileR, FileW, Metadata, ReadDir, metadata};
 
@@ -30,18 +30,24 @@ impl FS for TokioFS {
         &self,
         c: &'static PathConfig,
         p: &RelativePathBuf,
+        i: &IgnoredFiles,
     ) -> anyhow::Result<ReadDir> {
         std::fs::read_dir(p.absolute(c)?.as_path())
             .map(|read_dir| {
-                let inner = Box::new(read_dir.map(|entry| {
-                    let entry = entry?;
-                    let path = RelativePathBuf::new(c, entry.path())?;
-                    let metadata = Metadata::new(entry.metadata().map_err(anyhow::Error::from)?);
+                let inner: Vec<_> = read_dir
+                    .filter_map(|entry| {
+                        let entry = entry.ok()?;
+                        let path = RelativePathBuf::new(c, entry.path()).ok()?;
+                        if i.is_ignored(&path.build_path()) {
+                            return None;
+                        }
 
-                    Ok(DirEntry::new(path, metadata))
-                }));
+                        let metadata = Metadata::new(entry.metadata().ok()?);
+                        Some(Ok(DirEntry::new(path, metadata)))
+                    })
+                    .collect();
 
-                ReadDir::new(inner)
+                ReadDir::new(Box::new(inner.into_iter()))
             })
             .map_err(anyhow::Error::from)
     }

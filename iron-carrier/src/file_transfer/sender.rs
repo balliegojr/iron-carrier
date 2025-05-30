@@ -11,11 +11,12 @@ use tokio::{
 };
 
 use crate::{
-    Context, fs::Metadata, network::rpc::GroupCallResponse, node_id::NodeId, storage::FileInfo,
+    Context, fs::Metadata, network::rpc::GroupCallResponse, node_id::NodeId,
+    storage::storage_tree::StorageFile,
 };
 
 use super::{
-    BlockIndexPosition, Transfer, block_index,
+    BlockIndexPosition, SyncFile, Transfer, block_index,
     events::{
         self, QueryTransferType, RequiredBlocks, TransferBlock, TransferComplete, TransferResult,
         TransferType,
@@ -24,7 +25,7 @@ use super::{
 
 pub async fn send_files(
     context: &Context,
-    files_to_send: Vec<(FileInfo, HashSet<NodeId>)>,
+    files_to_send: Vec<(SyncFile, HashSet<NodeId>)>,
 ) -> anyhow::Result<()> {
     let sending_limit = Arc::new(Semaphore::new(
         1.max(context.config.max_parallel_sending.into()),
@@ -53,7 +54,7 @@ pub async fn send_files(
 
 async fn send_file(
     context: Context,
-    file: FileInfo,
+    file: SyncFile,
     nodes: HashSet<NodeId>,
     send_limit: Arc<Semaphore>,
 ) -> anyhow::Result<()> {
@@ -66,7 +67,9 @@ async fn send_file(
         return Ok(());
     }
 
-    let absolute_path = transfer.file.get_absolute_path(context.config)?;
+    let storage_config = context.config.path(&transfer.file.storage)?;
+
+    let absolute_path = transfer.file.path.absolute(storage_config)?;
     let metadata = context.fs.metadata(&absolute_path).await?;
     let mut file_handle = context.fs.open_r(&absolute_path).await?;
 
@@ -135,7 +138,7 @@ async fn query_required_blocks(
     let full_index = block_index::get_file_block_index(
         file_handle,
         transfer.block_size,
-        transfer.file.file_size()?,
+        transfer.file.info.size(),
         metadata.len(),
     )
     .await?;
@@ -153,7 +156,7 @@ async fn query_required_blocks(
             .rpc
             .multi_call(
                 events::QueryRequiredBlocks {
-                    transfer_id: transfer.transfer_id,
+                    file_id: transfer.file.info.id(),
                     sender_block_index: full_index.clone(),
                 },
                 nodes,
@@ -196,7 +199,7 @@ async fn transfer_blocks(
         }
     }
 
-    let file_size = transfer.file.file_size()?;
+    let file_size = transfer.file.info.size();
     let mut block = vec![0u8; file_size as usize];
     for (block_index, nodes) in block_nodes.into_iter() {
         let position = block_index.get_position(transfer.block_size);
@@ -216,7 +219,7 @@ async fn transfer_blocks(
             .rpc
             .multi_call(
                 TransferBlock {
-                    transfer_id: transfer.transfer_id,
+                    file_id: transfer.file.info.id(),
                     block_index,
                     block: &block[..bytes_to_read as usize],
                 },
@@ -230,7 +233,7 @@ async fn transfer_blocks(
         .rpc
         .multi_call(
             TransferComplete {
-                transfer_id: transfer.transfer_id,
+                file_id: transfer.file.info.id(),
             },
             nodes_blocks.keys().cloned().collect(),
         )

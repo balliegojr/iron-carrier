@@ -176,7 +176,7 @@ fn map_event(
 }
 
 #[derive(Debug)]
-enum EventType {
+pub enum EventType {
     Create {
         storage: String,
     },
@@ -196,7 +196,7 @@ enum EventType {
     },
 }
 
-async fn register_event(
+pub async fn register_event(
     context: &Context,
     event: EventType,
     ignored_files_cache: &mut IgnoredFilesCache,
@@ -215,7 +215,7 @@ async fn register_event(
             let storage_config = context.config.storages.get(&storage).unwrap();
             let ignored_files = ignored_files_cache.get(context, storage_config).await;
 
-            let relative_path = RelativePathBuf::new(storage_config, path)?;
+            let relative_path = RelativePathBuf::new(storage_config, path)?.build_path();
             if !ignored_files.is_ignored(&relative_path) {
                 write_deleted_event(
                     &context.transaction_log,
@@ -242,12 +242,6 @@ async fn register_event(
             let storage_config = context.config.storages.get(&storage).unwrap();
             let ignored_files = ignored_files_cache.get(context, storage_config).await;
 
-            // let timestamp = dst_path
-            //     .metadata()
-            //     .and_then(|m| m.modified())
-            //     .map(super::system_time_to_secs)
-            //     .ok();
-
             for file_moved in list_files_moved_pair(storage_config, to, from)? {
                 write_moved_event(
                     &context.transaction_log,
@@ -268,7 +262,7 @@ async fn register_event(
 async fn write_deleted_event(
     transaction_log: &TransactionLog,
     storage: &str,
-    path: &RelativePathBuf,
+    path: &Path,
     timestamp: u64,
 ) {
     if let Err(err) = transaction_log
@@ -304,21 +298,23 @@ async fn write_moved_event(
     file_moved: MovedFilePair,
     timestamp: u64,
 ) {
-    if ignored_files.is_ignored(&file_moved.from) {
+    let from = file_moved.from.build_path();
+    if ignored_files.is_ignored(&from) {
         return;
     }
 
-    write_deleted_event(transaction_log, storage, &file_moved.from, timestamp).await;
+    write_deleted_event(transaction_log, storage, &from, timestamp).await;
 
-    if ignored_files.is_ignored(&file_moved.to) {
+    let to = file_moved.to.build_path();
+    if ignored_files.is_ignored(&to) {
         return;
     }
 
     if let Err(err) = transaction_log
         .append_log_entry(
             storage,
-            &file_moved.to,
-            Some(&file_moved.from),
+            &to,
+            Some(&from),
             LogEntry::new(EntryType::Move, EntryStatus::Done, timestamp),
         )
         .await

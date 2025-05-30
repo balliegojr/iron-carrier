@@ -44,15 +44,15 @@ impl TransactionLog {
     pub async fn append_log_entry(
         &self,
         storage: &str,
-        path: &RelativePathBuf,
-        old_path: Option<&RelativePathBuf>,
+        path: &Path,
+        old_path: Option<&Path>,
         entry: LogEntry,
     ) -> anyhow::Result<()> {
         self.storage.lock().await
             .execute("INSERT OR REPLACE INTO LogEntry (storage, path, old_path, entry_type, status, timestamp) VALUES (?,?,?,?,?,?)", params![
                 storage,
-                path.as_path().to_str(),
-                old_path.map(|p| p.as_path().to_str()),
+                path.to_str(),
+                old_path.map(|p| p.to_str()),
                 &entry.event_type.to_string(),
                 &entry.event_status.to_string(),
                 entry.timestamp as i64
@@ -180,6 +180,75 @@ fn get_storage(log_path: &Path) -> rusqlite::Result<Connection> {
 fn get_memory_storage() -> rusqlite::Result<Connection> {
     Connection::open_in_memory().and_then(migrate::migrate)
 }
+
+#[cfg(test)]
+pub async fn append_failed_write(context: &crate::context::Context, path: &str, timestamp: u64) {
+    let path: RelativePathBuf = path.into();
+
+    context
+        .transaction_log
+        .append_log_entry(
+            "a",
+            &path.build_path(),
+            None,
+            crate::transaction_log::LogEntry {
+                timestamp,
+                event_type: crate::transaction_log::EntryType::Write,
+                event_status: crate::transaction_log::EntryStatus::Pending,
+            },
+        )
+        .await
+        .expect("Failed to append log entry");
+}
+
+#[cfg(test)]
+pub async fn append_deleted(context: &crate::context::Context, path: &str, timestamp: u64) {
+    let path: RelativePathBuf = path.into();
+
+    context
+        .transaction_log
+        .append_log_entry(
+            "a",
+            &path.build_path(),
+            None,
+            crate::transaction_log::LogEntry {
+                timestamp,
+                event_type: crate::transaction_log::EntryType::Delete,
+                event_status: crate::transaction_log::EntryStatus::Done,
+            },
+        )
+        .await
+        .expect("Failed to append log entry");
+}
+
+#[cfg(test)]
+pub async fn append_moved(
+    context: &crate::context::Context,
+    path: &str,
+    old_path: &str,
+    timestamp: u64,
+) {
+    append_deleted(context, old_path, timestamp).await;
+
+    let relative: RelativePathBuf = path.into();
+    let old_path: RelativePathBuf = old_path.into();
+
+    context
+        .transaction_log
+        .append_log_entry(
+            "a",
+            &relative.build_path(),
+            Some(&old_path.build_path()),
+            crate::transaction_log::LogEntry {
+                timestamp,
+                event_type: crate::transaction_log::EntryType::Move,
+                event_status: crate::transaction_log::EntryStatus::Done,
+            },
+        )
+        .await
+        .expect("Failed to append log entry");
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::SystemTime;
@@ -207,7 +276,7 @@ mod tests {
 
         log.append_log_entry(
             "storage_0",
-            &file_path,
+            &file_path.build_path(),
             None,
             LogEntry {
                 timestamp: entry_time,

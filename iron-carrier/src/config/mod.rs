@@ -116,6 +116,12 @@ impl Config {
 
         self
     }
+
+    pub fn path(&self, storage: &str) -> anyhow::Result<&PathConfig> {
+        self.storages
+            .get(storage)
+            .ok_or_else(|| anyhow::anyhow!("Storage {storage} not available"))
+    }
 }
 
 impl Unvalidated<Config> {}

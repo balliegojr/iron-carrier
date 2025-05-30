@@ -2,91 +2,63 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     Context,
+    file_transfer::SyncFile,
     ignored_files::IgnoredFilesCache,
     node_id::NodeId,
+    relative_path::RelativePathBuf,
     state_machine::{Result, State},
     states::sync::events::{DeleteFile, MoveFile, SendFileTo},
-    storage::{FileInfo, Storage},
+    storage::{
+        Storage,
+        storage_tree::{DeletedFileInfo, FileId, MovedFileInfo, StorageFile, StorageTree},
+    },
 };
 
-/// Possible actions necessary to synchronize a file
-#[derive(Debug, PartialEq, Eq)]
-pub enum SyncAction {
-    Delete {
-        file: FileInfo,
-        nodes: HashSet<NodeId>,
-    },
-    Send {
-        file: FileInfo,
-        nodes: HashSet<NodeId>,
-    },
-    DelegateSend {
-        delegate_to: NodeId,
-        file: FileInfo,
-        nodes: HashSet<NodeId>,
-    },
-    Move {
-        file: FileInfo,
-        nodes: HashSet<NodeId>,
-    },
-}
-
 #[derive(Debug)]
-pub struct Dispatcher {
+pub struct ActionDispatcher {
     storages: HashMap<NodeId, Storage>,
 }
 
-impl Dispatcher {
+impl ActionDispatcher {
     pub fn new(storages: HashMap<NodeId, Storage>) -> Self {
         Self { storages }
     }
 }
 
-impl State for Dispatcher {
-    type Output = Vec<(FileInfo, HashSet<NodeId>)>;
+impl State for ActionDispatcher {
+    type Output = Vec<(SyncFile, HashSet<NodeId>)>;
 
     async fn execute(mut self, context: &Context) -> Result<Self::Output> {
         let mut ignored_files_cache = IgnoredFilesCache::default();
-        let mut files_to_send = Vec::new();
 
-        let mut actions = get_move_actions(&mut self.storages);
-        actions.extend(get_delete_actions(&mut self.storages));
-        actions.extend(get_send_actions(
-            context.config.node_id_hashed,
-            &mut self.storages,
-        ));
-
-        for action in actions {
-            if let Err(err) = execute_action(
-                action,
-                context,
-                &mut files_to_send,
-                &mut ignored_files_cache,
-            )
+        buid_move_actions(context, &mut ignored_files_cache, &mut self.storages).await?;
+        build_delete_actions(context, &mut ignored_files_cache, &mut self.storages).await?;
+        build_send_actions(context, &mut self.storages)
             .await
-            {
-                log::error!("failed to execute action {err}");
-            }
-        }
-
-        Ok(files_to_send)
+            .map_err(crate::StateMachineError::from)
     }
 }
 
-fn get_move_actions(storages: &mut HashMap<NodeId, Storage>) -> Vec<SyncAction> {
+async fn buid_move_actions(
+    context: &Context,
+    ignored_files_cache: &mut IgnoredFilesCache,
+    storages: &mut HashMap<NodeId, Storage>,
+) -> anyhow::Result<()> {
     let nodes: HashSet<NodeId> = storages.keys().copied().collect();
-    let mut actions = Vec::new();
 
     for current_node in nodes.iter() {
         let mut node_storage = storages.remove(current_node).unwrap();
-        for moved_file in node_storage.moved.iter() {
-            let deleted_file = moved_file.as_deleted_file().unwrap();
+        for moved_file in node_storage.moved.files() {
+            let deleted = moved_file.as_deleted();
+
+            // Get all the nodes where the file does not exist in the moved list and it does not
+            // exist or is older in the current version
             let nodes_to_move: HashSet<NodeId> = storages
                 .iter()
                 .filter_map(|(node, storage)| {
-                    if !storage.moved.contains(moved_file)
-                        && storage.files.contains(&deleted_file)
-                        && is_file_missing_or_older(&storage.files, moved_file)
+                    if !storage.moved.contains_id(moved_file.id())
+                        && storage.current.contains_id(deleted.id())
+                        && is_file_missing_or_older(&storage.current, moved_file)
                     {
                         Some(*node)
                     } else {
@@ -95,49 +67,107 @@ fn get_move_actions(storages: &mut HashMap<NodeId, Storage>) -> Vec<SyncAction> 
                 })
                 .collect();
 
-            for node in nodes_to_move.iter() {
-                let other_node_storage = storages.get_mut(node).unwrap();
-                let mut removing = other_node_storage.files.get(&deleted_file).unwrap().clone();
-                removing.path = moved_file.path.clone();
-                other_node_storage.files.replace(removing);
-                other_node_storage.files.remove(&deleted_file);
-            }
-
             if !nodes_to_move.is_empty() {
-                node_storage.deleted.remove(&deleted_file);
-                actions.push(SyncAction::Move {
-                    file: moved_file.clone(),
-                    nodes: nodes_to_move,
-                });
+                // The file need to move to its new location in the node's tree
+                let dst_path = node_storage.moved.get_path(moved_file.id()).unwrap();
+                for node in nodes_to_move.iter() {
+                    let other_node_storage = storages.get_mut(node).unwrap();
+                    other_node_storage
+                        .current
+                        .move_file(deleted.id(), &dst_path);
+                }
+
+                // It also need to be removed from the node's deleted tree, to avoid generating
+                // delete events for a non existing file
+                node_storage.deleted.remove(deleted.id());
+                dispatch_move_action(
+                    context,
+                    ignored_files_cache,
+                    &node_storage.name,
+                    nodes_to_move,
+                    &moved_file.old_path,
+                    &dst_path,
+                    moved_file.date(),
+                )
+                .await?;
             }
         }
         node_storage.moved.clear();
         storages.insert(*current_node, node_storage);
     }
 
-    actions
+    Ok(())
 }
 
-fn is_file_missing_or_older(files: &HashSet<FileInfo>, file: &FileInfo) -> bool {
-    match files.get(file) {
-        Some(existing) => existing.date_cmp(file).is_lt(),
+async fn dispatch_move_action(
+    context: &Context,
+    ignored_files_cache: &mut IgnoredFilesCache,
+    storage: &str,
+    mut nodes: HashSet<NodeId>,
+
+    src_path: &RelativePathBuf,
+    dst_path: &RelativePathBuf,
+    modified_at: u64,
+) -> anyhow::Result<()> {
+    if nodes.remove(&context.config.node_id_hashed) {
+        crate::storage::file_operations::move_file(
+            context,
+            ignored_files_cache,
+            storage,
+            src_path,
+            dst_path,
+            modified_at,
+        )
+        .await?;
+    }
+
+    if !nodes.is_empty() {
+        log::info!("Move {src_path:?} on {nodes:?}");
+        context
+            .rpc
+            .multi_call(
+                MoveFile {
+                    storage: storage.to_string(),
+                    src_path: src_path.clone(),
+                    dst_path: dst_path.clone(),
+                    modified_at,
+                },
+                nodes,
+            )
+            .ack()
+            .await?;
+    }
+
+    Ok(())
+}
+
+fn is_file_missing_or_older<T: StorageFile>(files: &StorageTree<T>, file: &MovedFileInfo) -> bool {
+    match files.get(file.id()) {
+        Some(existing) => existing.date().cmp(&file.date()).is_lt(),
         None => true,
     }
 }
 
-fn get_delete_actions(storages: &mut HashMap<NodeId, Storage>) -> Vec<SyncAction> {
-    let mut actions = Vec::new();
-    let all_deleted_files: HashSet<FileInfo> = storages
+async fn build_delete_actions(
+    context: &Context,
+    ignored_files_cache: &mut IgnoredFilesCache,
+    storages: &mut HashMap<NodeId, Storage>,
+) -> anyhow::Result<()> {
+    // Delete iterates through all deleted files from all storages
+    // then it checks which node has the file to the send the delete event
+    let all_deleted_files: HashSet<DeletedFileInfo> = storages
         .values_mut()
         .flat_map(|storage| storage.deleted.drain())
         .collect();
 
     for deleted_file in all_deleted_files {
+        // It is important to chek if any node has a newer version of the same file, in that case
+        // the delete action is just ignored and the send action is generated later
         let has_existing_newer = storages.values().any(|storage| {
             storage
-                .files
-                .get(&deleted_file)
-                .map(|f| deleted_file.date_cmp(f).is_lt())
+                .current
+                .get(deleted_file.id())
+                .map(|f| deleted_file.date().cmp(&f.date()).is_lt())
                 .unwrap_or_default()
         });
 
@@ -148,7 +178,7 @@ fn get_delete_actions(storages: &mut HashMap<NodeId, Storage>) -> Vec<SyncAction
         let nodes_to_delete: HashSet<NodeId> = storages
             .iter()
             .filter_map(|(node, storage)| {
-                if storage.files.contains(&deleted_file) {
+                if storage.current.contains_id(deleted_file.id()) {
                     Some(*node)
                 } else {
                     None
@@ -156,769 +186,687 @@ fn get_delete_actions(storages: &mut HashMap<NodeId, Storage>) -> Vec<SyncAction
             })
             .collect();
 
-        for node in nodes_to_delete.iter() {
-            storages.get_mut(node).unwrap().files.remove(&deleted_file);
-        }
-
         if !nodes_to_delete.is_empty() {
-            actions.push(SyncAction::Delete {
-                file: deleted_file,
-                nodes: nodes_to_delete,
-            })
-        }
-    }
+            let node_storage = storages
+                .get(nodes_to_delete.iter().next().unwrap())
+                .unwrap();
 
-    actions
-}
+            let storage_name = node_storage.name.clone();
+            let file_path = node_storage.current.get_path(deleted_file.id()).unwrap();
 
-fn get_send_actions(
-    local_node: NodeId,
-    storages: &mut HashMap<NodeId, Storage>,
-) -> Vec<SyncAction> {
-    let mut actions = Vec::new();
-    let all_files: HashSet<FileInfo> = storages
-        .values()
-        .flat_map(|storage| storage.files.iter().cloned())
-        .collect();
+            for node in nodes_to_delete.iter() {
+                storages
+                    .get_mut(node)
+                    .unwrap()
+                    .current
+                    .remove(deleted_file.id());
+            }
 
-    for file in all_files {
-        let (most_recent_node, most_recent_file) = storages.iter().fold(
-            (NodeId::from(0), file),
-            |(most_recent_node, most_recent_file), (node_id, storage)| match storage
-                .files
-                .get(&most_recent_file)
-            {
-                Some(f) if f.date_cmp(&most_recent_file).is_ge() => (*node_id, f.clone()),
-                _ => (most_recent_node, most_recent_file),
-            },
-        );
-
-        let most_recent_node = match storages
-            .get(&local_node)
-            .unwrap()
-            .files
-            .get(&most_recent_file)
-        {
-            Some(f) if !f.is_out_of_sync(&most_recent_file) => local_node,
-            _ => most_recent_node,
-        };
-
-        let nodes_out_of_sync: HashSet<NodeId> = storages
-            .iter()
-            .filter_map(
-                |(node, storage)| match storage.files.get(&most_recent_file) {
-                    Some(f) => {
-                        if most_recent_file.is_out_of_sync(f) {
-                            Some(*node)
-                        } else {
-                            None
-                        }
-                    }
-                    None => Some(*node),
-                },
+            dispatch_delete_action(
+                context,
+                ignored_files_cache,
+                &storage_name,
+                nodes_to_delete,
+                file_path,
+                deleted_file.date(),
             )
-            .collect();
-
-        if nodes_out_of_sync.is_empty() {
-            continue;
-        }
-
-        if local_node == most_recent_node {
-            actions.push(SyncAction::Send {
-                file: most_recent_file,
-                nodes: nodes_out_of_sync,
-            });
-        } else {
-            actions.push(SyncAction::DelegateSend {
-                delegate_to: most_recent_node,
-                file: most_recent_file,
-                nodes: nodes_out_of_sync,
-            });
-        }
-    }
-
-    actions
-}
-
-/// Execute the given `action`
-///
-/// `Delete` and `Move` actions are executed immediately (or sent for all required nodes)
-/// `Send` is actions just add the file `files_to_send`, these actions are handled by the file
-/// transfer module
-/// `DeletegateSend` are sent to other nodes, so they can transfer their files to nodes that need
-/// it
-pub async fn execute_action(
-    action: SyncAction,
-    context: &Context,
-    files_to_send: &mut Vec<(FileInfo, HashSet<NodeId>)>,
-    ignored_files_cache: &mut IgnoredFilesCache,
-) -> anyhow::Result<()> {
-    match action {
-        SyncAction::Delete { file, mut nodes } => {
-            if nodes.remove(&context.config.node_id_hashed) {
-                crate::storage::file_operations::delete_file(context, &file, ignored_files_cache)
-                    .await?;
-            }
-
-            if !nodes.is_empty() {
-                log::info!("Delete {:?} on {nodes:?}", file.path);
-                context
-                    .rpc
-                    .multi_call(DeleteFile { file }, nodes)
-                    .ack()
-                    .await?;
-            }
-        }
-        SyncAction::Move { file, mut nodes } => {
-            if nodes.remove(&context.config.node_id_hashed) {
-                crate::storage::file_operations::move_file(context, &file, ignored_files_cache)
-                    .await?;
-            }
-
-            if !nodes.is_empty() {
-                log::info!("Move {:?} on {nodes:?}", file.path);
-                context
-                    .rpc
-                    .multi_call(MoveFile { file }, nodes)
-                    .ack()
-                    .await?;
-            }
-        }
-        SyncAction::Send { file, nodes } => {
-            files_to_send.push((file, nodes));
-        }
-        SyncAction::DelegateSend {
-            delegate_to,
-            file,
-            nodes,
-        } => {
-            log::trace!(
-                "Requesting {delegate_to} to send {:?} to {nodes:?}",
-                file.path
-            );
-
-            context
-                .rpc
-                .call(SendFileTo { file, nodes }, delegate_to)
-                .ack()
-                .await?
+            .await?;
         }
     }
 
     Ok(())
 }
 
+async fn dispatch_delete_action(
+    context: &Context,
+    ignored_files_cache: &mut IgnoredFilesCache,
+    storage: &str,
+    mut nodes: HashSet<NodeId>,
+    path: RelativePathBuf,
+    timestamp: u64,
+) -> anyhow::Result<()> {
+    if nodes.remove(&context.config.node_id_hashed) {
+        crate::storage::file_operations::delete_file(
+            context,
+            ignored_files_cache,
+            storage,
+            &path,
+            timestamp,
+        )
+        .await?;
+    }
+
+    if !nodes.is_empty() {
+        log::info!("Delete {path:?} on {nodes:?}");
+        context
+            .rpc
+            .multi_call(
+                DeleteFile {
+                    storage: storage.to_string(),
+                    path,
+                    timestamp,
+                },
+                nodes,
+            )
+            .ack()
+            .await?;
+    }
+
+    Ok(())
+}
+
+async fn build_send_actions(
+    context: &Context,
+    storages: &mut HashMap<NodeId, Storage>,
+) -> anyhow::Result<Vec<(SyncFile, HashSet<NodeId>)>> {
+    let mut to_sync = Vec::new();
+    let all_ids: HashSet<FileId> = storages
+        .values()
+        .flat_map(|storage| storage.current.ids())
+        .collect();
+
+    for id in all_ids {
+        // Get the node_id with the most recent file
+        let (node_id, file) = storages
+            .iter()
+            .filter_map(|(node_id, s)| s.current.get(id).map(|f| (*node_id, f)))
+            .max_by(|(_, a), (_, b)| a.date().cmp(&b.date()))
+            .expect("at least one storage must have the file");
+
+        // TODO: is this step necessary?
+        let node_id = match storages
+            .get(&context.config.node_id_hashed)
+            .and_then(|s| s.current.get(id))
+        {
+            Some(local) if !local.needs_sync(file) => context.config.node_id_hashed,
+            _ => node_id,
+        };
+
+        let nodes_out_of_sync: HashSet<NodeId> = storages
+            .iter()
+            .filter_map(|(node, storage)| match storage.current.get(id) {
+                Some(f) => {
+                    if file.needs_sync(f) {
+                        Some(*node)
+                    } else {
+                        None
+                    }
+                }
+                None => Some(*node),
+            })
+            .collect();
+
+        if nodes_out_of_sync.is_empty() {
+            continue;
+        }
+
+        let storage = storages.get(&node_id).unwrap();
+        let sync_file = SyncFile {
+            storage: storage.name.to_string(),
+            path: storage.current.build_path(file),
+            info: file.clone(),
+        };
+        if node_id == context.config.node_id_hashed {
+            to_sync.push((sync_file, nodes_out_of_sync));
+        } else {
+            context
+                .rpc
+                .call(
+                    SendFileTo {
+                        file: sync_file,
+                        nodes: nodes_out_of_sync,
+                    },
+                    node_id,
+                )
+                .ack()
+                .await?;
+        }
+    }
+
+    Ok(to_sync)
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::storage::FileInfoType;
+    use std::path::PathBuf;
+
+    use serde::de::DeserializeOwned;
+    use tokio::io::AsyncWriteExt;
+    use tokio_stream::StreamExt;
+
+    use crate::{
+        context::local_contexts,
+        transaction_log::{append_deleted, append_moved},
+    };
 
     use super::*;
 
-    #[test]
-    fn ensure_deleted_only_for_nodes_that_have_the_file() {
-        let deleted = test_file("path", FileInfoType::Deleted { deleted_at: 10 });
-        let existing = test_file(
-            "path",
-            FileInfoType::Existent {
-                modified_at: 0,
-                created_at: 0,
-                size: 0,
-                permissions: 0,
-            },
-        );
+    #[tokio::test]
+    async fn delete_generated_for_local_files() {
+        let [leader, node] = local_contexts().await;
+
+        generate_file(&leader, "sub/file.txt", 9).await;
+        append_deleted(&node, "sub/file.txt", 10).await;
 
         let mut storages = HashMap::from([
             (
-                1.into(),
-                Storage {
-                    deleted: [deleted.clone()].into(),
-                    ..Default::default()
-                },
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await.unwrap(),
             ),
             (
-                2.into(),
-                Storage {
-                    deleted: [deleted.clone()].into(),
-                    ..Default::default()
-                },
-            ),
-            (
-                3.into(),
-                Storage {
-                    files: [existing.clone()].into(),
-                    ..Default::default()
-                },
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await.unwrap(),
             ),
         ]);
 
-        let actions = get_delete_actions(&mut storages);
-        assert_eq!(
-            actions,
-            vec![SyncAction::Delete {
-                file: deleted,
-                nodes: [3.into()].into()
-            }]
+        assert!(
+            build_delete_actions(&leader, &mut Default::default(), &mut storages)
+                .await
+                .is_ok()
         );
 
-        let expected = HashMap::from([
-            (
-                1.into(),
-                Storage {
-                    ..Default::default()
-                },
-            ),
-            (
-                2.into(),
-                Storage {
-                    ..Default::default()
-                },
-            ),
-            (
-                3.into(),
-                Storage {
-                    ..Default::default()
-                },
-            ),
-        ]);
-
-        assert_eq!(storages, expected);
+        assert!(
+            !leader
+                .fs
+                .exists(PathBuf::from("sub/file.txt").as_path())
+                .await
+        )
     }
 
-    #[test]
-    fn ensure_deleted_not_generated_for_newer_files() {
-        let deleted = test_file("path", FileInfoType::Deleted { deleted_at: 10 });
-        let existing = test_file(
-            "path",
-            FileInfoType::Existent {
-                modified_at: 20,
-                created_at: 20,
-                size: 0,
-                permissions: 0,
-            },
-        );
+    #[tokio::test]
+    async fn delete_generated_for_node_files() {
+        let [leader, node] = local_contexts().await;
+
+        append_deleted(&leader, "sub/file.txt", 10).await;
+        generate_file(&node, "sub/file.txt", 9).await;
 
         let mut storages = HashMap::from([
             (
-                1.into(),
-                Storage {
-                    deleted: [deleted.clone()].into(),
-                    ..Default::default()
-                },
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await.unwrap(),
             ),
             (
-                2.into(),
-                Storage {
-                    deleted: [deleted.clone()].into(),
-                    ..Default::default()
-                },
-            ),
-            (
-                3.into(),
-                Storage {
-                    files: [existing.clone()].into(),
-                    ..Default::default()
-                },
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await.unwrap(),
             ),
         ]);
 
-        let actions = get_delete_actions(&mut storages);
-        assert!(actions.is_empty());
+        let task = tokio::spawn(assert_event(node, |event: DeleteFile| {
+            assert_eq!(event.path, "sub/file.txt".into());
+            assert_eq!(event.timestamp, 10);
+        }));
 
-        let expected = HashMap::from([
-            (
-                1.into(),
-                Storage {
-                    ..Default::default()
-                },
-            ),
-            (
-                2.into(),
-                Storage {
-                    ..Default::default()
-                },
-            ),
-            (
-                3.into(),
-                Storage {
-                    files: [existing.clone()].into(),
-                    ..Default::default()
-                },
-            ),
-        ]);
+        assert!(
+            build_delete_actions(&leader, &mut Default::default(), &mut storages)
+                .await
+                .is_ok()
+        );
 
-        assert_eq!(storages, expected);
+        assert!(task.await.is_ok());
     }
 
-    #[test]
-    fn ensure_delete_is_generated_over_moved_files() {
+    #[tokio::test]
+    async fn delete_skip_if_newer_file_exists() {
+        let [leader, node] = local_contexts().await;
+
+        generate_file(&leader, "file.txt", 10).await;
+        append_deleted(&node, "file.txt", 9).await;
+
+        let mut storages = HashMap::from([
+            (
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await.unwrap(),
+            ),
+            (
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await.unwrap(),
+            ),
+        ]);
+
+        assert!(
+            build_delete_actions(&leader, &mut Default::default(), &mut storages)
+                .await
+                .is_ok()
+        );
+
+        assert!(leader.fs.exists(PathBuf::from("file.txt").as_path()).await)
+    }
+
+    #[tokio::test]
+    async fn move_is_not_generated_when_destination_has_been_deleted() -> anyhow::Result<()> {
         // One node has the file moved, but most recent has the file deleted
-        let deleted = test_file("path", FileInfoType::Deleted { deleted_at: 10 });
-        let moved = test_file(
-            "path",
-            FileInfoType::Moved {
-                old_path: "old_path".into(),
-                moved_at: 0,
-            },
-        );
+        let [leader, node] = local_contexts().await;
+
+        generate_file(&leader, "file.txt", 9).await;
+        append_moved(&leader, "file.txt", "old_file.txt", 9).await;
+
+        append_deleted(&node, "file.txt", 10).await;
 
         let mut storages = HashMap::from([
             (
-                1.into(),
-                Storage {
-                    deleted: [deleted.clone()].into(),
-                    ..Default::default()
-                },
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await.unwrap(),
             ),
             (
-                2.into(),
-                Storage {
-                    moved: [moved.clone()].into(),
-                    ..Default::default()
-                },
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await.unwrap(),
             ),
         ]);
 
-        assert!(get_move_actions(&mut storages).is_empty());
+        buid_move_actions(&leader, &mut Default::default(), &mut storages)
+            .await
+            .expect("failed to process move actions");
 
-        let actions = get_delete_actions(&mut storages);
-        assert!(actions.is_empty());
-
-        let expected = HashMap::from([
-            (
-                1.into(),
-                Storage {
-                    ..Default::default()
-                },
-            ),
-            (
-                2.into(),
-                Storage {
-                    ..Default::default()
-                },
-            ),
-        ]);
-
-        assert_eq!(storages, expected);
+        Ok(())
     }
 
-    #[test]
-    fn ensure_send_when_file_is_delete_or_missing() {
-        let deleted = test_file("path", FileInfoType::Deleted { deleted_at: 10 });
-        let existing = test_file(
-            "path",
-            FileInfoType::Existent {
-                modified_at: 20,
-                created_at: 20,
-                size: 0,
-                permissions: 0,
-            },
-        );
+    #[tokio::test]
+    async fn move_action_moves_local_file() -> anyhow::Result<()> {
+        let [leader, node] = local_contexts().await;
+
+        generate_file(&leader, "old_file.txt", 0).await;
+        append_moved(&node, "file.txt", "old_file.txt", 9).await;
+        generate_file(&node, "file.txt", 9).await;
 
         let mut storages = HashMap::from([
             (
-                1.into(),
-                Storage {
-                    files: [existing.clone()].into(),
-                    ..Default::default()
-                },
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
             ),
             (
-                2.into(),
-                Storage {
-                    deleted: [deleted.clone()].into(),
-                    ..Default::default()
-                },
-            ),
-            (
-                3.into(),
-                Storage {
-                    ..Default::default()
-                },
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await?,
             ),
         ]);
 
-        assert!(get_delete_actions(&mut storages).is_empty());
+        buid_move_actions(&leader, &mut Default::default(), &mut storages)
+            .await
+            .expect("failed to process move actions");
 
-        let actions = get_send_actions(1.into(), &mut storages);
-        assert_eq!(
-            actions,
-            vec![SyncAction::Send {
-                file: existing,
-                nodes: [2.into(), 3.into()].into()
-            }]
-        );
+        assert!(leader.fs.exists(PathBuf::from("file.txt").as_path()).await);
+
+        Ok(())
     }
 
-    #[test]
-    fn ensure_no_action_when_all_nodes_have_file() {
-        let existing = test_file(
-            "path",
-            FileInfoType::Existent {
-                modified_at: 20,
-                created_at: 20,
-                size: 0,
-                permissions: 0,
-            },
-        );
+    #[tokio::test]
+    async fn move_action_moves_local_file_when_dst_exists_but_is_older() -> anyhow::Result<()> {
+        let [leader, node] = local_contexts().await;
+
+        // Create a file at the destination with an older timestamp
+        generate_file(&leader, "file.txt", 5).await;
+        // Node has a moved file with newer timestamp
+        append_moved(&node, "file.txt", "old_file.txt", 9).await;
+        generate_file(&node, "file.txt", 9).await;
+
+        let storages = HashMap::from([
+            (
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
+            ),
+            (
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await?,
+            ),
+        ]);
+
+        let task = tokio::spawn(assert_event(node, |event: SendFileTo| {
+            assert_eq!(event.file.path, "file.txt".into());
+            assert_eq!(event.file.info.date(), 9);
+            assert_eq!(event.nodes, [leader.config.node_id_hashed].into());
+        }));
+
+        ActionDispatcher::new(storages).execute(&leader).await?;
+
+        task.await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn move_action_send_event() -> anyhow::Result<()> {
+        let [leader, node] = local_contexts().await;
+
+        generate_file(&node, "old_file.txt", 9).await;
+        append_moved(&leader, "file.txt", "old_file.txt", 9).await;
+        generate_file(&leader, "file.txt", 9).await;
 
         let mut storages = HashMap::from([
             (
-                1.into(),
-                Storage {
-                    files: [existing.clone()].into(),
-                    ..Default::default()
-                },
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
             ),
             (
-                2.into(),
-                Storage {
-                    files: [existing.clone()].into(),
-                    ..Default::default()
-                },
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await?,
             ),
         ]);
 
-        assert!(get_send_actions(1.into(), &mut storages).is_empty());
+        let task = tokio::spawn(assert_event(node, |event: MoveFile| {
+            assert_eq!(event.dst_path, "file.txt".into());
+            assert_eq!(event.src_path, "old_file.txt".into());
+        }));
+
+        buid_move_actions(&leader, &mut Default::default(), &mut storages)
+            .await
+            .expect("failed to process move actions");
+
+        task.await?;
+
+        Ok(())
     }
 
-    #[test]
-    fn ensure_send_has_precedence_over_delegate_send() {
-        let existing = test_file(
-            "path",
-            FileInfoType::Existent {
-                modified_at: 20,
-                created_at: 20,
-                size: 0,
-                permissions: 0,
-            },
-        );
+    #[tokio::test]
+    async fn move_action_send_event_only_to_nodes_out_of_sync() -> anyhow::Result<()> {
+        let [leader, node1, node2] = local_contexts().await;
+
+        // node1 has outdated file
+        generate_file(&node1, "old_file.txt", 9).await;
+
+        // node2 already has the file in the correct location with correct timestamp
+        generate_file(&node2, "file.txt", 9).await;
+
+        // leader has moved the file
+        append_moved(&leader, "file.txt", "old_file.txt", 9).await;
+        generate_file(&leader, "file.txt", 9).await;
 
         let mut storages = HashMap::from([
             (
-                1.into(),
-                Storage {
-                    files: [existing.clone()].into(),
-                    ..Default::default()
-                },
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
             ),
             (
-                2.into(),
-                Storage {
-                    files: [existing.clone()].into(),
-                    ..Default::default()
-                },
+                node1.config.node_id_hashed,
+                crate::storage::build(&node1, "a").await?,
             ),
             (
-                3.into(),
-                Storage {
-                    ..Default::default()
-                },
+                node2.config.node_id_hashed,
+                crate::storage::build(&node2, "a").await?,
             ),
         ]);
 
-        let actions = get_send_actions(1.into(), &mut storages);
-        assert_eq!(
-            actions,
-            vec![SyncAction::Send {
-                file: existing.clone(),
-                nodes: [3.into()].into()
-            }]
-        );
+        // Setup task to verify that node1 receives move event
+        let task1 = tokio::spawn(assert_event(node1, |event: MoveFile| {
+            assert_eq!(event.dst_path, "file.txt".into());
+            assert_eq!(event.src_path, "old_file.txt".into());
+        }));
 
-        let actions = get_send_actions(2.into(), &mut storages);
-        assert_eq!(
-            actions,
-            vec![SyncAction::Send {
-                file: existing.clone(),
-                nodes: [3.into()].into()
-            }]
-        );
+        // Setup task to verify that node2 does not receive any move event
+        let task2 = tokio::spawn(assert_no_event::<MoveFile>(node2));
+
+        buid_move_actions(&leader, &mut Default::default(), &mut storages)
+            .await
+            .expect("failed to process move actions");
+
+        drop(leader);
+
+        task1.await?;
+        task2.await?;
+
+        Ok(())
     }
 
-    #[test]
-    fn ensure_send_is_generated_after_move() {
-        // One node has the file as moved, but another node has more recent Write
-        // If node with moved has the origin as well, a move and a send should be generated
-        let destination_newer = test_file(
-            "destination",
-            FileInfoType::Existent {
-                modified_at: 20,
-                created_at: 20,
-                size: 10,
-                permissions: 0,
-            },
-        );
-        let moved_deleted = test_file("origin", FileInfoType::Deleted { deleted_at: 10 });
-        let moved = test_file(
-            "destination",
-            FileInfoType::Moved {
-                old_path: "origin".into(),
-                moved_at: 10,
-            },
-        );
-        let moved_existent = test_file(
-            "origin",
-            FileInfoType::Existent {
-                modified_at: 10,
-                created_at: 10,
-                size: 10,
-                permissions: 0,
-            },
-        );
+    #[tokio::test]
+    async fn send_when_file_is_missing() -> anyhow::Result<()> {
+        let [leader, node] = local_contexts().await;
+
+        generate_file(&leader, "file.txt", 9).await;
 
         let mut storages = HashMap::from([
             (
-                1.into(),
-                Storage {
-                    files: [destination_newer.clone()].into(),
-                    deleted: [moved_deleted.clone()].into(),
-                    moved: [moved.clone()].into(),
-                    ..Default::default()
-                },
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
             ),
             (
-                2.into(),
-                Storage {
-                    files: HashSet::from([moved_existent.clone()]),
-                    ..Default::default()
-                },
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await?,
             ),
         ]);
 
-        let move_actions = get_move_actions(&mut storages);
-        let delete_actions = get_delete_actions(&mut storages);
-        let send_actions = get_send_actions(1.into(), &mut storages);
+        let files = build_send_actions(&leader, &mut storages)
+            .await
+            .expect("failed to process move actions");
 
-        assert_eq!(
-            move_actions,
-            vec![SyncAction::Move {
-                file: moved.clone(),
-                nodes: [2.into()].into()
-            }]
-        );
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0.path, "file.txt".into());
 
-        assert!(delete_actions.is_empty());
-        assert_eq!(
-            send_actions,
-            vec![SyncAction::Send {
-                file: destination_newer,
-                nodes: [2.into()].into()
-            }]
-        );
+        Ok(())
     }
 
-    #[test]
-    fn ensure_move_if_destination_exists_but_is_older() {
-        // One node has the file as moved.
-        // Another node has both origin and destination, but destination is older than move
+    #[tokio::test]
+    async fn send_when_file_is_deleted() -> anyhow::Result<()> {
+        let [leader, node] = local_contexts().await;
 
-        let destination_older = test_file(
-            "destination",
-            FileInfoType::Existent {
-                modified_at: 5,
-                created_at: 5,
-                size: 10,
-                permissions: 0,
-            },
-        );
-        let origin = test_file(
-            "origin",
-            FileInfoType::Existent {
-                modified_at: 10,
-                created_at: 10,
-                size: 10,
-                permissions: 0,
-            },
-        );
-
-        let moved_deleted = test_file("origin", FileInfoType::Deleted { deleted_at: 10 });
-        let moved = test_file(
-            "destination",
-            FileInfoType::Moved {
-                old_path: "origin".into(),
-                moved_at: 10,
-            },
-        );
-        let moved_existent = test_file(
-            "destination",
-            FileInfoType::Existent {
-                modified_at: 10,
-                created_at: 10,
-                size: 10,
-                permissions: 0,
-            },
-        );
+        generate_file(&leader, "file.txt", 9).await;
+        append_deleted(&node, "file.txt", 8).await;
 
         let mut storages = HashMap::from([
             (
-                1.into(),
-                Storage {
-                    files: [moved_existent.clone()].into(),
-                    deleted: [moved_deleted.clone()].into(),
-                    moved: [moved.clone()].into(),
-                    ..Default::default()
-                },
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
             ),
             (
-                2.into(),
-                Storage {
-                    files: [origin.clone(), destination_older.clone()].into(),
-                    ..Default::default()
-                },
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await?,
             ),
         ]);
 
-        let move_actions = get_move_actions(&mut storages);
-        let delete_actions = get_delete_actions(&mut storages);
-        let send_actions = get_send_actions(1.into(), &mut storages);
+        let files = build_send_actions(&leader, &mut storages)
+            .await
+            .expect("failed to process move actions");
 
-        assert_eq!(
-            move_actions,
-            vec![SyncAction::Move {
-                file: moved.clone(),
-                nodes: [2.into()].into()
-            }]
-        );
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0.path, "file.txt".into());
 
-        assert!(delete_actions.is_empty());
-        assert!(send_actions.is_empty());
+        Ok(())
     }
 
-    #[test]
-    fn ensure_delegate_send_when_local_node_needs_file() {
-        let existing = test_file(
-            "path",
-            FileInfoType::Existent {
-                modified_at: 20,
-                created_at: 20,
-                size: 0,
-                permissions: 0,
-            },
-        );
+    #[tokio::test]
+    async fn delegate_send_when_file_is_missing() -> anyhow::Result<()> {
+        let [leader, node] = local_contexts().await;
 
-        let mut storages = HashMap::from([
-            (1.into(), Default::default()),
-            (
-                2.into(),
-                Storage {
-                    files: [existing.clone()].into(),
-                    ..Default::default()
-                },
-            ),
-            (3.into(), Default::default()),
-        ]);
-
-        let actions = get_send_actions(1.into(), &mut storages);
-        assert_eq!(
-            actions,
-            vec![SyncAction::DelegateSend {
-                delegate_to: 2.into(),
-                file: existing.clone(),
-                nodes: [1.into(), 3.into()].into()
-            }]
-        );
-    }
-
-    #[test]
-    fn ensure_move_action_only_for_nodes_that_need() {
-        let origin_existent = test_file(
-            "origin",
-            FileInfoType::Existent {
-                modified_at: 10,
-                created_at: 10,
-                size: 10,
-                permissions: 0,
-            },
-        );
-        let moved_deleted = test_file("origin", FileInfoType::Deleted { deleted_at: 10 });
-        let moved = test_file(
-            "destination",
-            FileInfoType::Moved {
-                old_path: "origin".into(),
-                moved_at: 10,
-            },
-        );
-        let moved_existent = test_file(
-            "destination",
-            FileInfoType::Existent {
-                modified_at: 10,
-                created_at: 10,
-                size: 10,
-                permissions: 0,
-            },
-        );
+        generate_file(&node, "file.txt", 9).await;
 
         let mut storages = HashMap::from([
             (
-                1.into(),
-                Storage {
-                    files: [moved_existent.clone()].into(),
-                    moved: [moved.clone()].into(),
-                    deleted: [moved_deleted.clone()].into(),
-                    ..Default::default()
-                },
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
             ),
             (
-                2.into(),
-                Storage {
-                    files: [moved_existent.clone()].into(),
-                    moved: [moved.clone()].into(),
-                    deleted: [moved_deleted.clone()].into(),
-                    ..Default::default()
-                },
-            ),
-            (
-                3.into(),
-                Storage {
-                    files: [origin_existent.clone()].into(),
-                    ..Default::default()
-                },
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await?,
             ),
         ]);
 
-        let actions = get_move_actions(&mut storages);
-        assert_eq!(
-            actions,
-            vec![SyncAction::Move {
-                file: moved.clone(),
-                nodes: HashSet::from([3.into()])
-            }]
-        );
+        let task = tokio::spawn(assert_event(node, |event: SendFileTo| {
+            assert_eq!(event.file.path, "file.txt".into());
+            assert_eq!(event.nodes, [leader.config.node_id_hashed].into());
+        }));
 
-        assert!(get_delete_actions(&mut storages).is_empty());
+        let files = build_send_actions(&leader, &mut storages)
+            .await
+            .expect("failed to process move actions");
 
-        let expected: HashMap<NodeId, Storage> = HashMap::from([
-            (
-                1.into(),
-                Storage {
-                    files: [moved_existent.clone()].into(),
-                    ..Default::default()
-                },
-            ),
-            (
-                2.into(),
-                Storage {
-                    files: [moved_existent.clone()].into(),
-                    ..Default::default()
-                },
-            ),
-            (
-                3.into(),
-                Storage {
-                    files: [moved_existent.clone()].into(),
-                    ..Default::default()
-                },
-            ),
-        ]);
+        assert_eq!(files.len(), 0);
 
-        assert_eq!(storages, expected);
+        task.await?;
+
+        Ok(())
     }
 
-    fn test_file(path: &str, info_type: FileInfoType) -> FileInfo {
-        FileInfo {
-            storage: "".to_string(),
-            path: path.into(),
-            info_type,
+    #[tokio::test]
+    async fn delegate_send_when_file_is_deleted() -> anyhow::Result<()> {
+        let [leader, node] = local_contexts().await;
+
+        generate_file(&node, "file.txt", 9).await;
+        append_deleted(&leader, "file.txt", 8).await;
+
+        let mut storages = HashMap::from([
+            (
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
+            ),
+            (
+                node.config.node_id_hashed,
+                crate::storage::build(&node, "a").await?,
+            ),
+        ]);
+
+        let task = tokio::spawn(assert_event(node, |event: SendFileTo| {
+            assert_eq!(event.file.path, "file.txt".into());
+            assert_eq!(event.nodes, [leader.config.node_id_hashed].into());
+        }));
+
+        let files = build_send_actions(&leader, &mut storages)
+            .await
+            .expect("failed to process move actions");
+
+        assert_eq!(files.len(), 0);
+
+        task.await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn send_has_precedence_over_delegate() -> anyhow::Result<()> {
+        let [leader, one, two] = local_contexts().await;
+
+        generate_file(&leader, "file.txt", 9).await;
+        generate_file(&one, "file.txt", 9).await;
+
+        let mut storages = HashMap::from([
+            (
+                one.config.node_id_hashed,
+                crate::storage::build(&one, "a").await?,
+            ),
+            (
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
+            ),
+            (
+                two.config.node_id_hashed,
+                crate::storage::build(&two, "a").await?,
+            ),
+        ]);
+
+        let task = tokio::spawn(assert_no_event::<SendFileTo>(two.clone()));
+
+        let files = build_send_actions(&leader, &mut storages)
+            .await
+            .expect("failed to process move actions");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].1, [two.config.node_id_hashed].into());
+
+        drop(leader);
+        drop(one);
+
+        task.await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn complex_scenario() -> anyhow::Result<()> {
+        // leader has a file moved from a to b
+        // one has an older file b
+        // two has a newer file b
+        let [leader, one, two] = local_contexts().await;
+
+        // Set up initial state:
+        // Leader has moved file.txt from old_file.txt
+        generate_file(&leader, "old_file.txt", 5).await;
+        append_moved(&leader, "file.txt", "old_file.txt", 5).await;
+        generate_file(&leader, "file.txt", 5).await;
+
+        // Node one has an older version of file.txt
+        generate_file(&one, "file.txt", 3).await;
+
+        // Node two has a newer version of file.txt
+        generate_file(&two, "file.txt", 8).await;
+
+        let storages = HashMap::from([
+            (
+                leader.config.node_id_hashed,
+                crate::storage::build(&leader, "a").await?,
+            ),
+            (
+                one.config.node_id_hashed,
+                crate::storage::build(&one, "a").await?,
+            ),
+            (
+                two.config.node_id_hashed,
+                crate::storage::build(&two, "a").await?,
+            ),
+        ]);
+
+        // Expect no move actions because node two has a newer version
+        let task1 = tokio::spawn(assert_no_event::<MoveFile>(one));
+
+        // Since node two has the newest version, expect a SendFileTo event to both leader and node one
+        let task = tokio::spawn(assert_event(two, |event: SendFileTo| {
+            assert_eq!(event.file.path, "file.txt".into());
+            assert_eq!(event.file.info.date(), 8);
+            assert_eq!(event.nodes.len(), 2);
+        }));
+
+        ActionDispatcher::new(storages).execute(&leader).await?;
+
+        drop(leader);
+
+        task1.await?;
+        task.await?;
+
+        Ok(())
+    }
+
+    async fn assert_event<T: crate::message_types::MessageType + DeserializeOwned, F: FnOnce(T)>(
+        context: Context,
+        f: F,
+    ) {
+        let mut events = context
+            .rpc
+            .subscribe(&[T::MESSAGE_TYPE])
+            .await
+            .expect("failed to subscribe");
+
+        let event = events.next().await.expect("Event did not arrive");
+        let data: T = event.data().expect("invalid event");
+
+        f(data);
+
+        event.ack().await.unwrap();
+    }
+
+    async fn assert_no_event<T: crate::message_types::MessageType + DeserializeOwned>(
+        context: Context,
+    ) {
+        let mut events = context
+            .rpc
+            .subscribe(&[T::MESSAGE_TYPE])
+            .await
+            .expect("failed to subscribe");
+
+        if events.next().await.is_some() {
+            panic!("Receive event");
         }
+    }
+
+    async fn generate_file(context: &Context, path: &str, timestamp: u64) {
+        let path = PathBuf::from(path);
+        context
+            .fs
+            .open_w(path.as_path(), 1)
+            .await
+            .expect("failed to open {path}")
+            .write_u8(0)
+            .await
+            .expect("failed to open {path}");
+
+        context
+            .fs
+            .set_metadata(&path, 777, timestamp)
+            .await
+            .expect("failed to set metadata on {path}");
     }
 }

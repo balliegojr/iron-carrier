@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::{path::Path, pin::Pin};
 use tokio::io::{self, AsyncRead, AsyncSeek, AsyncWrite};
 
-use crate::{config::PathConfig, relative_path::RelativePathBuf};
+use crate::{config::PathConfig, ignored_files::IgnoredFiles, relative_path::RelativePathBuf};
 
 mod metadata;
 pub use metadata::Metadata;
@@ -26,6 +26,7 @@ pub trait FS: Send + Sync {
         &self,
         c: &'static PathConfig,
         p: &RelativePathBuf,
+        i: &IgnoredFiles,
     ) -> anyhow::Result<ReadDir>;
 
     async fn remove(&self, p: &Path) -> io::Result<()>;

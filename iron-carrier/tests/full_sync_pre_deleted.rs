@@ -23,7 +23,8 @@ async fn test_sync_deleted_files() {
             .append_log_entry(
                 "storage_0",
                 &RelativePathBuf::new(&configs[1].storages["storage_0"], file.to_path_buf())
-                    .unwrap(),
+                    .unwrap()
+                    .build_path(),
                 None,
                 LogEntry {
                     timestamp: SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 5,

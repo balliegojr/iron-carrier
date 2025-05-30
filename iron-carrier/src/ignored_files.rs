@@ -1,7 +1,4 @@
-use crate::{
-    config::PathConfig, constants::IGNORE_FILE_NAME, context::Context,
-    relative_path::RelativePathBuf,
-};
+use crate::{config::PathConfig, constants::IGNORE_FILE_NAME, context::Context};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::{
     collections::HashMap,
@@ -42,10 +39,10 @@ impl IgnoredFiles {
         IgnoredFiles { ignore_sets: None }
     }
 
-    pub fn is_ignored(&self, path: &RelativePathBuf) -> bool {
+    pub fn is_ignored(&self, path: &Path) -> bool {
         self.ignore_sets
             .as_ref()
-            .map(|set| set.is_match(path.as_path()))
+            .map(|set| set.is_match(path))
             .unwrap_or_default()
     }
 }

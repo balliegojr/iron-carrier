@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use crate::{
     Context,
-    config::PathConfig,
     node_id::NodeId,
     state_machine::{Result, State, StateMachineError},
     storage::{self, Storage},
@@ -16,14 +15,10 @@ use super::events::{QueryStorageIndex, StorageIndex, StorageIndexStatus};
 #[derive(Debug)]
 pub struct FetchStorages {
     storage_name: &'static str,
-    storage_config: &'static PathConfig,
 }
 impl FetchStorages {
-    pub fn new(storage_name: &'static str, storage_config: &'static PathConfig) -> Self {
-        Self {
-            storage_name,
-            storage_config,
-        }
+    pub fn new(storage_name: &'static str) -> Self {
+        Self { storage_name }
     }
 
     async fn get_storage_from_nodes(
@@ -65,8 +60,7 @@ impl State for FetchStorages {
     type Output = HashMap<NodeId, Storage>;
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
-        let storage =
-            storage::get_storage_info(context, self.storage_name, self.storage_config).await?;
+        let storage = storage::build(context, self.storage_name).await?;
 
         let mut peers_storages = self.get_storage_from_nodes(context, &storage).await?;
         if peers_storages.is_empty() {

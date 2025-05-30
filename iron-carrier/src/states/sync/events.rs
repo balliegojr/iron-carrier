@@ -3,10 +3,8 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    message_types::MessageType,
-    node_id::NodeId,
-    storage::{FileInfo, Storage},
-    transaction_log::SyncStatus,
+    file_transfer::SyncFile, message_types::MessageType, node_id::NodeId,
+    relative_path::RelativePathBuf, storage::Storage, transaction_log::SyncStatus,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
@@ -21,6 +19,7 @@ pub struct StorageIndex {
     pub storage_index: StorageIndexStatus,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum StorageIndexStatus {
     /// Queried storage does not exist in the node, no sync will be done
@@ -33,17 +32,22 @@ pub enum StorageIndexStatus {
 
 #[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
 pub struct DeleteFile {
-    pub file: FileInfo,
+    pub storage: String,
+    pub path: RelativePathBuf,
+    pub timestamp: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
 pub struct MoveFile {
-    pub file: FileInfo,
+    pub storage: String,
+    pub src_path: RelativePathBuf,
+    pub dst_path: RelativePathBuf,
+    pub modified_at: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, MessageType)]
 pub struct SendFileTo {
-    pub file: FileInfo,
+    pub file: SyncFile,
     pub nodes: HashSet<NodeId>,
 }
 

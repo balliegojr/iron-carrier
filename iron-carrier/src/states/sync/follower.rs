@@ -4,13 +4,12 @@ use tokio_stream::StreamExt;
 
 use crate::{
     Context, StateMachineError,
-    file_transfer::TransferFiles,
+    file_transfer::{SyncFile, TransferFiles},
     ignored_files::IgnoredFilesCache,
     message_types::MessageTypes,
     network::rpc::RPCMessage,
     node_id::NodeId,
     state_machine::{Result, State},
-    storage::FileInfo,
 };
 
 use super::events::{
@@ -55,7 +54,7 @@ impl State for Follower {
             ])
             .await?;
 
-        let mut files_to_send: Vec<(FileInfo, HashSet<NodeId>)> = Default::default();
+        let mut files_to_send: Vec<(SyncFile, HashSet<NodeId>)> = Default::default();
 
         loop {
             let request = events.next().await.ok_or(StateMachineError::Abort)?;
@@ -121,23 +120,18 @@ impl State for Follower {
 
 async fn process_query_index_request(context: &Context, request: RPCMessage) -> anyhow::Result<()> {
     let query: QueryStorageIndex = request.data()?;
-    let storage_index = match context.config.storages.get(&query.name) {
-        Some(storage_config) => {
-            match crate::storage::get_storage_info(context, &query.name, storage_config).await {
-                Ok(storage) => {
-                    if storage.hash != query.hash {
-                        StorageIndexStatus::SyncNecessary(storage)
-                    } else {
-                        StorageIndexStatus::StorageInSync
-                    }
-                }
-                Err(err) => {
-                    log::error!("There was an error reading the storage: {err}");
-                    StorageIndexStatus::StorageMissing
-                }
+    let storage_index = match crate::storage::build(context, &query.name).await {
+        Ok(storage) => {
+            if storage.hash != query.hash {
+                StorageIndexStatus::SyncNecessary(storage)
+            } else {
+                StorageIndexStatus::StorageInSync
             }
         }
-        None => StorageIndexStatus::StorageMissing,
+        Err(err) => {
+            log::error!("There was an error reading the storage: {err}");
+            StorageIndexStatus::StorageMissing
+        }
     };
 
     request
@@ -154,7 +148,14 @@ async fn process_delete_file_request(
     request: RPCMessage,
 ) -> anyhow::Result<()> {
     let op: DeleteFile = request.data()?;
-    crate::storage::file_operations::delete_file(context, &op.file, ignored_files_cache).await?;
+    crate::storage::file_operations::delete_file(
+        context,
+        ignored_files_cache,
+        &op.storage,
+        &op.path,
+        op.timestamp,
+    )
+    .await?;
     request.ack().await
 }
 
@@ -164,13 +165,21 @@ async fn process_move_file_request(
     request: RPCMessage,
 ) -> anyhow::Result<()> {
     let op: MoveFile = request.data()?;
-    crate::storage::file_operations::move_file(context, &op.file, ignored_files_cache).await?;
+    crate::storage::file_operations::move_file(
+        context,
+        ignored_files_cache,
+        &op.storage,
+        &op.src_path,
+        &op.dst_path,
+        op.modified_at,
+    )
+    .await?;
 
     request.ack().await
 }
 
 async fn process_send_file_to_request(
-    files_to_send: &mut Vec<(FileInfo, HashSet<NodeId>)>,
+    files_to_send: &mut Vec<(SyncFile, HashSet<NodeId>)>,
     request: RPCMessage,
 ) -> anyhow::Result<()> {
     let op: SendFileTo = request.data()?;

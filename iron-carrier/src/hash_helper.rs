@@ -3,7 +3,7 @@
 use crc::{CRC_64_GO_ISO, Crc, Digest};
 use rand::Rng;
 
-use crate::storage::{FileInfo, FileInfoType};
+use crate::storage::storage_tree::{DirId, FileId};
 
 pub const HASHER: Crc<u64> = Crc::<u64>::new(&CRC_64_GO_ISO);
 
@@ -17,36 +17,17 @@ pub fn calculate_checksum(t: &[u8]) -> u64 {
 }
 
 /// Calculate the hash of `file` by using the file attributes only, file content is NOT considered
-pub fn calculate_file_hash(file: &FileInfo) -> u64 {
-    let mut digest = HASHER.digest();
-    calculate_file_hash_digest(file, &mut digest);
-    digest.finalize()
-}
-
-/// Calculate the hash of `file` by using the file attributes only, file content is NOT considered
-pub fn calculate_file_hash_digest(file: &FileInfo, digest: &mut Digest<u64>) {
-    digest.update(file.storage.as_bytes());
-    file.path.as_path().to_str().inspect(|path| {
-        digest.update(path.as_bytes());
-    });
-
-    match &file.info_type {
-        FileInfoType::Existent {
-            modified_at, size, ..
-        } => {
-            digest.update(&modified_at.to_le_bytes());
-            digest.update(&size.to_le_bytes());
-        }
-        FileInfoType::Deleted { deleted_at } => {
-            digest.update(&deleted_at.to_le_bytes());
-        }
-        FileInfoType::Moved { old_path, moved_at } => {
-            digest.update(&moved_at.to_le_bytes());
-            old_path.as_path().to_str().inspect(|path| {
-                digest.update(path.as_bytes());
-            });
-        }
-    }
+pub fn calculate_file_hash_digest(
+    digest: &mut Digest<u64>,
+    parent_id: DirId,
+    file_id: FileId,
+    size: u64,
+    timestamp: u64,
+) {
+    digest.update(&parent_id.to_le_bytes());
+    digest.update(&file_id.to_le_bytes());
+    digest.update(&timestamp.to_le_bytes());
+    digest.update(&size.to_le_bytes());
 }
 
 /// generate an id for this node.
