@@ -52,10 +52,7 @@ impl FS for MemFS {
 
         let path_metadata: Vec<_> = files
             .iter()
-            .filter(move |(key, _)| {
-                !i.is_ignored(key.build_path().as_path())
-                    && key.has_parent(p)
-            })
+            .filter(move |(key, _)| !i.is_ignored(key.build_path().as_path()) && key.has_parent(p))
             .map(|(key, virtual_file)| {
                 let path = key.clone();
                 let metadata = virtual_file.metadata.clone();
@@ -67,18 +64,18 @@ impl FS for MemFS {
         let mut entries: Vec<anyhow::Result<DirEntry>> = Default::default();
         for (path, metadata) in path_metadata {
             // if path has the same parent as p, add it to the entries
-            if path.parent().map_or(false, |parent| parent == p.as_path()) {
+            if path.parent().is_some_and(|parent| parent == p.as_path()) {
                 let entry = DirEntry::new(path, metadata.lock().await.clone());
-                entries.push(Ok(entry)); 
+                entries.push(Ok(entry));
             } else {
                 let mut path = path;
                 while let Some(parent) = path.parent() {
                     if parent == p.as_path() {
                         let entry = DirEntry::new(path, MetadataB::dir().build());
-                        entries.push(Ok(entry)); 
+                        entries.push(Ok(entry));
                         break;
                     }
-                    path  = parent.to_owned();
+                    path = parent.to_owned();
                 }
             }
         }
@@ -300,47 +297,73 @@ impl tokio::io::AsyncWrite for VirtualFileGuard {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        ignored_files::IgnoredFiles,
-        relative_path::RelativePathBuf,
-        config::PathConfig,
-        leak::Leak,
-    };
     use super::*;
+    use crate::{
+        config::PathConfig, ignored_files::IgnoredFiles, leak::Leak, relative_path::RelativePathBuf,
+    };
     use std::str::FromStr;
 
     #[tokio::test]
     async fn test_read_dir_hierarchy() {
         let config = &PathConfig::from_str("/").unwrap().leak();
         let ignored = IgnoredFiles::empty();
-        
+
         // Create test data
-        let test_data = vec![
-            ("a/b/file.txt", vec![0u8; 10], MetadataB::new().len(10).build())
-        ];
+        let test_data = vec![(
+            "a/b/file.txt",
+            vec![0u8; 10],
+            MetadataB::new().len(10).build(),
+        )];
         let mem_fs = MemFS::new(test_data.into_iter());
-        
+
         // Read root directory
-        let mut root_entries = mem_fs.read_dir(&config, &RelativePathBuf::root(), &ignored).await.unwrap();
-        let entry = root_entries.next().expect("Root directory should have entries").unwrap();
-    
+        let mut root_entries = mem_fs
+            .read_dir(config, &RelativePathBuf::root(), &ignored)
+            .await
+            .unwrap();
+        let entry = root_entries
+            .next()
+            .expect("Root directory should have entries")
+            .unwrap();
+
         assert_eq!(entry.path(), &RelativePathBuf::from("a"));
         assert!(entry.metadata().is_dir());
-        assert!(root_entries.next().is_none(), "Root directory should not have more than one entry");
+        assert!(
+            root_entries.next().is_none(),
+            "Root directory should not have more than one entry"
+        );
 
         // Read 'a' directory
-        let mut a_entries = mem_fs.read_dir(&config, &RelativePathBuf::from("a"), &ignored).await.unwrap();
-        let a_entry = a_entries.next().expect("A directory should have entries").unwrap();
+        let mut a_entries = mem_fs
+            .read_dir(config, &RelativePathBuf::from("a"), &ignored)
+            .await
+            .unwrap();
+        let a_entry = a_entries
+            .next()
+            .expect("A directory should have entries")
+            .unwrap();
         assert_eq!(a_entry.path(), &RelativePathBuf::from("a/b"));
         assert!(a_entry.metadata().is_dir());
-        assert!(a_entries.next().is_none(), "A directory should not have more than one entry");
+        assert!(
+            a_entries.next().is_none(),
+            "A directory should not have more than one entry"
+        );
 
         // Read 'a/b' directory
-        let mut b_entries = mem_fs.read_dir(&config, &RelativePathBuf::from("a/b"), &ignored).await.unwrap();
-        let b_entry = b_entries.next().expect("B directory should have entries").unwrap();
+        let mut b_entries = mem_fs
+            .read_dir(config, &RelativePathBuf::from("a/b"), &ignored)
+            .await
+            .unwrap();
+        let b_entry = b_entries
+            .next()
+            .expect("B directory should have entries")
+            .unwrap();
         assert_eq!(b_entry.path(), &RelativePathBuf::from("a/b/file.txt"));
         assert!(!b_entry.metadata().is_dir());
         assert_eq!(b_entry.metadata().len(), 10, "File length should match");
-        assert!(b_entries.next().is_none(), "B directory should not have more than one entry");
+        assert!(
+            b_entries.next().is_none(),
+            "B directory should not have more than one entry"
+        );
     }
 }
