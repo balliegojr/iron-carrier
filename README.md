@@ -65,8 +65,11 @@ encryption = true
 # It is also possible to use a pre defined key that will be used to construct the final encryption key
 # encryption = "some super safe key"
 
-# Maximum number of parallel transfers
-max_parallel_transfers = 4
+# Maximum number of outgoing transfers
+max_parallel_sending = 4
+
+# Maximum number of incoming transfers
+max_parallel_receiving = 4
 
 # List of storages to synchronize
 [storages]
@@ -102,9 +105,8 @@ This allows any number of nodes to participate in the synchronization, and also 
 
 However, this also limits how and which changes are tracked, since the process may not be running when a file change happens. 
 For processes running in daemon mode, with file watcher enabled, it is possible to track when a file is deleted, renamed or moved. This is done using a log inside a sqlite file.
-Otherwise, the only information available is the current state of the file system.
 
-A file deleted or moved when the daemon is not running, will be recreated in the next sync.
+Otherwise, the only information available is the current state of the file system. Which means, a file deleted or moved when the daemon is not running, will be recreated in the next sync.
 
 ## Synchronization process
 
