@@ -127,8 +127,7 @@ impl NetworkMessage {
     where
         T: MessageType + Serialize,
     {
-        let payload = bincode::serialize(&data)?;
-
+        let payload = bincode::serde::encode_to_vec(&data, bincode::config::standard())?;
         let mut content = Vec::with_capacity(6 + payload.len());
 
         content.extend_from_slice(&id.to_be_bytes());
@@ -184,7 +183,8 @@ impl NetworkMessage {
             anyhow::bail!("Received invalid reply");
         }
 
-        bincode::deserialize(&self.content[8..])
+        bincode::serde::borrow_decode_from_slice(&self.content[8..], bincode::config::standard())
+            .map(|(data, _)| data)
             .map_err(|err| anyhow::anyhow!("Received invalid reply {err}"))
     }
 
