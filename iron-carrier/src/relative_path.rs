@@ -55,7 +55,7 @@ impl RelativePathBuf {
         self.components.iter().collect()
     }
 
-    pub fn as_path(&self) -> RelativePath {
+    pub fn as_path(&self) -> RelativePath<'_> {
         RelativePath {
             components: &self.components,
         }
@@ -65,11 +65,11 @@ impl RelativePathBuf {
         name(&self.components)
     }
 
-    pub fn parent(&self) -> Option<RelativePath> {
+    pub fn parent(&self) -> Option<RelativePath<'_>> {
         parent(&self.components)
     }
 
-    pub fn without_leading_slash(&self) -> RelativePath {
+    pub fn without_leading_slash(&self) -> RelativePath<'_> {
         without_leading_slash(&self.components)
     }
 
@@ -133,7 +133,7 @@ pub struct RelativePath<'a> {
 }
 
 impl<'a> RelativePath<'a> {
-    pub fn parent(&self) -> Option<RelativePath> {
+    pub fn parent(&self) -> Option<RelativePath<'_>> {
         parent(self.components)
     }
 
@@ -157,7 +157,7 @@ impl<'a> RelativePath<'a> {
         digest.finalize()
     }
 
-    pub fn without_leading_slash(&self) -> RelativePath {
+    pub fn without_leading_slash(&self) -> RelativePath<'_> {
         without_leading_slash(self.components)
     }
 }
@@ -184,7 +184,7 @@ fn name(components: &[String]) -> &str {
     }
 }
 
-fn parent(components: &[String]) -> Option<RelativePath> {
+fn parent(components: &[String]) -> Option<RelativePath<'_>> {
     if components.is_empty() {
         None
     } else {
@@ -194,7 +194,7 @@ fn parent(components: &[String]) -> Option<RelativePath> {
     }
 }
 
-fn without_leading_slash(components: &[String]) -> RelativePath {
+fn without_leading_slash(components: &[String]) -> RelativePath<'_> {
     if components.first().map(|c| c == "/").unwrap_or_default() {
         RelativePath {
             components: &components[1..],

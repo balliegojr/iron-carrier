@@ -43,7 +43,8 @@ pub async fn get_file_block_index<T: AsyncRead + Unpin>(
         return Ok(Default::default());
     }
 
-    let total_blocks = (target_file_size / block_size) + (target_file_size % block_size > 0) as u64;
+    let total_blocks =
+        (target_file_size / block_size) + !target_file_size.is_multiple_of(block_size) as u64;
     let mut block_index = Vec::with_capacity(total_blocks as usize);
 
     let mut buf = vec![0u8; block_size as usize];

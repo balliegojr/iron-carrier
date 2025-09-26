@@ -30,13 +30,6 @@ pub enum NodeState {
     Leader,
 }
 
-/// Possible election events
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub enum ElectionEvents {
-    RequestVoteForTerm(u32),
-    VoteOnTerm(u32, bool),
-}
-
 #[derive(Debug)]
 pub struct Consensus {
     election_state: NodeState,
