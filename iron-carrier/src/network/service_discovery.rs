@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{config::Config, constants::VERSION, context::Context, node_id::NodeId};
+use crate::{config::Config, constants::VERSION, context::Context, hash_helper, node_id::NodeId};
 use tokio::sync::OnceCell;
 
 use super::backoff_retry;
@@ -87,13 +87,12 @@ pub async fn get_nodes(context: &Context) -> anyhow::Result<HashMap<SocketAddr, 
             });
 
         for instance_info in services {
-            if let Ok(id) = instance_info.unescaped_instance_name().parse::<u64>() {
-                for addr in instance_info
-                    .get_socket_addresses()
-                    .filter(|addr| addr.is_ipv4() == bind_addr.is_ipv4())
-                {
-                    addresses.insert(addr, Some(id.into()));
-                }
+            let id = hash_helper::hashed_str(instance_info.unescaped_instance_name());
+            for addr in instance_info
+                .get_socket_addresses()
+                .filter(|addr| addr.is_ipv4() == bind_addr.is_ipv4())
+            {
+                addresses.insert(addr, Some(id.into()));
             }
         }
     }
@@ -108,7 +107,7 @@ async fn get_known_services(service_discovery: &ServiceDiscovery) -> HashSet<Ins
         return services;
     }
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     service_discovery.get_known_services().await
 }
 

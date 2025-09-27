@@ -6,9 +6,9 @@ use std::{
 };
 
 use crate::{
+    Context,
     node_id::NodeId,
     state_machine::{Result, State},
-    Context,
 };
 
 #[derive(Default, Debug)]
