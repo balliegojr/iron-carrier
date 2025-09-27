@@ -14,19 +14,19 @@ bytes = "1.0.1"
 chrono = { version = "0.4.23", default-features = false }
 clap = { version = "4.1", features = ["derive"] }
 crc = "^3.0"
-cron = "0.12.0"
-dirs = "^5.0"
+cron = "0.15.0"
+dirs = "^6.0"
 filetime = "0.2"
 globset = "^0.4"
-if-addrs = "^0.10"
+if-addrs = "^0.14"
 log = "^0.4.11"
 machine-uid = "^0.5"
-notify = { version = "^6.1", default-features = false, features = [
+notify = { version = "^8.0", default-features = false, features = [
     "macos_kqueue",
 ] }
 pin-project-lite = "0.2.0"
 rand = "^0.9"
-rusqlite = { version = "^0.30", features = ["bundled"] }
+rusqlite = { version = "^0.37", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_with = "^3.3"
 simple-mdns = { version = "^0.6", features = ["async-tokio"] }
@@ -34,7 +34,7 @@ stderrlog = "0.5.0"
 tokio = { version = "1.23.0", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["sync"] }
 tokio-util = { version = "0.7.4", features = ["codec"] }
-toml = "^0.8"
+toml = "^0.9"
 iron-carrier-macros = { path = "../iron-carrier-macros" }
 num-traits = "0.2"
 num-derive = "0.4"
