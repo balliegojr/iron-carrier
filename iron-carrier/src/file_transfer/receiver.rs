@@ -273,9 +273,55 @@ async fn process_query_required_blocks(
 fn calculate_expected_blocks_for_full_file(transfer: &Transfer) -> BTreeSet<BlockIndexPosition> {
     let file_size = transfer.file.info.size();
     let block_size = transfer.block_size;
-    let expected_blocks = (file_size / block_size) + 1;
+    let expected_blocks = file_size.div_ceil(block_size);
 
     (0..expected_blocks).map(Into::into).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        fs::MetadataB,
+        relative_path::RelativePathBuf,
+        storage::storage_tree::ExistingFileInfo,
+    };
+    use crate::file_transfer::{SyncFile, Transfer};
+
+    fn make_transfer(file_size: u64) -> Transfer {
+        use tokio::sync::Semaphore;
+        let sem = std::sync::Arc::new(Semaphore::new(1));
+        let permit = sem.try_acquire_owned().unwrap();
+        let path = RelativePathBuf::from("test.txt");
+        let metadata = MetadataB::new().len(file_size).permissions(0o644).modified(1).build();
+        let info = ExistingFileInfo::new(path.as_path(), &metadata);
+        let file = SyncFile { storage: "a".to_string(), path, info };
+        Transfer::new(file, permit).unwrap()
+    }
+
+    #[test]
+    fn expected_blocks_exact_multiple() {
+        // file_size is an exact multiple of block_size: must produce exactly N blocks, not N+1
+        let transfer = make_transfer(2048 * 5); // 10240 bytes, block_size will be 2048
+        let blocks = calculate_expected_blocks_for_full_file(&transfer);
+        assert_eq!(blocks.len(), 5, "exact multiple of block_size must yield N blocks, not N+1");
+    }
+
+    #[test]
+    fn expected_blocks_non_multiple() {
+        // file_size is NOT an exact multiple: needs one extra block for the remainder
+        let transfer = make_transfer(2048 * 5 + 1); // one byte over, still block_size=2048
+        let blocks = calculate_expected_blocks_for_full_file(&transfer);
+        assert_eq!(blocks.len(), 6, "remainder bytes must yield a final partial block");
+    }
+
+    #[test]
+    fn expected_blocks_single_block() {
+        // file smaller than block_size: exactly one block
+        let transfer = make_transfer(1024);
+        let blocks = calculate_expected_blocks_for_full_file(&transfer);
+        assert_eq!(blocks.len(), 1);
+    }
 }
 
 async fn process_transfer_block(
