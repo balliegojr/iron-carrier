@@ -512,7 +512,7 @@ mod tests {
 
     async fn compare_files(src: &Context, dst: &Context, path: RelativePath<'_>) {
         let src_m = src.fs.metadata(&path.build_path()).await.unwrap();
-        let dst_m = src.fs.metadata(&path.build_path()).await.unwrap();
+        let dst_m = dst.fs.metadata(&path.build_path()).await.unwrap();
 
         assert_eq!(src_m, dst_m);
 
