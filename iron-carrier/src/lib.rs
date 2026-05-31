@@ -1,7 +1,6 @@
 //! Keep your files in sync!
 //!
 //! Synchronize your files in differents machines on the same network
-#![feature(btree_extract_if)]
 use context::Context;
 use node_id::NodeId;
 use state_machine::{State, StateComposer};
