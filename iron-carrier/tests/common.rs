@@ -25,6 +25,7 @@ pub const FULL_SYNC_PRE_DELETED_PORT: u16 = 8100;
 pub const TRUNCATE_PORT: u16 = 8105;
 pub const FOLDER_OPERATION_PORT: u16 = 8110;
 pub const FULL_SYNC_PORT_ENCRYPTED: u16 = 8115;
+pub const INTERRUPTED_SYNC_PORT: u16 = 8120;
 
 pub fn enable_logs() {
     let verbosity: usize = std::env::var("LOG_LEVEL")

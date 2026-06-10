@@ -14,3 +14,10 @@ install-as-user: install-bin
 build-rasp:
     ~/.cargo/bin/cross build --release --target=armv7-unknown-linux-gnueabihf
 
+
+build-integration-image:
+    podman build -t iron-carrier .
+
+integration-test: build-integration-image
+    bash scripts/run-integration-tests.sh
+

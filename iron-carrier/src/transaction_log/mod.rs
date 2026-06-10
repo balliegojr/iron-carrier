@@ -148,6 +148,36 @@ impl TransactionLog {
         Ok(())
     }
 
+    pub async fn mark_write_pending(
+        &self,
+        storage: &str,
+        path: &Path,
+        timestamp: u64,
+    ) -> anyhow::Result<()> {
+        self.append_log_entry(
+            storage,
+            path,
+            None,
+            LogEntry::new(EntryType::Write, EntryStatus::Pending, timestamp),
+        )
+        .await
+    }
+
+    pub async fn mark_write_done(
+        &self,
+        storage: &str,
+        path: &Path,
+        timestamp: u64,
+    ) -> anyhow::Result<()> {
+        self.append_log_entry(
+            storage,
+            path,
+            None,
+            LogEntry::new(EntryType::Write, EntryStatus::Done, timestamp),
+        )
+        .await
+    }
+
     pub async fn get_sync_entries(&self) -> anyhow::Result<Vec<SyncEntry>> {
         let conn = self.storage.lock().await;
         let mut stmt = conn.prepare("SELECT * FROM SyncEntry order by storage, node")?;

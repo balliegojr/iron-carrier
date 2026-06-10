@@ -138,6 +138,16 @@ async fn process_query_transfer_type(
     tokio::spawn(async move {
         let permit = acquire_permit(transfers_semaphore, &request).await?;
         let transfer = Transfer::new(data.file, permit)?;
+
+        context
+            .transaction_log
+            .mark_write_pending(
+                &transfer.file.storage,
+                &transfer.file.path.build_path(),
+                transfer.file.info.date(),
+            )
+            .await?;
+
         let handle = context
             .fs
             .open_w(
@@ -368,15 +378,16 @@ async fn process_transfer_complete(
 
                 let modified = active_transfer.transfer.file.info.date();
                 let permissions = active_transfer.transfer.file.info.permissions();
+                let storage = active_transfer.transfer.file.storage.clone();
+                let rel_path = active_transfer.transfer.file.path.build_path();
                 let path = active_transfer.transfer.file.path.absolute(
-                    context
-                        .config
-                        .path(&active_transfer.transfer.file.storage)?,
+                    context.config.path(&storage)?,
                 )?;
 
+                context.fs.set_metadata(&path, permissions, modified).await?;
                 context
-                    .fs
-                    .set_metadata(&path, permissions, modified)
+                    .transaction_log
+                    .mark_write_done(&storage, &rel_path, modified)
                     .await?;
 
                 entry.remove();
