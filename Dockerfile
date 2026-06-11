@@ -9,5 +9,6 @@ RUN cargo install --path ./iron-carrier
 
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
+RUN apt-get update && apt-get install -y sqlite3 && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/cargo/bin/iron-carrier /usr/local/bin/iron-carrier
 ENTRYPOINT ["/usr/local/bin/iron-carrier"]

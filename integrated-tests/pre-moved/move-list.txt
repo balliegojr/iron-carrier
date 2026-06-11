@@ -1,0 +1,2 @@
+shared/original_a.txt shared/renamed_a.txt
+shared/subdir/original_b.dat shared/moved/renamed_b.dat

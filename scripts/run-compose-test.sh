@@ -22,11 +22,11 @@ podman compose up 2>&1 | tee "$LOGFILE" &
 
 TIMEOUT=120
 ELAPSED=0
-while ! grep -q "end sync as leader" "$LOGFILE" 2>/dev/null; do
+while ! grep -q "test completed" "$LOGFILE" 2>/dev/null; do
     sleep 1
     ELAPSED=$(( ELAPSED + 1 ))
     if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-        echo "Timeout: 'end sync as leader' not seen after ${TIMEOUT}s"
+        echo "Timeout: 'test completed' not seen after ${TIMEOUT}s"
         exit 1
     fi
 done

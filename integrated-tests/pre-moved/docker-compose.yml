@@ -1,0 +1,45 @@
+services:
+  node1:
+    image: localhost/iron-carrier
+    build: ../../
+    networks:
+      - sync-net
+    tmpfs:
+      - /data
+    volumes:
+      - ../encrypted-config.toml:/config/config.toml:ro
+      - ./gen-files-from-movelist.sh:/scripts/gen-files-from-movelist.sh:ro
+      - ./move-list.txt:/config/move-list.txt:ro
+    entrypoint: sh -c '/scripts/gen-files-from-movelist.sh /data old /config/move-list.txt && iron-carrier -vvd /config/config.toml'
+
+  node2:
+    image: localhost/iron-carrier
+    build: ../../
+    networks:
+      - sync-net
+    tmpfs:
+      - /data
+    volumes:
+      - ../encrypted-config.toml:/config/config.toml:ro
+      - ./gen-files-from-movelist.sh:/scripts/gen-files-from-movelist.sh:ro
+      - ./move-list.txt:/config/move-list.txt:ro
+    entrypoint: sh -c '/scripts/gen-files-from-movelist.sh /data old /config/move-list.txt && iron-carrier -vvd /config/config.toml'
+
+  node3:
+    image: localhost/iron-carrier
+    build: ../../
+    networks:
+      - sync-net
+    tmpfs:
+      - /data
+    volumes:
+      - ../encrypted-config.toml:/config/config.toml:ro
+      - ./gen-files-from-movelist.sh:/scripts/gen-files-from-movelist.sh:ro
+      - ./seed-pre-moved-db.sh:/scripts/seed-pre-moved-db.sh:ro
+      - ../../iron-carrier/src/transaction_log/database_setup.sql:/scripts/database_setup.sql:ro
+      - ./move-list.txt:/config/move-list.txt:ro
+    entrypoint: sh -c '/scripts/gen-files-from-movelist.sh /data new /config/move-list.txt && /scripts/seed-pre-moved-db.sh /app/iron-carrier.db /scripts/database_setup.sql /config/move-list.txt && sleep 1 && iron-carrier -vv /config/config.toml && echo "test completed" && sleep infinity'
+
+networks:
+  sync-net:
+    driver: bridge
