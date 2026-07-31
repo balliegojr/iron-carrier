@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{constants::DEFAULT_NETWORK_TIMEOUT, message_types::MessageTypes};
+use crate::{constants::DEFAULT_NETWORK_TIMEOUT, protocol::MessageTypes};
 use tokio::sync::{
     Semaphore,
     mpsc::{Receiver, Sender},
@@ -39,6 +39,7 @@ mod subscription;
 pub use group_call::GroupCallResponse;
 pub use rpc_handler::RPCHandler;
 pub use rpc_message::RPCMessage;
+pub use subscription::Subscription;
 
 pub type CommandRx = Receiver<Command>;
 pub type CommandTx = Sender<Command>;
@@ -47,11 +48,26 @@ pub enum Command {
     AddConnection(Connection),
     QueryIsConnectedTo(NodeId, tokio::sync::oneshot::Sender<bool>),
     AddSubscription {
-        message_types: Vec<MessageTypes>,
+        subscription_keys: Vec<SubscriptionKey>,
         tx: Sender<RPCMessage>,
         drop_guard: Arc<Semaphore>,
-        need_connections: bool,
+        keep_alive: bool,
     },
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub enum SubscriptionKey {
+    MessageType(MessageTypes),
+    SubProcess(MessageTypes, u64),
+}
+
+impl SubscriptionKey {
+    pub fn new(message_type: MessageTypes, sub_process: Option<u64>) -> Self {
+        match sub_process {
+            Some(sub_process) => Self::SubProcess(message_type, sub_process),
+            None => Self::MessageType(message_type),
+        }
+    }
 }
 
 pub fn rpc_service() -> RPCHandler {
@@ -66,10 +82,10 @@ pub fn rpc_service() -> RPCHandler {
 #[derive(Default)]
 struct RPCState {
     // Holds messages that arrived but didn't had any consumer ready to process it
-    waiting_for_consumers: HashMap<MessageTypes, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
+    dead_letter: HashMap<SubscriptionKey, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
     inflight_requests: HashMap<u16, InFlightMessage>,
 
-    subscriptions: HashMap<MessageTypes, (Sender<RPCMessage>, bool)>,
+    subscriptions: HashMap<SubscriptionKey, (Sender<RPCMessage>, bool)>,
 
     connections: ConnectionStorage,
 }
@@ -86,7 +102,7 @@ async fn rpc_loop(
     let mut cleanup = tokio::time::interval(Duration::from_secs(1));
 
     loop {
-        let has_cleanup = !(state.waiting_for_consumers.is_empty()
+        let has_cleanup = !(state.dead_letter.is_empty()
             // && state.subscriptions.is_empty()
             && state.inflight_requests.is_empty()
             && state.connections.is_empty());
@@ -107,17 +123,18 @@ async fn rpc_loop(
                     Command::QueryIsConnectedTo(node_id, reply_tx) => {
                         let _ = reply_tx.send(state.connections.is_connected(node_id));
                     }
-                    Command::AddSubscription{ message_types, tx, drop_guard, need_connections } => {
-                        add_new_consumers(
-                            message_types,
-                            tx,
+                    Command::AddSubscription{ subscription_keys, tx, drop_guard, keep_alive  } => {
+                        add_new_subscription(
+                            &subscription_keys,
+                            tx.clone(),
                             &mut state,
-                            &net_out_sender,
                             drop_guard,
                             remove_consumers_tx.clone(),
-                            need_connections
+                            keep_alive
                         )
                         .await;
+
+                        send_deadletter_messages(&subscription_keys, tx, &mut state, &net_out_sender).await;
                     }
                 }
             }
@@ -197,40 +214,50 @@ async fn process_rpc_call(
     state: &mut RPCState,
     net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 ) {
-    let Ok(type_id) = message.type_id() else {
+    let Some(type_id) = message.type_id() else {
         log::error!("Received message without type_id {:?}", message);
         return;
     };
 
-    if let Entry::Occupied(mut entry) = state.subscriptions.entry(type_id) {
-        if let Err(err) = entry
-            .get_mut()
-            .0
-            .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
-            .await
-        {
-            let message: NetworkMessage = err.0.into();
-            state
-                .waiting_for_consumers
-                .entry(type_id)
-                .or_default()
-                .push_back((
-                    node_id,
-                    message,
-                    Deadline::new(Duration::from_secs(DEFAULT_NETWORK_TIMEOUT)),
-                ));
-            entry.remove_entry();
-        }
-    } else {
+    let subscription_key = SubscriptionKey::new(type_id, message.sub_process());
+
+    if let Some(message) =
+        try_message_consumers(state, net_out_sender, message, node_id, subscription_key).await
+    {
         state
-            .waiting_for_consumers
-            .entry(type_id)
+            .dead_letter
+            .entry(subscription_key)
             .or_default()
             .push_back((
                 node_id,
                 message,
                 Deadline::new(Duration::from_secs(DEFAULT_NETWORK_TIMEOUT)),
             ));
+    }
+}
+
+async fn try_message_consumers(
+    state: &mut RPCState,
+    net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
+    message: NetworkMessage,
+    node_id: NodeId,
+    subscription_key: SubscriptionKey,
+) -> Option<NetworkMessage> {
+    if let Entry::Occupied(mut entry) = state.subscriptions.entry(subscription_key) {
+        let consumer = &entry.get_mut().0;
+        match consumer
+            .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
+            .await
+        {
+            Ok(_) => None,
+            Err(err) => {
+                entry.remove_entry();
+                Some(err.0.into())
+            }
+        }
+    } else {
+        log::trace!("No consumers found for subscription {subscription_key:?}");
+        Some(message)
     }
 }
 
@@ -331,17 +358,38 @@ async fn send_message_to(
     Ok(())
 }
 
-async fn add_new_consumers(
-    consumer_types: Vec<MessageTypes>,
+async fn add_new_subscription(
+    subscription_keys: &[SubscriptionKey],
+    consumer: Sender<RPCMessage>,
+    state: &mut RPCState,
+    drop_guard: Arc<Semaphore>,
+    remove_consumers: Sender<Vec<SubscriptionKey>>,
+    keep_alive: bool,
+) {
+    for subscription_key in subscription_keys.iter() {
+        state
+            .subscriptions
+            .insert(*subscription_key, (consumer.clone(), keep_alive));
+        log::trace!("added subscription to {subscription_key:?}");
+    }
+
+    if !keep_alive {
+        let subscription_keys = subscription_keys.to_vec();
+        tokio::spawn(async move {
+            let _ = drop_guard.acquire().await;
+            let _ = remove_consumers.send(subscription_keys).await;
+        });
+    }
+}
+
+async fn send_deadletter_messages(
+    subscritions: &[SubscriptionKey],
     consumer: Sender<RPCMessage>,
     state: &mut RPCState,
     net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
-    drop_guard: Arc<Semaphore>,
-    remove_consumers: Sender<Vec<MessageTypes>>,
-    need_connections: bool,
 ) {
-    for consumer_type in consumer_types.iter() {
-        if let Entry::Occupied(mut entry) = state.waiting_for_consumers.entry(*consumer_type) {
+    for subscription_key in subscritions.iter() {
+        if let Entry::Occupied(mut entry) = state.dead_letter.entry(*subscription_key) {
             while let Some((node_id, message, deadline)) = entry.get_mut().pop_front() {
                 if let Err(err) = consumer
                     .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
@@ -356,27 +404,16 @@ async fn add_new_consumers(
 
             entry.remove_entry();
         }
-
-        state
-            .subscriptions
-            .insert(*consumer_type, (consumer.clone(), need_connections));
     }
-
-    tokio::spawn(async move {
-        let _ = drop_guard.acquire().await;
-        let _ = remove_consumers.send(consumer_types).await;
-    });
 }
 
 async fn cleanup_resources(state: &mut RPCState) {
     state.connections.remove_stale();
     let has_connections = !state.connections.is_empty();
 
-    state
-        .subscriptions
-        .retain(|_, (consumer, need_connections)| {
-            !consumer.is_closed() && (!*need_connections || *need_connections == has_connections)
-        });
+    state.subscriptions.retain(|_, (consumer, keep_alive)| {
+        !consumer.is_closed() && (*keep_alive || has_connections)
+    });
 
     for (_, expired_message) in state
         .inflight_requests
@@ -387,7 +424,7 @@ async fn cleanup_resources(state: &mut RPCState) {
         }
     }
 
-    state.waiting_for_consumers.retain(|_, messages| {
+    state.dead_letter.retain(|_, messages| {
         messages.retain(|(_, _, deadline)| !deadline.is_expired());
         !messages.is_empty()
     });
@@ -428,8 +465,8 @@ mod tests {
 
     use crate::{
         context::Context,
-        message_types::MessageTypes,
-        states::consensus::{ConsensusReached, StartConsensus},
+        protocol::MessageTypes,
+        states::consensus::{ConsensusReached, RequestVote, StartConsensus},
     };
 
     #[tokio::test]
@@ -465,6 +502,7 @@ mod tests {
                 .await?,
             HashSet::from([NodeId::from(1)])
         );
+
         assert_eq!(
             zero.rpc
                 .multi_call(ConsensusReached, [1.into(), 2.into()].into())
@@ -554,7 +592,7 @@ mod tests {
 
             let mut sub = context
                 .rpc
-                .subscribe(&[MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
+                .subscribe([MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
                 .await
                 .unwrap();
 
@@ -570,6 +608,52 @@ mod tests {
         Ok(task.await?)
     }
 
+    #[tokio::test]
+    pub async fn ensure_messages_are_sent_to_subprocess() -> anyhow::Result<()> {
+        let [zero, one] = crate::context::local_contexts().await;
+
+        async fn subscribe(context: Context, term: u32) {
+            let mut sub = context
+                .rpc
+                .subscription([MessageTypes::StartConsensus])
+                .subscribe()
+                .await
+                .expect("failed to subscribe");
+
+            while let Some(event) = sub.next().await {
+                event
+                    .reply(RequestVote { term })
+                    .await
+                    .expect("failed to reply from process 1");
+            }
+        }
+
+        async fn call(context: Context, term: u32) {
+            let replies = context
+                .rpc
+                .multi_call(StartConsensus, [0.into()].into())
+                .result()
+                .await
+                .expect("failed to receive result from sub process 1")
+                .replies();
+
+            assert_eq!(replies.len(), 1, "received no replies");
+            assert_eq!(replies[0].data::<RequestVote>().unwrap().term, term);
+        }
+
+        tokio::spawn(subscribe(zero.subprocess(1), 1));
+        tokio::spawn(subscribe(zero.subprocess(2), 2));
+
+        let call_one = tokio::spawn(call(one.subprocess(1), 1));
+        let call_two = tokio::spawn(call(one.subprocess(2), 2));
+
+        let join = tokio::join!(call_one, call_two);
+        assert!(join.0.is_ok());
+        assert!(join.1.is_ok());
+
+        Ok(())
+    }
+
     fn ping_rpc(wait_time: Duration, context: Context) {
         tokio::spawn(async move {
             // Necessary to move the whole context, otherwise it gets dropped
@@ -577,7 +661,7 @@ mod tests {
 
             let mut sub = context
                 .rpc
-                .subscribe(&[MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
+                .subscribe([MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
                 .await
                 .unwrap();
 
@@ -585,7 +669,7 @@ mod tests {
                 tokio::spawn(async move {
                     tokio::time::sleep(wait_time).await;
 
-                    match message.type_id() {
+                    match message.message_type() {
                         Ok(MessageTypes::StartConsensus) => {
                             let _ = message.reply(ConsensusReached).await;
                         }

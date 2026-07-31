@@ -2,7 +2,6 @@ use std::{collections::HashSet, fmt::Display};
 
 use crate::{
     Context, StateMachineError,
-    file_transfer::TransferFiles,
     node_id::NodeId,
     state_machine::{Result, State, StateComposer},
     states::sync::{
@@ -38,6 +37,14 @@ impl Display for Leader {
 impl State for Leader {
     type Output = ();
     async fn execute(self, context: &Context) -> Result<Self::Output> {
+        // TODO: investigate the possibility of start a follower inside the leader.
+        // this will allow to simplify the leading code by replicating all the follower events
+        // to achieve this, it will be necessary to create a loopback connection inside the rpc code
+        // or refactor the follower code to allow for receiving events from two different sources
+        //
+        // the loopback connection will make the code cleaner, but it may create a problem for
+        // broadcast events
+
         log::debug!("start sync as leader");
         for storage_name in context
             .config
@@ -57,7 +64,7 @@ impl State for Leader {
                     );
                     ActionDispatcher::new(storages)
                 })
-                .and_then(|files_to_send| TransferFiles::new(None, files_to_send))
+                // .and_then(|files_to_send| TransferFiles::new(None, files_to_send))
                 .execute(context)
                 .await;
 

@@ -1,19 +1,21 @@
 use std::{collections::HashSet, future, pin::pin, str::FromStr, time::Duration};
 
+use iron_carrier_macros::Protocol;
+use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
 use crate::{
     Context,
     config::Config,
-    message_types::MessageTypes,
     network::rpc::RPCMessage,
     node_id::NodeId,
+    protocol::MessageTypes,
     state_machine::{Result, State, StateComposer, StateMachineError},
     stream,
     sync_options::SyncOptions,
 };
 
-use super::{ConnectAllPeers, Consensus, DiscoverPeers, SetSyncRole, consensus::ConsensusReached};
+use super::{ConnectAllPeers, Consensus, DiscoverPeers, SetSyncRole};
 
 #[derive(Default, Debug)]
 pub struct Daemon {}
@@ -42,14 +44,16 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
     let mut full_sync_deadline = pin!(next_cron_schedule(context.config));
     let mut events = context
         .rpc
-        .subscribe_forever(&[MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
+        .subscription([MessageTypes::StartConsensus, MessageTypes::Follow])
+        .keep_alive()
+        .subscribe()
         .await?;
 
     async fn process_event(event: Option<RPCMessage>) -> Result<DaemonEvent> {
         let request = event.ok_or(StateMachineError::Abort)?;
-        match request.type_id()? {
+        match request.message_type()? {
             MessageTypes::StartConsensus => Ok(DaemonEvent::SyncWithConsensus(request)),
-            MessageTypes::ConsensusReached => {
+            MessageTypes::Follow => {
                 let leader = request.node_id();
                 Ok(DaemonEvent::BecomeFollower(leader, request))
             }
@@ -108,6 +112,9 @@ async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Protocol)]
+pub struct Follow;
+
 #[derive(Debug)]
 struct BypassConsensus {
     nodes: HashSet<NodeId>,
@@ -125,7 +132,7 @@ impl State for BypassConsensus {
     async fn execute(self, context: &Context) -> Result<Self::Output> {
         context
             .rpc
-            .multi_call(ConsensusReached, self.nodes)
+            .multi_call(Follow, self.nodes)
             .timeout(Duration::from_secs(30))
             .ack()
             .await?;

@@ -1,18 +1,30 @@
-use crate::message_types::{MessageType, MessageTypes};
-use serde::{de::Deserialize, Serialize};
+use std::fmt;
+
+use crate::protocol::{MessageTypes, Protocol};
+use anyhow::anyhow;
+use serde::{Serialize, de::Deserialize};
 use tokio::sync::mpsc::Sender;
 
 use crate::node_id::NodeId;
 
-use super::{network_message::NetworkMessage, OutboundNetworkMessageType};
+use super::{OutboundNetworkMessageType, network_message::NetworkMessage};
 
 /// RPC Message received from a network node.
-#[derive(Debug)]
 pub struct RPCMessage {
     inner: NetworkMessage,
     node_id: NodeId,
     reply_sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 }
+
+impl fmt::Debug for RPCMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RPCMessage")
+            .field("inner", &self.inner)
+            .field("sender", &self.node_id)
+            .finish()
+    }
+}
+
 impl RPCMessage {
     pub fn new(
         inner: NetworkMessage,
@@ -30,32 +42,30 @@ impl RPCMessage {
         self.node_id
     }
 
-    pub fn type_id(&self) -> anyhow::Result<MessageTypes> {
-        self.inner.type_id()
+    pub fn message_type(&self) -> anyhow::Result<MessageTypes> {
+        self.inner
+            .type_id()
+            .ok_or_else(|| anyhow!("request messages must have type"))
     }
 
-    pub fn data<'a, T: MessageType + Deserialize<'a>>(&'a self) -> anyhow::Result<T> {
+    pub fn data<'a, T: Protocol + Deserialize<'a>>(&'a self) -> anyhow::Result<T> {
         self.inner.data()
     }
 
     pub async fn ack(self) -> anyhow::Result<()> {
-        let reply = NetworkMessage::ack_message(self.inner.id());
-        self.send(reply).await
+        self.send(self.inner.ack_message()).await
     }
 
     pub async fn ping(&self) -> anyhow::Result<()> {
-        let ping_message = NetworkMessage::ping_message(self.inner.id());
-        self.send(ping_message).await
+        self.send(self.inner.ping_message()).await
     }
 
     pub async fn cancel(self) -> anyhow::Result<()> {
-        let cancel_message = NetworkMessage::cancel_message(self.inner.id());
-        self.send(cancel_message).await
+        self.send(self.inner.cancel_message()).await
     }
 
-    pub async fn reply<U: MessageType + Serialize>(self, message: U) -> anyhow::Result<()> {
-        let reply = NetworkMessage::reply_message(self.inner.id(), message)?;
-        self.send(reply).await
+    pub async fn reply<U: Protocol + Serialize>(self, message: U) -> anyhow::Result<()> {
+        self.send(self.inner.reply_message(message)?).await
     }
 
     async fn send(&self, message: NetworkMessage) -> anyhow::Result<()> {

@@ -133,6 +133,18 @@ impl DirId {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 pub struct FileId(u64);
 
+impl From<u64> for FileId {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<FileId> for u64 {
+    fn from(value: FileId) -> Self {
+        value.0
+    }
+}
+
 impl FileId {
     pub fn new(path: &RelativePath) -> Self {
         Self(path.hash())

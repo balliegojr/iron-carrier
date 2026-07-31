@@ -4,11 +4,11 @@ pub use connect_all_peers::ConnectAllPeers;
 pub mod consensus;
 pub use consensus::Consensus;
 
-mod daemon;
+pub mod daemon;
 pub use daemon::Daemon;
 
 mod discover_peers;
 pub use discover_peers::DiscoverPeers;
 
-mod sync;
+pub mod sync;
 pub use sync::SetSyncRole;

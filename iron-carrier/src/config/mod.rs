@@ -65,10 +65,7 @@ pub struct Config {
     pub encryption: Encryption,
 
     #[serde(default = "defaults::max_parallel_transfers")]
-    pub max_parallel_sending: u8,
-
-    #[serde(default = "defaults::max_parallel_transfers")]
-    pub max_parallel_receiving: u8,
+    pub max_parallel_transfers: u8,
 
     pub schedule_sync: Option<String>,
 }

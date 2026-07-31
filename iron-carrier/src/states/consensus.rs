@@ -12,8 +12,8 @@ use tokio_stream::StreamExt;
 use crate::{
     Context,
     constants::MAX_ELECTION_TERMS,
-    message_types::MessageType,
     node_id::NodeId,
+    protocol::Protocol,
     state_machine::{Result, State, StateMachineError},
 };
 
@@ -79,7 +79,7 @@ impl State for Consensus {
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(random_wait_time());
         let mut events = context
             .rpc
-            .subscribe(&[
+            .subscribe([
                 StartConsensus::MESSAGE_TYPE,
                 RequestVote::MESSAGE_TYPE,
                 ConsensusReached::MESSAGE_TYPE,
@@ -153,7 +153,7 @@ impl State for Consensus {
 
                 request = events.next() => {
                     let request = request.ok_or(StateMachineError::Abort)?;
-                    match request.type_id()? {
+                    match request.message_type()? {
                         RequestVote::MESSAGE_TYPE => {
                             let data = request.data::<RequestVote>()?;
                             if term < data.term {
@@ -183,19 +183,19 @@ impl State for Consensus {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, MessageType)]
+#[derive(Debug, Serialize, Deserialize, Protocol)]
 pub struct StartConsensus;
 
-#[derive(Debug, Serialize, Deserialize, MessageType)]
+#[derive(Debug, Serialize, Deserialize, Protocol)]
 pub struct ConsensusReached;
 
-#[derive(Debug, Serialize, Deserialize, MessageType)]
-struct RequestVote {
+#[derive(Debug, Serialize, Deserialize, Protocol)]
+pub struct RequestVote {
     pub term: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize, MessageType)]
-struct TermVote {
+#[derive(Debug, Serialize, Deserialize, Protocol)]
+pub struct TermVote {
     pub vote: bool,
 }
 

@@ -1,20 +1,20 @@
-use std::{collections::HashSet, fmt::Display};
+use std::{fmt::Display, sync::Arc};
 
+use tokio::sync::{Mutex, Semaphore};
 use tokio_stream::StreamExt;
 
 use crate::{
     Context, StateMachineError,
-    file_transfer::{SyncFile, TransferFiles},
+    file_transfer::{self},
     ignored_files::IgnoredFilesCache,
-    message_types::MessageTypes,
     network::rpc::RPCMessage,
     node_id::NodeId,
+    protocol::MessageTypes,
     state_machine::{Result, State},
 };
 
 use super::events::{
-    DeleteFile, MoveFile, QueryStorageIndex, SaveSyncStatus, SendFileTo, StorageIndex,
-    StorageIndexStatus,
+    DeleteFile, MoveFile, QueryStorageIndex, SaveSyncStatus, StorageIndex, StorageIndexStatus,
 };
 
 #[derive(Debug)]
@@ -40,25 +40,36 @@ impl State for Follower {
     async fn execute(self, context: &Context) -> Result<Self::Output> {
         log::debug!("start sync as follower");
 
-        let mut ignored_files_cache = IgnoredFilesCache::default();
+        let ignored_files_cache: Arc<Mutex<IgnoredFilesCache>> = Default::default();
         let mut events = context
             .rpc
-            .subscribe(&[
+            .subscribe([
                 MessageTypes::QueryStorageIndex,
                 MessageTypes::SyncCompleted,
                 MessageTypes::DeleteFile,
                 MessageTypes::MoveFile,
                 MessageTypes::SendFileTo,
-                MessageTypes::TransferFilesStart,
                 MessageTypes::SaveSyncStatus,
             ])
             .await?;
 
-        let mut files_to_send: Vec<(SyncFile, HashSet<NodeId>)> = Default::default();
+        let parallel_transfers = Arc::new(Semaphore::new(
+            1.max(context.config.max_parallel_transfers.into()),
+        ));
 
         loop {
             let request = events.next().await.ok_or(StateMachineError::Abort)?;
-            match request.type_id()? {
+            // avoid processing broadcasts send by leaders in other syncs.
+            // this situation can happen if other nodes started a new sync in the middle of a
+            // ongoing sync.
+
+            if request.node_id() != self.sync_leader {
+                // TODO: introduce a busy response?
+                request.cancel().await?;
+                continue;
+            }
+
+            match request.message_type()? {
                 MessageTypes::QueryStorageIndex => {
                     if let Err(err) = process_query_index_request(context, request).await {
                         log::error!("{err}")
@@ -70,38 +81,38 @@ impl State for Follower {
                     break;
                 }
                 MessageTypes::DeleteFile => {
+                    let mut guard = ignored_files_cache.lock().await;
                     if let Err(err) =
-                        process_delete_file_request(context, &mut ignored_files_cache, request)
-                            .await
+                        process_delete_file_request(context, &mut guard, request).await
                     {
                         log::error!("{err}")
                     }
                 }
                 MessageTypes::MoveFile => {
-                    if let Err(err) =
-                        process_move_file_request(context, &mut ignored_files_cache, request).await
+                    let mut guard = ignored_files_cache.lock().await;
+                    if let Err(err) = process_move_file_request(context, &mut guard, request).await
                     {
                         log::error!("{err}")
                     }
                 }
                 MessageTypes::SendFileTo => {
-                    if let Err(err) =
-                        process_send_file_to_request(&mut files_to_send, request).await
-                    {
-                        log::error!("{err}")
-                    }
-                }
-                MessageTypes::TransferFilesStart => {
-                    request.ack().await?;
-                    if let Err(err) = TransferFiles::new(
-                        Some(self.sync_leader),
-                        std::mem::take(&mut files_to_send),
+                    if let Err(err) = file_transfer::send_file(
+                        context.clone(),
+                        request,
+                        parallel_transfers.clone(),
                     )
-                    .execute(context)
                     .await
                     {
                         log::error!("{err}")
                     }
+                }
+                MessageTypes::ReceiveFile => {
+                    tokio::spawn(file_transfer::receive_file(
+                        context.clone(),
+                        ignored_files_cache.clone(),
+                        request,
+                        parallel_transfers.clone(),
+                    ));
                 }
                 MessageTypes::SaveSyncStatus => {
                     if let Err(err) = process_save_sync_status_request(context, request).await {
@@ -174,16 +185,6 @@ async fn process_move_file_request(
         op.modified_at,
     )
     .await?;
-
-    request.ack().await
-}
-
-async fn process_send_file_to_request(
-    files_to_send: &mut Vec<(SyncFile, HashSet<NodeId>)>,
-    request: RPCMessage,
-) -> anyhow::Result<()> {
-    let op: SendFileTo = request.data()?;
-    files_to_send.push((op.file, op.nodes));
 
     request.ack().await
 }

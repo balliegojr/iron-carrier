@@ -11,82 +11,70 @@ use tokio::{
 };
 
 use crate::{
-    Context, fs::Metadata, network::rpc::GroupCallResponse, node_id::NodeId,
-    storage::storage_tree::StorageFile,
+    Context,
+    file_transfer::SyncFile,
+    fs::Metadata,
+    network::rpc::{GroupCallResponse, RPCMessage},
+    node_id::NodeId,
+    states::sync::events::SendFileTo,
+    storage::storage_tree::FileId,
 };
 
 use super::{
-    BlockIndexPosition, SyncFile, Transfer, block_index,
+    BlockIndexPosition, block_index,
     events::{
         self, QueryTransferType, RequiredBlocks, TransferBlock, TransferComplete, TransferResult,
         TransferType,
     },
 };
 
-pub async fn send_files(
-    context: &Context,
-    files_to_send: Vec<(SyncFile, HashSet<NodeId>)>,
-) -> anyhow::Result<()> {
-    let sending_limit = Arc::new(Semaphore::new(
-        1.max(context.config.max_parallel_sending.into()),
-    ));
-
-    let tasks: Vec<_> = files_to_send
-        .into_iter()
-        .map(|(file, nodes)| {
-            tokio::spawn(send_file(
-                context.clone(),
-                file,
-                nodes,
-                sending_limit.clone(),
-            ))
-        })
-        .collect();
-
-    for task in tasks {
-        if let Err(err) = task.await {
-            log::error!("{err}");
-        }
-    }
-
-    Ok(())
-}
-
-async fn send_file(
+pub async fn send_file(
     context: Context,
-    file: SyncFile,
-    nodes: HashSet<NodeId>,
-    send_limit: Arc<Semaphore>,
+    request: RPCMessage,
+    transfers_semaphore: Arc<Semaphore>,
 ) -> anyhow::Result<()> {
     log::trace!("Waiting slot for file transfer");
-    let permit = send_limit.acquire_owned().await.unwrap();
-    let transfer = Transfer::new(file, permit).unwrap();
 
-    let transfer_types = query_transfer_type(&context, &transfer, nodes).await?;
+    let _permit = super::acquire_permit(transfers_semaphore, &request).await?;
+    let SendFileTo { file, nodes } = request.data()?;
+    let context = context.subprocess(FileId::new(&file.path.as_path()).into());
+
+    request.ack().await?;
+
+    let transfer_types = query_transfer_type(&context, &file, nodes).await?;
     if transfer_types.is_empty() {
         return Ok(());
     }
 
-    let storage_config = context.config.path(&transfer.file.storage)?;
+    let storage_config = context.config.path(&file.storage)?;
 
-    let absolute_path = transfer.file.path.absolute(storage_config)?;
+    let absolute_path = file.path.absolute(storage_config)?;
     let metadata = context.fs.metadata(&absolute_path).await?;
     let mut file_handle = context.fs.open_r(&absolute_path).await?;
+    let block_size = super::block_index::get_block_size(file.info.size());
 
     let mut nodes_blocks = query_required_blocks(
         &context,
-        &transfer,
+        &file,
         &mut file_handle,
         transfer_types,
         metadata,
+        block_size,
     )
     .await?;
 
     while !nodes_blocks.is_empty() {
-        transfer_blocks(&context, &transfer, &mut file_handle, &mut nodes_blocks).await?;
+        transfer_blocks(
+            &context,
+            &file,
+            &mut file_handle,
+            &mut nodes_blocks,
+            block_size,
+        )
+        .await?;
     }
 
-    log::info!("{:?} sent to nodes", transfer.file.path);
+    log::info!("{:?} sent to nodes", file.path);
 
     Ok(())
 }
@@ -94,19 +82,13 @@ async fn send_file(
 /// Query `nodes` about the transfer type, returns only Partial or Full transfers
 async fn query_transfer_type(
     context: &crate::Context,
-    transfer: &Transfer,
+    file: &SyncFile,
     nodes: HashSet<NodeId>,
 ) -> anyhow::Result<HashMap<NodeId, TransferType>> {
-    log::debug!("Querying transfer type for {:?}", transfer.file.path);
+    log::debug!("Querying transfer type for {:?}", file.path);
     context
         .rpc
-        .multi_call(
-            QueryTransferType {
-                // transfer_id: self.transfer.transfer_id,
-                file: transfer.file.clone(),
-            },
-            nodes,
-        )
+        .multi_call(QueryTransferType, nodes)
         .result()
         .await
         .and_then(|response| {
@@ -130,15 +112,16 @@ async fn query_transfer_type(
 
 async fn query_required_blocks(
     context: &Context,
-    transfer: &Transfer,
+    file: &SyncFile,
     file_handle: &mut Pin<Box<dyn crate::fs::FileR>>,
     mut transfer_types: HashMap<NodeId, TransferType>,
     metadata: Metadata,
+    block_size: u64,
 ) -> anyhow::Result<HashMap<NodeId, BTreeSet<BlockIndexPosition>>> {
     let full_index = block_index::get_file_block_index(
         file_handle,
-        transfer.block_size,
-        transfer.file.info.size(),
+        block_size,
+        file.info.size(),
         metadata.len(),
     )
     .await?;
@@ -151,12 +134,11 @@ async fn query_required_blocks(
     let mut required_blocks: HashMap<NodeId, BTreeSet<BlockIndexPosition>> = if nodes.is_empty() {
         Default::default()
     } else {
-        log::debug!("Querying required blocks for {:?}", transfer.file.path);
+        log::debug!("Querying required blocks for {:?}", file.path);
         context
             .rpc
             .multi_call(
                 events::QueryRequiredBlocks {
-                    file_id: transfer.file.info.id(),
                     sender_block_index: full_index.clone(),
                 },
                 nodes,
@@ -185,11 +167,12 @@ async fn query_required_blocks(
 
 async fn transfer_blocks(
     context: &crate::Context,
-    transfer: &Transfer,
+    file: &SyncFile,
     file_handle: &mut Pin<Box<dyn crate::fs::FileR>>,
     nodes_blocks: &mut HashMap<NodeId, BTreeSet<BlockIndexPosition>>,
+    block_size: u64,
 ) -> anyhow::Result<()> {
-    log::debug!("Sending {:?} blocks to nodes", transfer.file.path);
+    log::debug!("Sending {:?} blocks to nodes", file.path);
     let mut block_nodes: BTreeMap<BlockIndexPosition, HashSet<NodeId>> =
         std::collections::BTreeMap::new();
 
@@ -199,11 +182,11 @@ async fn transfer_blocks(
         }
     }
 
-    let file_size = transfer.file.info.size();
+    let file_size = file.info.size();
     let mut block = vec![0u8; file_size as usize];
     for (block_index, nodes) in block_nodes.into_iter() {
-        let position = block_index.get_position(transfer.block_size);
-        let bytes_to_read = transfer.block_size.min(file_size - position);
+        let position = block_index.get_position(block_size);
+        let bytes_to_read = block_size.min(file_size - position);
 
         if file_handle.seek(SeekFrom::Start(position)).await? != position {
             anyhow::bail!("Failed to file from disk");
@@ -219,7 +202,6 @@ async fn transfer_blocks(
             .rpc
             .multi_call(
                 TransferBlock {
-                    file_id: transfer.file.info.id(),
                     block_index,
                     block: &block[..bytes_to_read as usize],
                 },
@@ -231,12 +213,7 @@ async fn transfer_blocks(
 
     let results = context
         .rpc
-        .multi_call(
-            TransferComplete {
-                file_id: transfer.file.info.id(),
-            },
-            nodes_blocks.keys().cloned().collect(),
-        )
+        .multi_call(TransferComplete, nodes_blocks.keys().cloned().collect())
         .result()
         .await?;
 

@@ -1,14 +1,14 @@
 use std::time::Duration;
 
-use crate::{constants::DEFAULT_NETWORK_TIMEOUT, message_types::MessageType};
+use crate::{constants::DEFAULT_NETWORK_TIMEOUT, protocol::Protocol};
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
 use crate::node_id::NodeId;
 
 use super::{
-    message_waiting_reply::ReplyType, network_message::NetworkMessage, rpc_reply::RPCReply,
-    OutboundNetworkMessageType,
+    OutboundNetworkMessageType, message_waiting_reply::ReplyType, network_message::NetworkMessage,
+    rpc_reply::RPCReply,
 };
 
 /// Represents a RPC for a single Node
@@ -18,22 +18,25 @@ pub struct Call<T> {
     sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
     target: NodeId,
     timeout: Duration,
+    sub_process: Option<u64>,
 }
 
 impl<T> Call<T>
 where
-    T: MessageType + Serialize,
+    T: Protocol + Serialize,
 {
     pub fn new(
         data: T,
         sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
         target: NodeId,
+        sub_process: Option<u64>,
     ) -> Self {
         Self {
             data,
             sender,
             target,
             timeout: Duration::from_secs(DEFAULT_NETWORK_TIMEOUT),
+            sub_process,
         }
     }
 
@@ -49,7 +52,7 @@ where
     }
 
     async fn wait_reply(self) -> anyhow::Result<RPCReply> {
-        let message = NetworkMessage::encode(self.data)?;
+        let message = NetworkMessage::new(self.data, self.sub_process)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         self.sender
             .send((

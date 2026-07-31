@@ -7,7 +7,7 @@ use crate::{
     node_id::NodeId,
     relative_path::RelativePathBuf,
     state_machine::{Result, State},
-    states::sync::events::{DeleteFile, MoveFile, SendFileTo},
+    states::sync::events::{DeleteFile, MoveFile, ReceiveFile, SendFileTo},
     storage::{
         Storage,
         storage_tree::{DeletedFileInfo, FileId, MovedFileInfo, StorageFile, StorageTree},
@@ -260,6 +260,8 @@ async fn build_send_actions(
     storages: &mut HashMap<NodeId, Storage>,
 ) -> anyhow::Result<Vec<(SyncFile, HashSet<NodeId>)>> {
     let mut to_sync = Vec::new();
+    let mut handles = Vec::new();
+
     let all_ids: HashSet<FileId> = storages
         .values()
         .flat_map(|storage| storage.current.ids())
@@ -309,6 +311,18 @@ async fn build_send_actions(
         if node_id == context.config.node_id_hashed {
             to_sync.push((sync_file, nodes_out_of_sync));
         } else {
+            handles.push(tokio::spawn(
+                context
+                    .rpc
+                    .multi_call(
+                        ReceiveFile {
+                            file: sync_file.clone(),
+                        },
+                        nodes_out_of_sync.clone(),
+                    )
+                    .ack(),
+            ));
+
             context
                 .rpc
                 .call(
@@ -820,13 +834,13 @@ mod tests {
         Ok(())
     }
 
-    async fn assert_event<T: crate::message_types::MessageType + DeserializeOwned, F: FnOnce(T)>(
+    async fn assert_event<T: crate::protocol::Protocol + DeserializeOwned, F: FnOnce(T)>(
         context: Context,
         f: F,
     ) {
         let mut events = context
             .rpc
-            .subscribe(&[T::MESSAGE_TYPE])
+            .subscribe([T::MESSAGE_TYPE])
             .await
             .expect("failed to subscribe");
 
@@ -838,12 +852,10 @@ mod tests {
         event.ack().await.unwrap();
     }
 
-    async fn assert_no_event<T: crate::message_types::MessageType + DeserializeOwned>(
-        context: Context,
-    ) {
+    async fn assert_no_event<T: crate::protocol::Protocol + DeserializeOwned>(context: Context) {
         let mut events = context
             .rpc
-            .subscribe(&[T::MESSAGE_TYPE])
+            .subscribe([T::MESSAGE_TYPE])
             .await
             .expect("failed to subscribe");
 

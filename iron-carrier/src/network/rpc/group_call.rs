@@ -1,6 +1,6 @@
 use std::{collections::HashSet, time::Duration};
 
-use crate::{constants::DEFAULT_NETWORK_TIMEOUT, message_types::MessageType};
+use crate::{constants::DEFAULT_NETWORK_TIMEOUT, protocol::Protocol};
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
@@ -15,26 +15,29 @@ pub struct GroupCall<T> {
     sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
     targets: Option<HashSet<NodeId>>,
     timeout: Duration,
+    sub_process: Option<u64>,
 }
 
 impl<T> GroupCall<T>
 where
-    T: MessageType + Serialize,
+    T: Protocol + Serialize,
 {
     pub fn new(
         data: T,
         sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
         targets: Option<HashSet<NodeId>>,
+        sub_process: Option<u64>,
     ) -> Self {
         Self {
             data,
             sender,
             targets,
             timeout: Duration::from_secs(DEFAULT_NETWORK_TIMEOUT),
+            sub_process,
         }
     }
 
-    /// Wait untill all nodes in the call ack the request. Returns a HashSet of Nodes that acked
+    /// Wait until all nodes in the call ack the request. Returns a HashSet of Nodes that acked
     /// the message.
     pub async fn ack(self) -> anyhow::Result<HashSet<NodeId>> {
         self.wait_replies()
@@ -64,7 +67,7 @@ where
     }
 
     async fn wait_replies(self) -> anyhow::Result<GroupCallResponse> {
-        let message = NetworkMessage::encode(self.data)?;
+        let message = NetworkMessage::new(self.data, self.sub_process)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let output_type = match self.targets {
             Some(nodes) => OutboundNetworkMessageType::MultiNode(nodes, tx, self.timeout),

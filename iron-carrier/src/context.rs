@@ -37,6 +37,12 @@ impl Context {
         }
     }
 
+    pub fn subprocess(&self, id: u64) -> Context {
+        let mut context = self.clone();
+        context.rpc = context.rpc.create_sub_process(id);
+        context
+    }
+
     pub fn with_output_channel(mut self, when_done: Sender<()>) -> Self {
         self.when_done = Some(when_done);
         self
