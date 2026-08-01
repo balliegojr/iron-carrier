@@ -42,7 +42,6 @@ pub async fn receive_file(
             MessageTypes::QueryRequiredBlocks,
             MessageTypes::TransferBlock,
             MessageTypes::TransferComplete,
-            // MessageTypes::TransferFilesCompleted,
         ])
         .await?;
 
@@ -51,7 +50,7 @@ pub async fn receive_file(
     if matches!(transfer_type, TransferType::NoTransfer) {
         abort_no_transfer(events).await?;
     } else {
-        let processing = process_transfer(context, events, file, transfer_type);
+        let processing = process_transfer(context, events, &file, transfer_type);
         tokio::pin!(processing);
 
         loop {
@@ -72,7 +71,9 @@ pub async fn receive_file(
         }
     }
 
-    request.ack().await
+    request.ack().await?;
+    log::info!("Received file {:?}", file.path);
+    Ok(())
 }
 
 async fn abort_no_transfer(mut subscription: Subscription) -> anyhow::Result<()> {
@@ -95,14 +96,14 @@ async fn abort_no_transfer(mut subscription: Subscription) -> anyhow::Result<()>
 async fn process_transfer(
     context: Context,
     mut subscription: Subscription,
-    file: SyncFile,
+    file: &SyncFile,
     transfer_type: TransferType,
 ) -> anyhow::Result<()> {
     let block_size = super::block_index::get_block_size(file.info.size());
-    let mut handle = get_handle_and_prepare_log(&context, &file).await?;
+    let mut handle = get_handle_and_prepare_log(&context, file).await?;
 
     let mut block_index = match transfer_type {
-        TransferType::FullFile => calculate_expected_blocks_for_full_file(&file),
+        TransferType::FullFile => calculate_expected_blocks_for_full_file(file),
         TransferType::Partial => Default::default(),
         _ => unreachable!(),
     };
@@ -114,18 +115,20 @@ async fn process_transfer(
             }
             Ok(MessageTypes::QueryRequiredBlocks) => {
                 block_index =
-                    process_query_required_blocks(&file, &mut handle, block_size, request).await?;
+                    process_query_required_blocks(file, &mut handle, block_size, request).await?;
             }
             Ok(MessageTypes::TransferBlock) => {
                 process_transfer_block(&mut handle, &mut block_index, block_size, request).await?;
             }
             Ok(MessageTypes::TransferComplete) => {
                 if let Err(err) =
-                    process_transfer_complete(&context, &file, &mut handle, &block_index, request)
+                    process_transfer_complete(&context, file, &mut handle, &block_index, request)
                         .await
                 {
                     log::error!("{err}")
                 }
+
+                break;
             }
             _ => {}
         }

@@ -14,7 +14,7 @@ pub mod file_operations;
 pub mod file_watcher;
 use storage_tree::{DeletedFileInfo, ExistingFileInfo, MovedFileInfo, StorageFile, StorageTree};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Storage {
     /// A hash of the current files
     pub hash: u64,
@@ -23,6 +23,18 @@ pub struct Storage {
     pub current: StorageTree<ExistingFileInfo>,
     pub moved: StorageTree<MovedFileInfo>,
     pub deleted: StorageTree<DeletedFileInfo>,
+}
+
+impl core::fmt::Debug for Storage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Storage")
+            .field("hash", &self.hash)
+            .field("name", &self.name)
+            .field("current", &self.current.files_len())
+            .field("moved", &self.moved.files_len())
+            .field("deleted", &self.deleted.files_len())
+            .finish()
+    }
 }
 
 pub mod storage_tree;

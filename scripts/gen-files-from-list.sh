@@ -8,6 +8,7 @@ while IFS= read -r filepath; do
     [ -z "$filepath" ] && continue
     fullpath="${TARGET_DIR}/${filepath}"
     mkdir -p "$(dirname "$fullpath")"
-    dd if=/dev/urandom bs=512 count=1 2>/dev/null | base64 > "$fullpath"
+    size=$(( (RANDOM % 513) + 512 ))
+    head -c "$size" /dev/urandom > "$fullpath"
     if [ "$MTIME" = "old" ]; then touch -t 202001010000 "$fullpath"; fi
 done < "$FILES_LIST"

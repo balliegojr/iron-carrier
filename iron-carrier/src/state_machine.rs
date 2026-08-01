@@ -111,10 +111,10 @@ where
     where
         Self: Sized,
     {
-        debug!(self.previous, context.config.node_id_hashed);
+        debug!(self.previous, context.config.node_id);
         let previous_output = self.previous.execute(context).await?;
         let next_task = (self.map_fn)(previous_output);
-        debug!(next_task, context.config.node_id_hashed);
+        debug!(next_task, context.config.node_id);
         next_task.execute(context).await
     }
 }
@@ -135,11 +135,11 @@ where
     where
         Self: Sized,
     {
-        debug!(self.previous, context.config.node_id_hashed);
+        debug!(self.previous, context.config.node_id);
         self.previous.execute(context).await?;
 
         let next = U::default();
-        debug!(next, context.config.node_id_hashed);
+        debug!(next, context.config.node_id);
         next.execute(context).await
     }
 }
@@ -173,13 +173,13 @@ where
     type Output = U::Output;
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
-        debug!(self.previous, context.config.node_id_hashed);
+        debug!(self.previous, context.config.node_id);
         if let Err(StateMachineError::Err(err)) = self.previous.execute(context).await {
             log::error!("{err}");
         };
 
         let next = (self.loop_fn)();
-        debug!(next, context.config.node_id_hashed);
+        debug!(next, context.config.node_id);
         next.execute(context).await
     }
 }

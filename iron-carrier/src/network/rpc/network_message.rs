@@ -27,6 +27,7 @@ mod flags {
 /// Represents a network message in wire format.
 ///
 /// This type makes no assumptions regarding the Data content.
+#[derive(Clone)]
 pub struct NetworkMessage {
     id: u16,
     flags: u8,

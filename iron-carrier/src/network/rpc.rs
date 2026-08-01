@@ -70,16 +70,15 @@ impl SubscriptionKey {
     }
 }
 
-pub fn rpc_service() -> RPCHandler {
+pub fn rpc_service(id: NodeId) -> RPCHandler {
     let (net_out_tx, net_out_rx) = tokio::sync::mpsc::channel(10);
     let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
 
-    tokio::spawn(rpc_loop(net_out_rx, net_out_tx.clone(), command_rx));
+    tokio::spawn(rpc_loop(net_out_rx, net_out_tx.clone(), command_rx, id));
 
     RPCHandler::new(net_out_tx, command_tx)
 }
 
-#[derive(Default)]
 struct RPCState {
     // Holds messages that arrived but didn't had any consumer ready to process it
     dead_letter: HashMap<SubscriptionKey, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
@@ -88,16 +87,30 @@ struct RPCState {
     subscriptions: HashMap<SubscriptionKey, (Sender<RPCMessage>, bool)>,
 
     connections: ConnectionStorage,
+    id: NodeId,
+}
+
+impl RPCState {
+    fn new(id: NodeId) -> Self {
+        Self {
+            dead_letter: Default::default(),
+            inflight_requests: Default::default(),
+            subscriptions: Default::default(),
+            connections: Default::default(),
+            id,
+        }
+    }
 }
 
 async fn rpc_loop(
     mut net_out: Receiver<(NetworkMessage, OutboundNetworkMessageType)>,
     net_out_sender: Sender<(NetworkMessage, OutboundNetworkMessageType)>,
     mut command_rx: CommandRx,
+    id: NodeId,
 ) {
     let (net_in_tx, mut net_in_rx) = tokio::sync::mpsc::channel::<IncomingNetworkEvent>(10);
     let (remove_consumers_tx, mut remove_consumers) = tokio::sync::mpsc::channel(1);
-    let mut state = RPCState::default();
+    let mut state = RPCState::new(id);
 
     let mut cleanup = tokio::time::interval(Duration::from_secs(1));
 
@@ -152,9 +165,6 @@ async fn rpc_loop(
                     }
                     IncomingNetworkEvent::Message(node_id, message) => {
                         log::trace!("Received message {:?}", message);
-                        if message.is_reply() {
-                            process_reply(message, node_id, &mut state).await;
-                        } else {
                             process_rpc_call(
                                 message,
                                 node_id,
@@ -162,14 +172,13 @@ async fn rpc_loop(
                                 &net_out_sender,
                             )
                             .await;
-                        }
                     }
                 }
             }
 
             request = net_out.recv() => {
                 let Some((message, send_type)) = request else { break; };
-                send_outbound_message(message, send_type, &mut state).await;
+                send_outbound_message(message, send_type, &mut state, &net_out_sender).await;
             }
 
 
@@ -190,7 +199,7 @@ async fn rpc_loop(
 
     // It is necessary to ensure that all output messages are sent before exiting
     while let Ok((message, send_type)) = net_out.try_recv() {
-        send_outbound_message(message, send_type, &mut state).await;
+        send_outbound_message(message, send_type, &mut state, &net_out_sender).await;
     }
 }
 
@@ -214,8 +223,13 @@ async fn process_rpc_call(
     state: &mut RPCState,
     net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 ) {
+    if message.is_reply() {
+        process_reply(message, node_id, state).await;
+        return;
+    }
+
     let Some(type_id) = message.type_id() else {
-        log::error!("Received message without type_id {:?}", message);
+        log::error!("Received message without type_id {message:?} from {node_id:?}");
         return;
     };
 
@@ -286,17 +300,18 @@ async fn send_outbound_message(
     message: NetworkMessage,
     send_type: OutboundNetworkMessageType,
     state: &mut RPCState,
+    net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 ) {
     log::trace!("Sending message {:?}", message);
 
     match send_type {
         OutboundNetworkMessageType::Response(node_id) => {
-            if let Err(err) = send_message_to(&message, node_id, &mut state.connections).await {
+            if let Err(err) = send_message_to(&message, node_id, state, net_out_sender).await {
                 log::error!("{err}");
             }
         }
         OutboundNetworkMessageType::SingleNode(node_id, callback, timeout) => {
-            if let Err(err) = send_message_to(&message, node_id, &mut state.connections).await {
+            if let Err(err) = send_message_to(&message, node_id, state, net_out_sender).await {
                 log::error!("{err}");
                 let _ = callback.send(ReplyType::Cancel(node_id)).await;
             } else {
@@ -309,7 +324,7 @@ async fn send_outbound_message(
         OutboundNetworkMessageType::MultiNode(nodes, callback, timeout) => {
             let mut nodes_sent = HashSet::new();
             for node_id in nodes {
-                if let Err(err) = send_message_to(&message, node_id, &mut state.connections).await {
+                if let Err(err) = send_message_to(&message, node_id, state, net_out_sender).await {
                     log::error!("{err}");
                     let _ = callback.send(ReplyType::Cancel(node_id)).await;
                 } else {
@@ -325,7 +340,7 @@ async fn send_outbound_message(
         OutboundNetworkMessageType::Broadcast(callback, timeout) => {
             let mut nodes = HashSet::new();
             for node_id in state.connections.connected_nodes().collect::<Vec<_>>() {
-                if let Err(err) = send_message_to(&message, node_id, &mut state.connections).await {
+                if let Err(err) = send_message_to(&message, node_id, state, net_out_sender).await {
                     log::error!("{err}");
                     let _ = callback.send(ReplyType::Cancel(node_id)).await;
                 } else {
@@ -344,15 +359,21 @@ async fn send_outbound_message(
 async fn send_message_to(
     message: &NetworkMessage,
     node_id: NodeId,
-    connections: &mut ConnectionStorage,
+    state: &mut RPCState,
+    net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 ) -> anyhow::Result<()> {
-    let connection = connections
-        .get_mut(&node_id)
-        .ok_or_else(|| anyhow::anyhow!("Unknown node {node_id}"))?;
+    if node_id == state.id {
+        process_rpc_call(message.clone(), node_id, state, net_out_sender).await;
+    } else {
+        let connection = state
+            .connections
+            .get_mut(&node_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown node {node_id}"))?;
 
-    if let Err(err) = message.write_into(connection).await {
-        connections.remove(node_id);
-        anyhow::bail!("Failed to write to connection {err}");
+        if let Err(err) = message.write_into(connection).await {
+            state.connections.remove(node_id);
+            anyhow::bail!("Failed to write to connection {err}");
+        }
     }
 
     Ok(())

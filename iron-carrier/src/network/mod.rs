@@ -12,7 +12,7 @@ pub mod service_discovery;
 pub use rpc::Subscription;
 
 pub fn get_network_service(config: &'static Config) -> (ConnectionHandler, rpc::RPCHandler) {
-    let rpc_handler = rpc::rpc_service();
+    let rpc_handler = rpc::rpc_service(config.node_id_hashed);
     let connection_handler = ConnectionHandler::new(config, rpc_handler.clone());
 
     (connection_handler, rpc_handler)

@@ -50,6 +50,7 @@ impl State for Follower {
                 MessageTypes::MoveFile,
                 MessageTypes::SendFileTo,
                 MessageTypes::SaveSyncStatus,
+                MessageTypes::ReceiveFile,
             ])
             .await?;
 
@@ -77,7 +78,6 @@ impl State for Follower {
                 }
                 MessageTypes::SyncCompleted => {
                     request.ack().await?;
-                    context.transaction_log.flush().await?;
                     break;
                 }
                 MessageTypes::DeleteFile => {
@@ -96,15 +96,11 @@ impl State for Follower {
                     }
                 }
                 MessageTypes::SendFileTo => {
-                    if let Err(err) = file_transfer::send_file(
+                    tokio::spawn(file_transfer::send_file(
                         context.clone(),
                         request,
                         parallel_transfers.clone(),
-                    )
-                    .await
-                    {
-                        log::error!("{err}")
-                    }
+                    ));
                 }
                 MessageTypes::ReceiveFile => {
                     tokio::spawn(file_transfer::receive_file(
@@ -123,6 +119,7 @@ impl State for Follower {
             }
         }
 
+        context.transaction_log.flush().await?;
         log::debug!("end sync as follower");
 
         Ok(())
@@ -194,7 +191,11 @@ async fn process_save_sync_status_request(
     request: RPCMessage,
 ) -> anyhow::Result<()> {
     let save_sync_status: SaveSyncStatus = request.data()?;
-    for node in save_sync_status.nodes {
+    for node in save_sync_status
+        .nodes
+        .iter()
+        .filter(|n| **n != context.config.node_id_hashed)
+    {
         let _ = context
             .transaction_log
             .save_sync_status(

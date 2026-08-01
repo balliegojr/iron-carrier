@@ -55,6 +55,10 @@ where
         }
     }
 
+    pub fn files_len(&self) -> usize {
+        self.files.len()
+    }
+
     pub fn files(&self) -> impl Iterator<Item = &T> {
         self.files.values()
     }
