@@ -1,6 +1,9 @@
 use std::{collections::HashSet, time::Duration};
 
-use crate::{constants::DEFAULT_NETWORK_TIMEOUT, protocol::Protocol};
+use crate::{
+    constants::DEFAULT_NETWORK_TIMEOUT,
+    protocol::{Protocol, ProtocolAck, ProtocolQuery},
+};
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
@@ -37,36 +40,13 @@ where
         }
     }
 
-    /// Wait until all nodes in the call ack the request. Returns a HashSet of Nodes that acked
-    /// the message.
-    pub async fn ack(self) -> anyhow::Result<HashSet<NodeId>> {
-        self.wait_replies()
-            .await
-            .and_then(|response| match response {
-                GroupCallResponse::Partial(replies, _) | GroupCallResponse::Complete(replies) => {
-                    if replies.iter().all(|reply| reply.is_ack()) {
-                        Ok(replies.into_iter().map(|r| r.node_id()).collect())
-                    } else {
-                        anyhow::bail!("Received invalid reply")
-                    }
-                }
-            })
-    }
-
-    /// Wait for the execution reply for the nodes involved in this call.
-    ///
-    /// If any node doesn't reply before the request timeout, returns a partial response
-    pub async fn result(self) -> anyhow::Result<GroupCallResponse> {
-        self.wait_replies().await
-    }
-
     /// Set the timeout for this call
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    async fn wait_replies(self) -> anyhow::Result<GroupCallResponse> {
+    async fn wait_replies<U>(self) -> anyhow::Result<GroupCallResponse<U>> {
         let message = NetworkMessage::new(self.data, self.sub_process)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let output_type = match self.targets {
@@ -79,8 +59,8 @@ where
         let mut canceled_nodes = HashSet::new();
         while let Some(reply) = rx.recv().await {
             match reply {
-                super::message_waiting_reply::ReplyType::Message(reply) => {
-                    replies.push(reply);
+                super::message_waiting_reply::ReplyType::Message(reply, node_id) => {
+                    replies.push(RPCReply::new(reply, node_id));
                 }
                 super::message_waiting_reply::ReplyType::Cancel(node_id) => {
                     canceled_nodes.insert(node_id);
@@ -99,15 +79,48 @@ where
     }
 }
 
-#[derive(Debug)]
-pub enum GroupCallResponse {
-    Complete(Vec<RPCReply>),
-    Partial(Vec<RPCReply>, HashSet<NodeId>),
+impl<T> GroupCall<T>
+where
+    T: ProtocolQuery + Serialize,
+{
+    /// Wait for the execution reply for the nodes involved in this call.
+    ///
+    /// If any node doesn't reply before the request timeout, returns a partial response
+    pub async fn result(self) -> anyhow::Result<GroupCallResponse<T::ResponseType>> {
+        self.wait_replies::<T::ResponseType>().await
+    }
 }
 
-impl GroupCallResponse {
+impl<T> GroupCall<T>
+where
+    T: ProtocolAck + Serialize,
+{
+    /// Wait until all nodes in the call ack the request. Returns a HashSet of Nodes that acked
+    /// the message.
+    pub async fn ack(self) -> anyhow::Result<HashSet<NodeId>> {
+        self.wait_replies::<T>()
+            .await
+            .and_then(|response| match response {
+                GroupCallResponse::Partial(replies, _) | GroupCallResponse::Complete(replies) => {
+                    if replies.iter().all(|reply| reply.is_ack()) {
+                        Ok(replies.into_iter().map(|r| r.node_id()).collect())
+                    } else {
+                        anyhow::bail!("Received invalid reply")
+                    }
+                }
+            })
+    }
+}
+
+#[derive(Debug)]
+pub enum GroupCallResponse<T> {
+    Complete(Vec<RPCReply<T>>),
+    Partial(Vec<RPCReply<T>>, HashSet<NodeId>),
+}
+
+impl<T> GroupCallResponse<T> {
     /// return the replies, regardless of the type of response
-    pub fn replies(self) -> Vec<RPCReply> {
+    pub fn replies(self) -> Vec<RPCReply<T>> {
         match self {
             GroupCallResponse::Complete(replies) => replies,
             GroupCallResponse::Partial(replies, _) => replies,

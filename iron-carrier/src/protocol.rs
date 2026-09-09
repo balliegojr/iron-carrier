@@ -62,5 +62,13 @@ pub trait Protocol {
     const HAS_PAYLOAD: bool;
 }
 
+pub trait ProtocolAck: Protocol {}
+
+pub trait ProtocolPayload: Protocol {}
+
+pub trait ProtocolQuery: Protocol {
+    type ResponseType: ProtocolPayload;
+}
+
 extern crate iron_carrier_macros;
 pub use iron_carrier_macros::Protocol;

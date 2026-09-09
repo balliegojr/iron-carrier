@@ -8,6 +8,7 @@ use crate::{
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, Protocol)]
+#[protocol(response = StorageIndex)]
 pub struct QueryStorageIndex {
     pub name: String,
     pub hash: u64,

@@ -708,7 +708,10 @@ mod tests {
         }
     }
 
-    async fn assert_event<T: crate::protocol::Protocol + DeserializeOwned, F: FnOnce(T)>(
+    async fn assert_event<
+        T: crate::protocol::ProtocolAck + crate::protocol::ProtocolPayload + DeserializeOwned,
+        F: FnOnce(T),
+    >(
         context: Context,
         f: F,
     ) {
@@ -719,9 +722,9 @@ mod tests {
             .expect("failed to subscribe");
 
         let event = events.next().await.expect("Event did not arrive");
-        let data: T = event.data().expect("invalid event");
+        let event = event.into_event::<T>();
 
-        f(data);
+        f(event.data().expect("invalid event"));
 
         event.ack().await.unwrap();
     }

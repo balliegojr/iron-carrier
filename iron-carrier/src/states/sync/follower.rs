@@ -7,10 +7,11 @@ use crate::{
     Context, StateMachineError,
     file_transfer::{self},
     ignored_files::IgnoredFilesCache,
-    network::rpc::RPCMessage,
+    network::rpc::RPCEvent,
     node_id::NodeId,
     protocol::MessageTypes,
     state_machine::{Result, State},
+    states::sync::events::{ListStorageNames, ListStorageNamesReply, SyncCompleted},
 };
 
 use super::events::{
@@ -72,25 +73,28 @@ impl State for Follower {
 
             match request.message_type()? {
                 MessageTypes::QueryStorageIndex => {
-                    if let Err(err) = process_query_index_request(context, request).await {
+                    if let Err(err) =
+                        process_query_index_request(context, request.into_event()).await
+                    {
                         log::error!("{err}")
                     }
                 }
                 MessageTypes::SyncCompleted => {
-                    request.ack().await?;
+                    request.into_event::<SyncCompleted>().ack().await?;
                     break;
                 }
                 MessageTypes::DeleteFile => {
                     let mut guard = ignored_files_cache.lock().await;
                     if let Err(err) =
-                        process_delete_file_request(context, &mut guard, request).await
+                        process_delete_file_request(context, &mut guard, request.into_event()).await
                     {
                         log::error!("{err}")
                     }
                 }
                 MessageTypes::MoveFile => {
                     let mut guard = ignored_files_cache.lock().await;
-                    if let Err(err) = process_move_file_request(context, &mut guard, request).await
+                    if let Err(err) =
+                        process_move_file_request(context, &mut guard, request.into_event()).await
                     {
                         log::error!("{err}")
                     }
@@ -98,7 +102,7 @@ impl State for Follower {
                 MessageTypes::SendFileTo => {
                     tokio::spawn(file_transfer::send_file(
                         context.clone(),
-                        request,
+                        request.into_event(),
                         parallel_transfers.clone(),
                     ));
                 }
@@ -111,7 +115,9 @@ impl State for Follower {
                     ));
                 }
                 MessageTypes::SaveSyncStatus => {
-                    if let Err(err) = process_save_sync_status_request(context, request).await {
+                    if let Err(err) =
+                        process_save_sync_status_request(context, request.into_event()).await
+                    {
                         log::error!("{err}");
                     }
                 }
@@ -126,8 +132,11 @@ impl State for Follower {
     }
 }
 
-async fn process_query_index_request(context: &Context, request: RPCMessage) -> anyhow::Result<()> {
-    let query: QueryStorageIndex = request.data()?;
+async fn process_query_index_request(
+    context: &Context,
+    request: RPCEvent<QueryStorageIndex>,
+) -> anyhow::Result<()> {
+    let query = request.data()?;
     let storage_index = match crate::storage::build(context, &query.name).await {
         Ok(storage) => {
             if storage.hash != query.hash {
@@ -153,9 +162,9 @@ async fn process_query_index_request(context: &Context, request: RPCMessage) -> 
 async fn process_delete_file_request(
     context: &Context,
     ignored_files_cache: &mut IgnoredFilesCache,
-    request: RPCMessage,
+    request: RPCEvent<DeleteFile>,
 ) -> anyhow::Result<()> {
-    let op: DeleteFile = request.data()?;
+    let op = request.data()?;
     crate::storage::file_operations::delete_file(
         context,
         ignored_files_cache,
@@ -170,9 +179,9 @@ async fn process_delete_file_request(
 async fn process_move_file_request(
     context: &Context,
     ignored_files_cache: &mut IgnoredFilesCache,
-    request: RPCMessage,
+    request: RPCEvent<MoveFile>,
 ) -> anyhow::Result<()> {
-    let op: MoveFile = request.data()?;
+    let op = request.data()?;
     crate::storage::file_operations::move_file(
         context,
         ignored_files_cache,
@@ -188,9 +197,9 @@ async fn process_move_file_request(
 
 async fn process_save_sync_status_request(
     context: &Context,
-    request: RPCMessage,
+    request: RPCEvent<SaveSyncStatus<'_>>,
 ) -> anyhow::Result<()> {
-    let save_sync_status: SaveSyncStatus = request.data()?;
+    let save_sync_status = request.data()?;
     for node in save_sync_status
         .nodes
         .iter()

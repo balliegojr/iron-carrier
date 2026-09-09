@@ -1,8 +1,10 @@
 use std::{collections::HashSet, time::Duration};
 use tokio::sync::mpsc::Sender;
 
-use super::{rpc_reply::RPCReply, Deadline};
-use crate::{constants::DEFAULT_NETWORK_TIMEOUT, NodeId};
+use super::Deadline;
+use crate::{
+    NodeId, constants::DEFAULT_NETWORK_TIMEOUT, network::rpc::network_message::NetworkMessage,
+};
 
 /// Represents a message that is waiting for replies of one or more nodes.
 pub struct InFlightMessage {
@@ -40,7 +42,7 @@ impl InFlightMessage {
                 self.reply_channel.send(ReplyType::Cancel(node_id)).await?;
             } else {
                 self.reply_channel
-                    .send(ReplyType::Message(RPCReply::new(reply, node_id)))
+                    .send(ReplyType::Message(reply, node_id))
                     .await?;
             }
         } else {
@@ -72,7 +74,7 @@ impl InFlightMessage {
 
 #[derive(Debug)]
 pub enum ReplyType {
-    Message(RPCReply),
+    Message(NetworkMessage, NodeId),
     Cancel(NodeId),
     Timeout(HashSet<NodeId>),
 }

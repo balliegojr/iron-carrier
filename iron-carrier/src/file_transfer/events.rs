@@ -7,6 +7,7 @@ use crate::protocol::Protocol;
 use super::block_index::{BlockIndexPosition, FullIndex};
 
 #[derive(Debug, Serialize, Deserialize, Protocol)]
+#[protocol(response = TransferType)]
 pub struct QueryTransferType;
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Protocol)]
@@ -17,6 +18,7 @@ pub enum TransferType {
 }
 
 #[derive(Debug, Serialize, Deserialize, Protocol)]
+#[protocol(response=RequiredBlocks)]
 pub struct QueryRequiredBlocks {
     pub sender_block_index: FullIndex,
 }
@@ -33,6 +35,7 @@ pub struct TransferBlock<'a> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Protocol)]
+#[protocol(response = TransferResult)]
 pub struct TransferComplete;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Protocol)]

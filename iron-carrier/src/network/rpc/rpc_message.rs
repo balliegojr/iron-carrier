@@ -1,6 +1,6 @@
-use std::fmt;
+use std::{fmt, marker::PhantomData};
 
-use crate::protocol::{MessageTypes, Protocol};
+use crate::protocol::{MessageTypes, Protocol, ProtocolAck, ProtocolPayload, ProtocolQuery};
 use anyhow::anyhow;
 use serde::{Serialize, de::Deserialize};
 use tokio::sync::mpsc::Sender;
@@ -48,12 +48,14 @@ impl RPCMessage {
             .ok_or_else(|| anyhow!("request messages must have type"))
     }
 
-    pub fn data<'a, T: Protocol + Deserialize<'a>>(&'a self) -> anyhow::Result<T> {
-        self.inner.data()
-    }
-
-    pub async fn ack(self) -> anyhow::Result<()> {
-        self.send(self.inner.ack_message()).await
+    pub fn into_event<T>(self) -> RPCEvent<T>
+    where
+        T: Protocol,
+    {
+        RPCEvent {
+            inner: self,
+            _marker: Default::default(),
+        }
     }
 
     pub async fn ping(&self) -> anyhow::Result<()> {
@@ -62,10 +64,6 @@ impl RPCMessage {
 
     pub async fn cancel(self) -> anyhow::Result<()> {
         self.send(self.inner.cancel_message()).await
-    }
-
-    pub async fn reply<U: Protocol + Serialize>(self, message: U) -> anyhow::Result<()> {
-        self.send(self.inner.reply_message(message)?).await
     }
 
     async fn send(&self, message: NetworkMessage) -> anyhow::Result<()> {
@@ -80,5 +78,56 @@ impl RPCMessage {
 impl From<RPCMessage> for NetworkMessage {
     fn from(value: RPCMessage) -> Self {
         value.inner
+    }
+}
+
+/// Typed wrapper around RPCMessage
+pub struct RPCEvent<T> {
+    _marker: PhantomData<T>,
+    inner: RPCMessage,
+}
+
+impl<T> fmt::Debug for RPCEvent<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RPCMessage")
+            .field("inner", &self.inner.inner)
+            .field("sender", &self.inner.node_id)
+            .finish()
+    }
+}
+
+impl<T> RPCEvent<T> {
+    pub fn inner(&self) -> &RPCMessage {
+        &self.inner
+    }
+}
+
+impl<'a, T> RPCEvent<T>
+where
+    T: ProtocolPayload + Deserialize<'a>,
+{
+    pub fn data(&'a self) -> anyhow::Result<T> {
+        self.inner.inner.data()
+    }
+}
+
+impl<T> RPCEvent<T>
+where
+    T: ProtocolQuery,
+    T::ResponseType: Serialize,
+{
+    pub async fn reply(self, message: T::ResponseType) -> anyhow::Result<()> {
+        self.inner
+            .send(self.inner.inner.reply_message(message)?)
+            .await
+    }
+}
+
+impl<T> RPCEvent<T>
+where
+    T: ProtocolAck,
+{
+    pub async fn ack(self) -> anyhow::Result<()> {
+        self.inner.send(self.inner.inner.ack_message()).await
     }
 }

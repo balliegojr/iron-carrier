@@ -38,7 +38,7 @@ mod subscription;
 
 pub use group_call::GroupCallResponse;
 pub use rpc_handler::RPCHandler;
-pub use rpc_message::RPCMessage;
+pub use rpc_message::{RPCEvent, RPCMessage};
 pub use subscription::Subscription;
 
 pub type CommandRx = Receiver<Command>;
@@ -486,8 +486,8 @@ mod tests {
 
     use crate::{
         context::Context,
-        protocol::MessageTypes,
-        states::consensus::{ConsensusReached, RequestVote, StartConsensus},
+        protocol::MessageTypes::{self},
+        states::consensus::{RequestVote, StartConsensus, TermVote},
     };
 
     #[tokio::test]
@@ -496,14 +496,15 @@ mod tests {
 
         ping_rpc(Duration::from_secs(1), one);
 
+        assert!(zero.rpc.call(StartConsensus, 1.into()).ack().await.is_ok());
         assert!(
             zero.rpc
-                .call(ConsensusReached, 1.into())
+                .call(StartConsensus, 1.into())
+                .timeout(Duration::from_millis(100))
                 .ack()
                 .await
-                .is_ok()
+                .is_err()
         );
-        assert!(zero.rpc.call(StartConsensus, 1.into()).ack().await.is_err());
 
         Ok(())
     }
@@ -517,25 +518,25 @@ mod tests {
 
         assert_eq!(
             zero.rpc
-                .multi_call(ConsensusReached, [1.into()].into())
-                .timeout(Duration::from_secs(1))
-                .ack()
-                .await?,
-            HashSet::from([NodeId::from(1)])
-        );
-
-        assert_eq!(
-            zero.rpc
-                .multi_call(ConsensusReached, [1.into(), 2.into()].into())
-                .timeout(Duration::from_secs(1))
-                .ack()
-                .await?,
-            HashSet::from([NodeId::from(1)])
-        );
-
-        assert_eq!(
-            zero.rpc
                 .multi_call(StartConsensus, [1.into()].into())
+                .timeout(Duration::from_secs(1))
+                .ack()
+                .await?,
+            HashSet::from([NodeId::from(1)])
+        );
+
+        assert_eq!(
+            zero.rpc
+                .multi_call(StartConsensus, [1.into(), 2.into()].into())
+                .timeout(Duration::from_secs(1))
+                .ack()
+                .await?,
+            HashSet::from([NodeId::from(1)])
+        );
+
+        assert_eq!(
+            zero.rpc
+                .multi_call(RequestVote { term: 1 }, [1.into()].into())
                 .timeout(Duration::from_secs(1))
                 .result()
                 .await?
@@ -546,7 +547,7 @@ mod tests {
 
         match zero
             .rpc
-            .multi_call(StartConsensus, [1.into()].into())
+            .multi_call(RequestVote { term: 1 }, [1.into()].into())
             .timeout(Duration::from_secs(1))
             .result()
             .await?
@@ -557,7 +558,7 @@ mod tests {
 
         match zero
             .rpc
-            .multi_call(ConsensusReached, [1.into(), 2.into()].into())
+            .multi_call(RequestVote { term: 1 }, [1.into(), 2.into()].into())
             .timeout(Duration::from_secs(1))
             .result()
             .await?
@@ -581,7 +582,7 @@ mod tests {
 
         assert_eq!(
             zero.rpc
-                .broadcast(ConsensusReached)
+                .broadcast(StartConsensus)
                 .timeout(Duration::from_secs(1))
                 .ack()
                 .await?,
@@ -590,7 +591,7 @@ mod tests {
 
         match zero
             .rpc
-            .broadcast(StartConsensus)
+            .broadcast(RequestVote { term: 1 })
             .timeout(Duration::from_secs(1))
             .result()
             .await?
@@ -633,40 +634,42 @@ mod tests {
     pub async fn ensure_messages_are_sent_to_subprocess() -> anyhow::Result<()> {
         let [zero, one] = crate::context::local_contexts().await;
 
-        async fn subscribe(context: Context, term: u32) {
+        async fn subscribe(context: Context, sub_process: u32) {
             let mut sub = context
                 .rpc
-                .subscription([MessageTypes::StartConsensus])
+                .subscription([MessageTypes::RequestVote])
                 .subscribe()
                 .await
                 .expect("failed to subscribe");
 
             while let Some(event) = sub.next().await {
+                let event = event.into_event::<RequestVote>();
+                let vote = event.data().unwrap().term == sub_process;
                 event
-                    .reply(RequestVote { term })
+                    .reply(TermVote { vote })
                     .await
                     .expect("failed to reply from process 1");
             }
         }
 
-        async fn call(context: Context, term: u32) {
+        async fn call(context: Context, term: u32, vote: bool) {
             let replies = context
                 .rpc
-                .multi_call(StartConsensus, [0.into()].into())
+                .multi_call(RequestVote { term }, [0.into()].into())
                 .result()
                 .await
                 .expect("failed to receive result from sub process 1")
                 .replies();
 
             assert_eq!(replies.len(), 1, "received no replies");
-            assert_eq!(replies[0].data::<RequestVote>().unwrap().term, term);
+            assert_eq!(replies[0].data().unwrap().vote, vote);
         }
 
         tokio::spawn(subscribe(zero.subprocess(1), 1));
         tokio::spawn(subscribe(zero.subprocess(2), 2));
 
-        let call_one = tokio::spawn(call(one.subprocess(1), 1));
-        let call_two = tokio::spawn(call(one.subprocess(2), 2));
+        let call_one = tokio::spawn(call(one.subprocess(1), 1, true));
+        let call_two = tokio::spawn(call(one.subprocess(2), 1, false));
 
         let join = tokio::join!(call_one, call_two);
         assert!(join.0.is_ok());
@@ -682,7 +685,7 @@ mod tests {
 
             let mut sub = context
                 .rpc
-                .subscribe([MessageTypes::StartConsensus, MessageTypes::ConsensusReached])
+                .subscribe([MessageTypes::StartConsensus, MessageTypes::RequestVote])
                 .await
                 .unwrap();
 
@@ -692,10 +695,12 @@ mod tests {
 
                     match message.message_type() {
                         Ok(MessageTypes::StartConsensus) => {
-                            let _ = message.reply(ConsensusReached).await;
+                            let event = message.into_event::<StartConsensus>();
+                            event.ack().await.unwrap();
                         }
-                        Ok(MessageTypes::ConsensusReached) => {
-                            let _ = message.ack().await;
+                        Ok(MessageTypes::RequestVote) => {
+                            let event = message.into_event::<RequestVote>();
+                            event.reply(TermVote { vote: true }).await.unwrap();
                         }
                         _ => unreachable!(),
                     }

@@ -14,7 +14,7 @@ use crate::{
     Context,
     file_transfer::SyncFile,
     fs::Metadata,
-    network::rpc::{GroupCallResponse, RPCMessage},
+    network::rpc::{GroupCallResponse, RPCEvent},
     node_id::NodeId,
     states::sync::events::SendFileTo,
     storage::storage_tree::FileId,
@@ -30,12 +30,12 @@ use super::{
 
 pub async fn send_file(
     context: Context,
-    request: RPCMessage,
+    request: RPCEvent<SendFileTo>,
     transfers_semaphore: Arc<Semaphore>,
 ) -> anyhow::Result<()> {
     log::trace!("Waiting slot for file transfer");
 
-    let _permit = super::acquire_permit(transfers_semaphore, &request).await?;
+    let _permit = super::acquire_permit(transfers_semaphore, request.inner()).await?;
     let SendFileTo { file, nodes } = request.data()?;
     let context = context.subprocess(FileId::new(&file.path.as_path()).into());
 
@@ -223,7 +223,7 @@ async fn transfer_blocks(
     };
 
     for reply in replies {
-        match reply.data::<TransferResult>()? {
+        match reply.data()? {
             TransferResult::Success => {
                 nodes_blocks.remove(&reply.node_id());
             }

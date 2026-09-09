@@ -8,10 +8,16 @@ use tokio_stream::StreamExt;
 
 use crate::{
     Context,
-    file_transfer::SyncFile,
+    file_transfer::{
+        SyncFile,
+        events::{QueryTransferType, TransferComplete},
+    },
     fs::FileW,
     ignored_files::IgnoredFilesCache,
-    network::{Subscription, rpc::RPCMessage},
+    network::{
+        Subscription,
+        rpc::{RPCEvent, RPCMessage},
+    },
     protocol::MessageTypes,
     states::sync::events::ReceiveFile,
     storage::storage_tree::{FileId, StorageFile},
@@ -31,8 +37,9 @@ pub async fn receive_file(
     request: RPCMessage,
     transfers_semaphore: Arc<Semaphore>,
 ) -> anyhow::Result<()> {
-    let _permit = super::acquire_permit(transfers_semaphore, &request).await;
-    let ReceiveFile { file } = request.data()?;
+    let event = request.into_event();
+    let _permit = super::acquire_permit(transfers_semaphore, event.inner()).await;
+    let ReceiveFile { file } = event.data()?;
 
     let context = context.subprocess(FileId::new(&file.path.as_path()).into());
     let events = context
@@ -65,13 +72,13 @@ pub async fn receive_file(
                     break;
                 },
                 _ = timeout => {
-                    request.ping().await?;
+                    event.inner().ping().await?;
                 }
             }
         }
     }
 
-    request.ack().await?;
+    event.ack().await?;
     log::info!("Received file {:?}", file.path);
     Ok(())
 }
@@ -83,7 +90,10 @@ async fn abort_no_transfer(mut subscription: Subscription) -> anyhow::Result<()>
 
     match event.message_type()? {
         MessageTypes::QueryTransferType => {
-            event.reply(TransferType::NoTransfer).await?;
+            event
+                .into_event::<QueryTransferType>()
+                .reply(TransferType::NoTransfer)
+                .await?;
         }
         ev => {
             log::warn!("Received unexpected event {:?}", ev);
@@ -111,19 +121,38 @@ async fn process_transfer(
     while let Some(request) = subscription.next().await {
         match request.message_type() {
             Ok(MessageTypes::QueryTransferType) => {
-                request.reply(transfer_type).await?;
+                request
+                    .into_event::<QueryTransferType>()
+                    .reply(transfer_type)
+                    .await?;
             }
             Ok(MessageTypes::QueryRequiredBlocks) => {
-                block_index =
-                    process_query_required_blocks(file, &mut handle, block_size, request).await?;
+                block_index = process_query_required_blocks(
+                    file,
+                    &mut handle,
+                    block_size,
+                    request.into_event(),
+                )
+                .await?;
             }
             Ok(MessageTypes::TransferBlock) => {
-                process_transfer_block(&mut handle, &mut block_index, block_size, request).await?;
+                process_transfer_block(
+                    &mut handle,
+                    &mut block_index,
+                    block_size,
+                    request.into_event(),
+                )
+                .await?;
             }
             Ok(MessageTypes::TransferComplete) => {
-                if let Err(err) =
-                    process_transfer_complete(&context, file, &mut handle, &block_index, request)
-                        .await
+                if let Err(err) = process_transfer_complete(
+                    &context,
+                    file,
+                    &mut handle,
+                    &block_index,
+                    request.into_event(),
+                )
+                .await
                 {
                     log::error!("{err}")
                 }
@@ -201,9 +230,9 @@ async fn process_query_required_blocks(
     file: &SyncFile,
     handle: &mut FileHandle,
     block_size: u64,
-    request: RPCMessage,
+    request: RPCEvent<QueryRequiredBlocks>,
 ) -> anyhow::Result<BTreeSet<BlockIndexPosition>> {
-    let data = request.data::<QueryRequiredBlocks>()?;
+    let data = request.data()?;
 
     let file_size = file.info.size();
     // local file size will be the same as the remote
@@ -228,9 +257,9 @@ async fn process_transfer_block(
     block_index: &mut BTreeSet<BlockIndexPosition>,
     block_size: u64,
 
-    request: RPCMessage,
+    request: RPCEvent<TransferBlock<'_>>,
 ) -> anyhow::Result<()> {
-    let data = request.data::<TransferBlock>()?;
+    let data = request.data()?;
     let position = data.block_index.get_position(block_size);
 
     if handle.seek(SeekFrom::Start(position)).await? == position {
@@ -246,7 +275,7 @@ async fn process_transfer_complete(
     file: &SyncFile,
     handle: &mut FileHandle,
     block_index: &BTreeSet<BlockIndexPosition>,
-    request: RPCMessage,
+    request: RPCEvent<TransferComplete>,
 ) -> anyhow::Result<()> {
     if block_index.is_empty() {
         handle.as_ref().sync_all().await?;

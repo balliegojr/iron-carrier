@@ -7,10 +7,11 @@ use tokio_stream::StreamExt;
 use crate::{
     Context,
     config::Config,
-    network::rpc::RPCMessage,
+    network::rpc::{RPCEvent, RPCMessage},
     node_id::NodeId,
-    protocol::MessageTypes,
+    protocol::{MessageTypes, ProtocolAck},
     state_machine::{Result, State, StateComposer, StateMachineError},
+    states::consensus::StartConsensus,
     stream,
     sync_options::SyncOptions,
 };
@@ -52,10 +53,12 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
     async fn process_event(event: Option<RPCMessage>) -> Result<DaemonEvent> {
         let request = event.ok_or(StateMachineError::Abort)?;
         match request.message_type()? {
-            MessageTypes::StartConsensus => Ok(DaemonEvent::SyncWithConsensus(request)),
+            MessageTypes::StartConsensus => {
+                Ok(DaemonEvent::SyncWithConsensus(request.into_event()))
+            }
             MessageTypes::Follow => {
                 let leader = request.node_id();
-                Ok(DaemonEvent::BecomeFollower(leader, request))
+                Ok(DaemonEvent::BecomeFollower(leader, request.into_event()))
             }
             _ => unreachable!(),
         }
@@ -77,8 +80,8 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
 #[derive(Debug)]
 enum DaemonEvent {
     SyncWithoutConsensus(SyncOptions),
-    SyncWithConsensus(RPCMessage),
-    BecomeFollower(NodeId, RPCMessage),
+    SyncWithConsensus(RPCEvent<StartConsensus>),
+    BecomeFollower(NodeId, RPCEvent<Follow>),
 }
 
 async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
@@ -96,7 +99,7 @@ async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
             DiscoverPeers::default()
                 .and_then(ConnectAllPeers::new)
                 .and_then(BypassConsensus::new)
-                .and_then(|leader_id| SetSyncRole::new(leader_id, sync_options))
+                .and_then(|leader_id| SetSyncRole::new(leader_id, Some(sync_options)))
                 .execute(context)
                 .await
         }
@@ -141,12 +144,15 @@ impl State for BypassConsensus {
 }
 
 #[derive(Debug)]
-struct AckRequest {
-    request: RPCMessage,
+struct AckRequest<T> {
+    request: RPCEvent<T>,
     nodes: HashSet<NodeId>,
 }
 
-impl State for AckRequest {
+impl<T> State for AckRequest<T>
+where
+    T: ProtocolAck + std::fmt::Debug,
+{
     type Output = HashSet<NodeId>;
 
     async fn execute(self, _context: &Context) -> Result<Self::Output> {

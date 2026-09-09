@@ -8,16 +8,16 @@ use crate::{
     transaction_log::SyncStatus,
 };
 
-use super::events::{QueryStorageIndex, StorageIndex, StorageIndexStatus};
+use super::events::{QueryStorageIndex, StorageIndexStatus};
 
 /// Fetch storage information from all nodes in the sync session. Only nodes that need to sync will
 /// reply with their storage info.
 #[derive(Debug)]
-pub struct FetchStorages {
-    storage_name: &'static str,
+pub struct FetchStorageIndex {
+    storage_name: String,
 }
-impl FetchStorages {
-    pub fn new(storage_name: &'static str) -> Self {
+impl FetchStorageIndex {
+    pub fn new(storage_name: String) -> Self {
         Self { storage_name }
     }
 
@@ -40,7 +40,7 @@ impl FetchStorages {
             .iter()
             .filter_map(|reply| {
                 let node = reply.node_id();
-                let node_storage = reply.data::<StorageIndex>().ok()?;
+                let node_storage = reply.data().ok()?;
 
                 if node_storage.name != self.storage_name {
                     return None;
@@ -56,11 +56,11 @@ impl FetchStorages {
     }
 }
 
-impl State for FetchStorages {
+impl State for FetchStorageIndex {
     type Output = HashMap<NodeId, Storage>;
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
-        let storage = storage::build(context, self.storage_name).await?;
+        let storage = storage::build(context, &self.storage_name).await?;
 
         let mut peers_storages = self.get_storage_from_nodes(context, &storage).await?;
         if peers_storages.is_empty() {
@@ -73,7 +73,7 @@ impl State for FetchStorages {
                 .transaction_log
                 .save_sync_status(
                     node.to_string().as_str(),
-                    self.storage_name,
+                    &self.storage_name,
                     SyncStatus::Started,
                 )
                 .await;

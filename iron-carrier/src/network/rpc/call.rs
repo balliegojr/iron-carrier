@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use crate::{constants::DEFAULT_NETWORK_TIMEOUT, protocol::Protocol};
+use crate::{
+    constants::DEFAULT_NETWORK_TIMEOUT,
+    protocol::{Protocol, ProtocolAck},
+};
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 
@@ -40,18 +43,14 @@ where
         }
     }
 
-    /// Wait for the ack for this message.
-    ///
-    /// The operation may fail if the other Node cancel the request or does't reply in time
-    pub async fn ack(self) -> anyhow::Result<()> {
-        if self.wait_reply().await?.is_ack() {
-            Ok(())
-        } else {
-            anyhow::bail!("Received invalid reply");
-        }
+    /// Set the timeout for this call
+    #[allow(dead_code)]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
-    async fn wait_reply(self) -> anyhow::Result<RPCReply> {
+    async fn wait_reply(self) -> anyhow::Result<RPCReply<T>> {
         let message = NetworkMessage::new(self.data, self.sub_process)?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         self.sender
@@ -62,9 +61,25 @@ where
             .await?;
 
         match rx.recv().await {
-            Some(ReplyType::Message(reply)) => Ok(reply),
+            Some(ReplyType::Message(reply, node_id)) => Ok(RPCReply::new(reply, node_id)),
             Some(ReplyType::Cancel(_)) => anyhow::bail!("Node canceled request"),
             _ => anyhow::bail!("Timeout when waiting for replies"),
+        }
+    }
+}
+
+impl<T> Call<T>
+where
+    T: ProtocolAck + Serialize,
+{
+    /// Wait for the ack for this message.
+    ///
+    /// The operation may fail if the other Node cancel the request or does't reply in time
+    pub async fn ack(self) -> anyhow::Result<()> {
+        if self.wait_reply().await?.is_ack() {
+            Ok(())
+        } else {
+            anyhow::bail!("Received invalid reply");
         }
     }
 }

@@ -86,8 +86,9 @@ impl State for Consensus {
             ])
             .await?;
 
-        let mut replies_fut: MaybeFuture<anyhow::Result<crate::network::rpc::GroupCallResponse>> =
-            None;
+        let mut replies_fut: MaybeFuture<
+            anyhow::Result<crate::network::rpc::GroupCallResponse<TermVote>>,
+        > = None;
 
         let mut init_fut: MaybeFuture<anyhow::Result<HashSet<NodeId>>> = Some(Box::pin(
             context
@@ -132,7 +133,7 @@ impl State for Consensus {
                                 Err(StateMachineError::Abort)?
                             }
 
-                            if replies.iter().all(|v| v.data::<TermVote>().map(|v| v.vote).unwrap_or_default()) {
+                            if replies.iter().all(|v| v.data().map(|v| v.vote).unwrap_or_default()) {
                                 log::debug!("Node wins election");
                                 self.election_state = NodeState::Leader;
                                 let nodes = replies.into_iter().map(|r| r.node_id()).collect();
@@ -155,23 +156,24 @@ impl State for Consensus {
                     let request = request.ok_or(StateMachineError::Abort)?;
                     match request.message_type()? {
                         RequestVote::MESSAGE_TYPE => {
-                            let data = request.data::<RequestVote>()?;
+                            let event = request.into_event::<RequestVote>();
+                            let data = event.data()?;
                             if term < data.term {
                                 term = data.term;
                                 self.election_state = NodeState::Follower;
 
-                                request.reply(TermVote { vote: true }).await?;
+                                event.reply(TermVote { vote: true }).await?;
                             } else {
-                                request.reply(TermVote { vote: false }).await?;
+                                event.reply(TermVote { vote: false }).await?;
                             }
                         }
                         ConsensusReached::MESSAGE_TYPE => {
                             let leader = request.node_id();
-                            request.ack().await?;
+                            request.into_event::<ConsensusReached>().ack().await?;
                             break leader;
                         }
                         StartConsensus::MESSAGE_TYPE => {
-                            let _ = request.ack().await;
+                            let _ = request.into_event::<StartConsensus>().ack().await;
                         }
                         _ => { unreachable!() }
                     }
@@ -190,6 +192,7 @@ pub struct StartConsensus;
 pub struct ConsensusReached;
 
 #[derive(Debug, Serialize, Deserialize, Protocol)]
+#[protocol(response = TermVote)]
 pub struct RequestVote {
     pub term: u32,
 }
