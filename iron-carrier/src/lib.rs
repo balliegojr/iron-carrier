@@ -5,7 +5,6 @@ use context::Context;
 use node_id::NodeId;
 use state_machine::{State, StateComposer};
 use states::SetSyncRole;
-use sync_options::SyncOptions;
 use tokio::sync::mpsc::Sender;
 
 pub mod config;
@@ -49,7 +48,7 @@ pub async fn run_full_sync(
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and_then(states::Consensus::new)
-        .and_then(|leader_id| SetSyncRole::new(leader_id, SyncOptions::default()))
+        .and_then(|leader_id| SetSyncRole::new(leader_id, Default::default()))
         .execute(&context)
         .await?;
 
@@ -75,7 +74,7 @@ pub async fn start_daemon(
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and_then(states::Consensus::new)
-        .and_then(|leader_id| SetSyncRole::new(leader_id, SyncOptions::default()))
+        .and_then(|leader_id| SetSyncRole::new(leader_id, Default::default()))
         .then_default_to(states::Daemon::default)
         .execute(&context)
         .await?;

@@ -2,8 +2,8 @@ use crate::file_transfer::events::*;
 use crate::states::consensus::{ConsensusReached, RequestVote, StartConsensus, TermVote};
 use crate::states::daemon::Follow;
 use crate::states::sync::events::{
-    DeleteFile, MoveFile, QueryStorageIndex, ReceiveFile, SaveSyncStatus, SendFileTo, StorageIndex,
-    SyncCompleted,
+    DeleteFile, ListStorageNames, ListStorageNamesReply, MoveFile, QueryStorageIndex, ReceiveFile,
+    SaveSyncStatus, SendFileTo, StorageIndex, SyncCompleted,
 };
 
 use num_derive::FromPrimitive;
@@ -43,6 +43,8 @@ message_types_enum! {
     DeleteFile,
     ReceiveFile,
     SyncCompleted,
+    ListStorageNames,
+    ListStorageNamesReply,
     QueryStorageIndex,
     StorageIndex,
     SaveSyncStatus,

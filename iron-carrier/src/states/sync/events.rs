@@ -7,6 +7,13 @@ use crate::{
     storage::Storage, transaction_log::SyncStatus,
 };
 
+#[derive(Debug, Serialize, Deserialize, Protocol)]
+#[protocol(response = ListStorageNamesReply)]
+pub struct ListStorageNames;
+
+#[derive(Debug, Serialize, Deserialize, Protocol)]
+pub struct ListStorageNamesReply(pub HashSet<String>);
+
 #[derive(Debug, Serialize, Deserialize, Clone, Protocol)]
 #[protocol(response = StorageIndex)]
 pub struct QueryStorageIndex {

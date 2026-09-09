@@ -9,11 +9,11 @@ use super::{follower::Follower, leader::Leader};
 #[derive(Debug)]
 pub struct SetSyncRole {
     leader_node_id: NodeId,
-    sync_options: SyncOptions,
+    sync_options: Option<SyncOptions>,
 }
 
 impl SetSyncRole {
-    pub fn new(leader_node_id: NodeId, sync_options: SyncOptions) -> Self {
+    pub fn new(leader_node_id: NodeId, sync_options: Option<SyncOptions>) -> Self {
         Self {
             leader_node_id,
             sync_options,

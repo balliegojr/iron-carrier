@@ -46,6 +46,7 @@ impl State for Follower {
             .rpc
             .subscribe([
                 MessageTypes::QueryStorageIndex,
+                MessageTypes::ListStorageNames,
                 MessageTypes::SyncCompleted,
                 MessageTypes::DeleteFile,
                 MessageTypes::MoveFile,
@@ -78,6 +79,14 @@ impl State for Follower {
                     {
                         log::error!("{err}")
                     }
+                }
+                MessageTypes::ListStorageNames => {
+                    request
+                        .into_event::<ListStorageNames>()
+                        .reply(ListStorageNamesReply(
+                            context.config.storages.keys().cloned().collect(),
+                        ))
+                        .await?;
                 }
                 MessageTypes::SyncCompleted => {
                     request.into_event::<SyncCompleted>().ack().await?;

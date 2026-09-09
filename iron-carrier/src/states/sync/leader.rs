@@ -1,4 +1,7 @@
-use std::{collections::HashSet, fmt::Display};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+};
 
 use crate::{
     Context, StateMachineError,
@@ -6,8 +9,8 @@ use crate::{
     state_machine::{Result, State, StateComposer},
     states::sync::{
         action_dispatcher::ActionDispatcher,
-        events::{SaveSyncStatus, SyncCompleted},
-        fetch_storages::FetchStorages,
+        events::{ListStorageNames, SaveSyncStatus, SyncCompleted},
+        fetch_storages_index::FetchStorageIndex,
         follower::Follower,
     },
     sync_options::SyncOptions,
@@ -16,16 +19,39 @@ use crate::{
 
 #[derive(Debug, Default)]
 pub struct Leader {
-    sync_options: SyncOptions,
+    sync_options: Option<SyncOptions>,
 }
 
 impl Leader {
-    pub fn sync(sync_options: SyncOptions) -> Self {
+    pub fn sync(sync_options: Option<SyncOptions>) -> Self {
         Self { sync_options }
     }
 
-    fn storages_to_sync(&self, storage: &str) -> bool {
-        self.sync_options.storages().is_empty() || self.sync_options.storages().contains(storage)
+    async fn list_storages(&self, context: &Context) -> Result<HashMap<String, HashSet<NodeId>>> {
+        let replies = context
+            .rpc
+            .broadcast(ListStorageNames)
+            .result()
+            .await?
+            .replies();
+
+        let mut available_storages: HashMap<String, HashSet<NodeId>> = Default::default();
+        for reply in replies {
+            let node_storages = reply.data()?;
+
+            for storage in node_storages.0 {
+                available_storages
+                    .entry(storage)
+                    .or_default()
+                    .insert(reply.node_id());
+            }
+        }
+
+        if let Some(options) = self.sync_options.as_ref() {
+            available_storages.retain(|s, _v| options.storages().contains(s));
+        }
+
+        Ok(available_storages)
     }
 }
 
@@ -38,27 +64,22 @@ impl Display for Leader {
 impl State for Leader {
     type Output = ();
     async fn execute(self, context: &Context) -> Result<Self::Output> {
-        let follower_context = context.clone();
-        let follower = tokio::spawn(async move {
-            Follower::new(follower_context.config.node_id_hashed)
-                .execute(&follower_context)
-                .await
-        });
+        let follower = {
+            // By spawning a follower inside the leader, the leader logic can be simplified by not
+            // having leader exclusive logic to handle events.
+
+            let follower_context = context.clone();
+            tokio::spawn(async move {
+                Follower::new(follower_context.config.node_id_hashed)
+                    .execute(&follower_context)
+                    .await
+            })
+        };
 
         log::debug!("start sync as leader");
-        for storage_name in context
-            .config
-            .storages
-            .keys()
-            .filter(|key| self.storages_to_sync(key.as_str()))
-        {
-            let mut nodes_in_session: Option<HashSet<NodeId>> = Default::default();
-            let sync_result = FetchStorages::new(storage_name)
-                .and_then(|storages| {
-                    nodes_in_session = Some(storages.keys().copied().collect());
-                    ActionDispatcher::new(storages)
-                })
-                // .and_then(|files_to_send| TransferFiles::new(None, files_to_send))
+        for (storage_name, nodes_in_session) in self.list_storages(context).await? {
+            let sync_result = FetchStorageIndex::new(storage_name.clone())
+                .and_then(ActionDispatcher::new)
                 .execute(context)
                 .await;
 
@@ -70,20 +91,18 @@ impl State for Leader {
                 _ => SyncStatus::Done,
             };
 
-            if let Some(nodes_in_session) = nodes_in_session {
-                let _ = context
-                    .rpc
-                    .multi_call(
-                        SaveSyncStatus {
-                            nodes: nodes_in_session.clone(),
-                            storage_name,
-                            status: sync_status,
-                        },
-                        nodes_in_session,
-                    )
-                    .ack()
-                    .await;
-            }
+            let _ = context
+                .rpc
+                .multi_call(
+                    SaveSyncStatus {
+                        nodes: nodes_in_session.clone(),
+                        storage_name: &storage_name,
+                        status: sync_status,
+                    },
+                    nodes_in_session,
+                )
+                .ack()
+                .await;
         }
 
         context.transaction_log.flush().await?;
