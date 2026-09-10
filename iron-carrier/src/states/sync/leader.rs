@@ -20,17 +20,21 @@ use crate::{
 #[derive(Debug, Default)]
 pub struct Leader {
     sync_options: Option<SyncOptions>,
+    nodes: HashSet<NodeId>,
 }
 
 impl Leader {
-    pub fn sync(sync_options: Option<SyncOptions>) -> Self {
-        Self { sync_options }
+    pub fn sync(sync_options: Option<SyncOptions>, nodes: HashSet<NodeId>) -> Self {
+        Self {
+            sync_options,
+            nodes,
+        }
     }
 
     async fn list_storages(&self, context: &Context) -> Result<HashMap<String, HashSet<NodeId>>> {
         let replies = context
             .rpc
-            .broadcast(ListStorageNames)
+            .multi_call(ListStorageNames, self.nodes.clone())
             .result()
             .await?
             .replies();
@@ -63,7 +67,9 @@ impl Display for Leader {
 
 impl State for Leader {
     type Output = ();
-    async fn execute(self, context: &Context) -> Result<Self::Output> {
+    async fn execute(mut self, context: &Context) -> Result<Self::Output> {
+        self.nodes.insert(context.config.node_id_hashed);
+
         let follower = {
             // By spawning a follower inside the leader, the leader logic can be simplified by not
             // having leader exclusive logic to handle events.
@@ -77,11 +83,15 @@ impl State for Leader {
         };
 
         log::debug!("start sync as leader");
-        for (storage_name, nodes_in_session) in self.list_storages(context).await? {
-            let sync_result = FetchStorageIndex::new(storage_name.clone())
-                .and_then(ActionDispatcher::new)
-                .execute(context)
-                .await;
+        let storages = self.list_storages(context).await?;
+
+        log::info!("storages to sync {:?}", storages);
+        for (storage_name, nodes_in_session) in storages {
+            let sync_result =
+                FetchStorageIndex::new(storage_name.clone(), nodes_in_session.clone())
+                    .and_then(ActionDispatcher::new)
+                    .execute(context)
+                    .await;
 
             let sync_status = match sync_result {
                 Err(StateMachineError::Err(err)) => {
@@ -121,7 +131,7 @@ impl State for Leader {
             let _ = when_done.send(()).await;
         }
 
-        log::info!("end sync as leader");
+        log::debug!("end sync as leader");
 
         Ok(())
     }

@@ -11,7 +11,7 @@ use crate::{
     node_id::NodeId,
     protocol::{MessageTypes, ProtocolAck},
     state_machine::{Result, State, StateComposer, StateMachineError},
-    states::consensus::StartConsensus,
+    states::consensus::{ConsensusResult, StartConsensus},
     stream,
     sync_options::SyncOptions,
 };
@@ -58,7 +58,13 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
             }
             MessageTypes::Follow => {
                 let leader = request.node_id();
-                Ok(DaemonEvent::BecomeFollower(leader, request.into_event()))
+                Ok(DaemonEvent::BecomeFollower(
+                    ConsensusResult {
+                        leader,
+                        participants: None,
+                    },
+                    request.into_event(),
+                ))
             }
             _ => unreachable!(),
         }
@@ -81,7 +87,7 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
 enum DaemonEvent {
     SyncWithoutConsensus(SyncOptions),
     SyncWithConsensus(RPCEvent<StartConsensus>),
-    BecomeFollower(NodeId, RPCEvent<Follow>),
+    BecomeFollower(ConsensusResult, RPCEvent<Follow>),
 }
 
 async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
@@ -104,11 +110,11 @@ async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
                 .await
         }
 
-        DaemonEvent::BecomeFollower(leader_id, request) => {
+        DaemonEvent::BecomeFollower(consensus_result, request) => {
             DiscoverPeers::default()
                 .and_then(ConnectAllPeers::new)
                 .and_then(|nodes| AckRequest { nodes, request })
-                .and_then(|_| SetSyncRole::new(leader_id, Default::default()))
+                .and_then(|_| SetSyncRole::new(consensus_result, Default::default()))
                 .execute(context)
                 .await
         }
@@ -130,16 +136,20 @@ impl BypassConsensus {
 }
 
 impl State for BypassConsensus {
-    type Output = NodeId;
+    type Output = ConsensusResult;
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
         context
             .rpc
-            .multi_call(Follow, self.nodes)
+            .multi_call(Follow, self.nodes.clone())
             .timeout(Duration::from_secs(30))
             .ack()
             .await?;
-        Ok(context.config.node_id_hashed)
+
+        Ok(ConsensusResult {
+            leader: context.config.node_id_hashed,
+            participants: Some(self.nodes),
+        })
     }
 }
 

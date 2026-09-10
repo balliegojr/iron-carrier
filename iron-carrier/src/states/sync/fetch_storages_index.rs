@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     Context,
     node_id::NodeId,
     state_machine::{Result, State, StateMachineError},
-    storage::{self, Storage},
+    storage::Storage,
     transaction_log::SyncStatus,
 };
 
@@ -15,23 +15,25 @@ use super::events::{QueryStorageIndex, StorageIndexStatus};
 #[derive(Debug)]
 pub struct FetchStorageIndex {
     storage_name: String,
+    nodes: HashSet<NodeId>,
 }
 impl FetchStorageIndex {
-    pub fn new(storage_name: String) -> Self {
-        Self { storage_name }
+    pub fn new(storage_name: String, nodes: HashSet<NodeId>) -> Self {
+        Self {
+            storage_name,
+            nodes,
+        }
     }
 
-    async fn get_storage_from_nodes(
-        &self,
-        context: &Context,
-        storage: &Storage,
-    ) -> Result<HashMap<NodeId, Storage>> {
+    async fn get_storage_from_nodes(&self, context: &Context) -> Result<HashMap<NodeId, Storage>> {
         let peer_storages = context
             .rpc
-            .broadcast(QueryStorageIndex {
-                name: self.storage_name.to_string(),
-                hash: storage.hash,
-            })
+            .multi_call(
+                QueryStorageIndex {
+                    name: self.storage_name.to_string(),
+                },
+                self.nodes.clone(),
+            )
             .result()
             .await?
             .replies();
@@ -48,7 +50,6 @@ impl FetchStorageIndex {
 
                 match node_storage.storage_index {
                     StorageIndexStatus::StorageMissing => None,
-                    StorageIndexStatus::StorageInSync => Some((node, storage.clone())),
                     StorageIndexStatus::SyncNecessary(storage) => Some((node, storage)),
                 }
             })
@@ -60,15 +61,22 @@ impl State for FetchStorageIndex {
     type Output = HashMap<NodeId, Storage>;
 
     async fn execute(self, context: &Context) -> Result<Self::Output> {
-        let storage = storage::build(context, &self.storage_name).await?;
-
-        let mut peers_storages = self.get_storage_from_nodes(context, &storage).await?;
-        if peers_storages.is_empty() {
-            log::trace!("Storage already in sync with all peers");
+        let storages = self.get_storage_from_nodes(context).await?;
+        if storages.is_empty() || storages.len() == 1 {
+            log::trace!("Not enough peers to sync storage {}", self.storage_name);
             Err(StateMachineError::Abort)?
         }
 
-        for node in peers_storages.keys() {
+        let storage_hash = storages.values().next().unwrap().hash;
+        if storages.values().all(|s| s.hash == storage_hash) {
+            log::trace!(
+                "Storage already in sync {} for all peers",
+                self.storage_name
+            );
+            Err(StateMachineError::Abort)?
+        }
+
+        for node in storages.keys() {
             let _ = context
                 .transaction_log
                 .save_sync_status(
@@ -79,14 +87,12 @@ impl State for FetchStorageIndex {
                 .await;
         }
 
-        peers_storages.insert(context.config.node_id_hashed, storage);
-
-        let peers: Vec<NodeId> = peers_storages.keys().copied().collect();
+        let peers: Vec<NodeId> = storages.keys().copied().collect();
         log::trace!(
             "Storage {0} to be synchronized with {peers:?}",
             self.storage_name
         );
 
-        Ok(peers_storages)
+        Ok(storages)
     }
 }

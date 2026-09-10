@@ -18,7 +18,6 @@ pub struct ListStorageNamesReply(pub HashSet<String>);
 #[protocol(response = StorageIndex)]
 pub struct QueryStorageIndex {
     pub name: String,
-    pub hash: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Protocol)]
@@ -32,8 +31,6 @@ pub struct StorageIndex {
 pub enum StorageIndexStatus {
     /// Queried storage does not exist in the node, no sync will be done
     StorageMissing,
-    /// Storage is in sync with the leader, further sync may be necessary
-    StorageInSync,
     /// Storage is not in sync with leader, sync is necessary
     SyncNecessary(Storage),
 }

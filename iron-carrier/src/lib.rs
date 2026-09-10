@@ -48,7 +48,7 @@ pub async fn run_full_sync(
     states::DiscoverPeers::default()
         .and_then(states::ConnectAllPeers::new)
         .and_then(states::Consensus::new)
-        .and_then(|leader_id| SetSyncRole::new(leader_id, Default::default()))
+        .and_then(|consensus_result| SetSyncRole::new(consensus_result, Default::default()))
         .execute(&context)
         .await?;
 

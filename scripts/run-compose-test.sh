@@ -8,6 +8,10 @@ COMPARE="$SCRIPT_DIR/compare-nodes.sh"
 
 [ -d "$COMPOSE_DIR" ] || { echo "Test directory not found: $COMPOSE_DIR"; exit 1; }
 
+# A test whose nodes are not expected to fully converge (e.g. divergent storage
+# configs) can ship its own comparison script.
+[ -x "$COMPOSE_DIR/compare.sh" ] && COMPARE="$COMPOSE_DIR/compare.sh"
+
 cd "$COMPOSE_DIR"
 
 LOGFILE=$(mktemp /tmp/iron-carrier-test.XXXXXX)

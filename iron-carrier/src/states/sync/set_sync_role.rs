@@ -1,6 +1,6 @@
 use crate::{
-    node_id::NodeId,
     state_machine::{Result, State},
+    states::consensus::ConsensusResult,
     sync_options::SyncOptions,
 };
 
@@ -8,14 +8,14 @@ use super::{follower::Follower, leader::Leader};
 
 #[derive(Debug)]
 pub struct SetSyncRole {
-    leader_node_id: NodeId,
+    consensus_result: ConsensusResult,
     sync_options: Option<SyncOptions>,
 }
 
 impl SetSyncRole {
-    pub fn new(leader_node_id: NodeId, sync_options: Option<SyncOptions>) -> Self {
+    pub fn new(consensus_result: ConsensusResult, sync_options: Option<SyncOptions>) -> Self {
         Self {
-            leader_node_id,
+            consensus_result,
             sync_options,
         }
     }
@@ -25,10 +25,17 @@ impl State for SetSyncRole {
     type Output = ();
 
     async fn execute(self, context: &crate::Context) -> Result<Self::Output> {
-        if self.leader_node_id == context.config.node_id_hashed {
-            (Leader::sync(self.sync_options)).execute(context).await
+        if self.consensus_result.leader == context.config.node_id_hashed {
+            (Leader::sync(
+                self.sync_options,
+                self.consensus_result.participants.unwrap_or_default(),
+            ))
+            .execute(context)
+            .await
         } else {
-            Follower::new(self.leader_node_id).execute(context).await
+            Follower::new(self.consensus_result.leader)
+                .execute(context)
+                .await
         }
     }
 }

@@ -36,6 +36,12 @@ pub struct Consensus {
     participants: HashSet<NodeId>,
 }
 
+#[derive(Debug)]
+pub struct ConsensusResult {
+    pub leader: NodeId,
+    pub participants: Option<HashSet<NodeId>>,
+}
+
 impl Consensus {
     pub fn new(participants: HashSet<NodeId>) -> Self {
         Self {
@@ -54,7 +60,7 @@ impl Display for Consensus {
 type MaybeFuture<T> = Option<std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>>;
 
 impl State for Consensus {
-    type Output = NodeId;
+    type Output = ConsensusResult;
     async fn execute(mut self, context: &Context) -> Result<Self::Output> {
         // This election process repeats until a candidate becomes the leader
         //
@@ -99,7 +105,7 @@ impl State for Consensus {
         ));
 
         let mut term = 0u32;
-        let leader_id = loop {
+        let result = loop {
             tokio::select! {
                 _participant_nodes = async { init_fut.as_mut().unwrap().await }, if init_fut.is_some() => {
                     init_fut = None;
@@ -136,12 +142,12 @@ impl State for Consensus {
                             if replies.iter().all(|v| v.data().map(|v| v.vote).unwrap_or_default()) {
                                 log::debug!("Node wins election");
                                 self.election_state = NodeState::Leader;
-                                let nodes = replies.into_iter().map(|r| r.node_id()).collect();
-                                context.rpc.multi_call(ConsensusReached, nodes)
+                                let nodes: HashSet<NodeId> = replies.into_iter().map(|r| r.node_id()).collect();
+                                context.rpc.multi_call(ConsensusReached, nodes.clone())
                                     .timeout(Duration::from_secs(60))
                                     .ack().await?;
 
-                                break context.config.node_id_hashed
+                                break ConsensusResult { leader: context.config.node_id_hashed, participants: Some(nodes) }
                             }
                         }
                         Err(err) => {
@@ -170,7 +176,7 @@ impl State for Consensus {
                         ConsensusReached::MESSAGE_TYPE => {
                             let leader = request.node_id();
                             request.into_event::<ConsensusReached>().ack().await?;
-                            break leader;
+                            break ConsensusResult { leader, participants: None };
                         }
                         StartConsensus::MESSAGE_TYPE => {
                             let _ = request.into_event::<StartConsensus>().ack().await;
@@ -181,7 +187,7 @@ impl State for Consensus {
             }
         };
 
-        Ok(leader_id)
+        Ok(result)
     }
 }
 
@@ -235,8 +241,8 @@ mod tests {
         let r_two = r_two??;
         let r_three = r_three??;
 
-        assert_eq!(r_one, r_two);
-        assert_eq!(r_one, r_three);
+        assert_eq!(r_one.leader, r_two.leader);
+        assert_eq!(r_one.leader, r_three.leader);
 
         Ok(())
     }

@@ -147,13 +147,7 @@ async fn process_query_index_request(
 ) -> anyhow::Result<()> {
     let query = request.data()?;
     let storage_index = match crate::storage::build(context, &query.name).await {
-        Ok(storage) => {
-            if storage.hash != query.hash {
-                StorageIndexStatus::SyncNecessary(storage)
-            } else {
-                StorageIndexStatus::StorageInSync
-            }
-        }
+        Ok(storage) => StorageIndexStatus::SyncNecessary(storage),
         Err(err) => {
             log::error!("There was an error reading the storage: {err}");
             StorageIndexStatus::StorageMissing
