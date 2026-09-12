@@ -25,10 +25,12 @@ impl RelativePathBuf {
         self.components.is_empty()
     }
 
-    pub fn new(path_config: &PathConfig, mut path: PathBuf) -> anyhow::Result<Self> {
-        if !path.has_root() {
-            path = path.canonicalize()?;
-        }
+    pub fn new(path_config: &PathConfig, path: PathBuf) -> anyhow::Result<Self> {
+        let path = if path.has_root() {
+            canonicalize_partial(&path)?
+        } else {
+            path.canonicalize()?
+        };
 
         let inner = path.strip_prefix(&path_config.path.canonicalize()?)?;
 
@@ -92,6 +94,36 @@ impl RelativePathBuf {
         }
 
         true // all components match
+    }
+}
+
+/// Canonicalizes `path`, resolving symlinks (e.g. `/tmp` -> `/private/tmp` on
+/// macOS) even when `path` itself does not exist yet, by canonicalizing the
+/// nearest existing ancestor and re-appending the missing tail components.
+fn canonicalize_partial(path: &Path) -> anyhow::Result<PathBuf> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Ok(canonical);
+    }
+
+    let mut tail = Vec::new();
+    let mut current = path;
+
+    loop {
+        tail.push(
+            current
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("failed to canonicalize path: {path:?}"))?,
+        );
+
+        current = current
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("failed to canonicalize path: {path:?}"))?;
+
+        if let Ok(canonical_ancestor) = current.canonicalize() {
+            let mut result = canonical_ancestor;
+            result.extend(tail.into_iter().rev());
+            return Ok(result);
+        }
     }
 }
 
@@ -279,6 +311,41 @@ mod tests {
             path1.as_path().hash(),
             path2.as_path().hash(),
             "Different paths should have different hashes"
+        );
+    }
+
+    #[test]
+    fn test_new_resolves_symlinked_root_for_nonexistent_target() {
+        // Mirrors macOS, where `/tmp` is itself a symlink (to `/private/tmp`):
+        // the storage root resolves to a different canonical path than the
+        // literal prefix of an absolute target path that doesn't exist yet.
+        let base = std::env::temp_dir().join(format!(
+            "iron_carrier_test_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let real_dir = base.join("real");
+        let link_dir = base.join("link");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&real_dir, &link_dir).unwrap();
+
+        let path_config = PathConfig {
+            path: link_dir.clone(),
+            ..Default::default()
+        };
+        let target = link_dir.join("file_that_does_not_exist_yet");
+
+        let result = RelativePathBuf::new(&path_config, target);
+
+        std::fs::remove_dir_all(&base).unwrap();
+
+        let relative = result.expect("should resolve symlinked root path");
+        assert_eq!(
+            relative.build_path(),
+            PathBuf::from("file_that_does_not_exist_yet")
         );
     }
 
