@@ -11,8 +11,8 @@ my_storage = "/path/to/my_storage"
 some_other_storage = "/some/other/path"
 ```
 
-Save the configuration file in the default location **$HOME/.config/iron-carrier/config.toml** or use **--config** flag to specify a path.  
-With the config file set up, you just need to run the binary. It is possible to use **--daemon** to keep the binary running.
+Save the configuration file in the default location **$HOME/.config/iron-carrier/config.toml** or pass the path as the first argument to the binary.  
+With the config file set up, you just need to run the binary. It is possible to use **--daemon** (or **-d**) to keep the binary running.
 
 Directories will be synchronized by the name given to them, **my_storage** and **some_other_storage** in the example above.
 
@@ -22,15 +22,17 @@ always located at the root of the storage
 
 
 # Configuration File
-These are all the options accepted by the configuration file, with the default values
+These are all the options accepted by the configuration file. Values shown are the defaults, except where noted otherwise.
 
 ```toml
-# Specify the id for this machine, must be unique in the group
-node_id = "my_computer_name"
+# Specify the id for this machine, must be unique in the group.
+# If omitted (or empty), an id is auto-generated from the machine's hostname.
+# node_id = "my_computer_name"
 
 # Logical group to limit which nodes talk with each other.
-# Each node will only synchronize within the same group
-group = "my_group"
+# Each node will only synchronize within the same group.
+# There is no default group.
+# group = "my_group"
 
 # Port to list to connections
 port = 25230
@@ -49,8 +51,8 @@ enable_file_watcher = true
 # This is usefull to avoid too frequent synchronizations when editing a file
 delay_watcher_events = 4
 
-# Cron schedule to execute a full sync
-schedule_sync = "0 0 0 0 0"
+# Cron schedule to execute a full sync. There is no default schedule (disabled).
+# schedule_sync = "0 0 0 0 0"
 
 # Enable service discovery in the same network (mDNS queries on 5353/UDP)
 enable_service_discovery = true
@@ -64,20 +66,17 @@ encryption = true
 # It is also possible to use a pre defined key that will be used to construct the final encryption key
 # encryption = "some super safe key"
 
-# Maximum number of outgoing transfers
-max_parallel_sending = 4
-
-# Maximum number of incoming transfers
-max_parallel_receiving = 4
+# Maximum number of simultaneous file transfers (incoming and outgoing combined)
+max_parallel_transfers = 5
 
 # List of storages to synchronize
 [storages]
 # Simple path format
-"my storage" = "path/to/directory"
+my_storage = "path/to/directory"
 
 # Advanced configuration
-"my storage" = { 
-  path = "path/to/directory", 
+some_other_storage = { 
+  path = "path/to/other/directory", 
 
   # Override the default config
   enable_watcher = true,
