@@ -1,0 +1,7 @@
+group = "docker-test"
+encryption = false
+log_path = "./iron-carrier.db"
+delay_watcher_events=1
+
+[storages]
+scripts = "/data"

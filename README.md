@@ -1,97 +1,136 @@
 # Iron Carrier
 
-A tool to synchronize files in between computers on a peer to peer manner, written in Rust
-This is not production ready, it is intended for personal use and it is NOT TESTED YET
-
-# How it works
-Synchronization happens without any server or orchestrator, files never leave the local network.
-The communication is NOT ENCRYPTED (yet), so it should be used only when connected to a trusted network.  
-
-Since there is no server or orchestrator, the service need to be running on both machines at the same time to be able to synchronize. 
-Every time the service starts, it will attempt to carry a full synchronization with every other available peer. After the full synchronization, if `enable_file_watcher = true`, the service will watch every listed folder for file changes and propagate them in [near] real time.
-
-The full process has the following steps:
-1. For every monitored folder (internally called as `storage`), list every file and calculate a hash to represent the storage state, only the file `path`, `size` and `modification or deleted` information are used to calculate this hash.  
-2. Query the same information from every other available peer.  
-3. If there are storages with different hashes, we proceed for every storage
-4. Build an index with all the files for this storage and request the same information from the other peers with divergent storage hash.  
-5. Build a consolidated index containing every file from all the indexes.
-6. For every file, decide what to do based on the file attributes, considering the most recent one. Only 2 actions can take place:
-  1. Delete the file (local or remote) 
-  2. Transfer an existing file (by requesting or propagating to other peers)
-7. Repeat from step `3` until there are no storages left
-8. Go to step `1`, there should be no storages with different hashes this time
-
-## Handling file transfer
-When sending or requesting a file, the content is divided in chunks and an index with the hash of every chunk is exchanged with the destination peer, then the peer can do the same process and compare both indexes and send a reply listing only the chunks that are divergent and need to be synchronized (this process only happens when the same file exist on both peers), then the initial peer can transfer only the chunks that are necessary. This process is similar to what `rsync` does, but `rsync` uses an algorithm called [rolling checksum](https://rsync.samba.org/tech_report/node3.html) which is more advanced.  
-This means that, if the file content shifts (by prepending or deleting at the begging of the file), the whole file will be synchronized again, if the changes is in place or appended to the end of the file, only a small chunk will be transferred.
-
-## Handling deleted files and failed writes
-This system uses a log to keep track of the actions taken by it, or while the files are being watched. When a file is deleted or moved, the event is appended to a log before being propagated to other peers. When the full synchronization takes place, the entries for deleted files are read from the log and appended to the file index, this way deleted files are not recreated on the next synchronization, otherwise a peer would not now that if the other peer never had a file or if the file was deleted.  
-
-The same log keeps track of file writes, with two events, one when the transfer starts and one when transfer finishes successfully. This prevents propagation of failed writes for the next full synchronization by removing the partially written file from the index and requesting it again.  
-
-The caveat of using a log file instead a database, is that if the service is stopped, there is no way to know what changes took place. Consider the following scenario, there are two peers A and B, both have the same file already synchronized. The service running on peer A is manually stopped and after that the file is deleted or moved. When the service is started again on peer A, there is no record that the file ever existed in the original path, so peer B will send the file to peer A. This means that deleted files will be recreated and moved files will be duplicated if the change takes place when the service is not running.  
-
+Peer to Peer file synchronization, written in Rust.  
 
 # How to use
 
-Each computer needs to have a daemon running and the settings in the configuration file.  
-Default location of the configuration file is **~/.config/iron_carrier** but this can be override
-with the **--config** flag.  
+The minimum necessary configuration is the list of directories to be synchronized:
+```toml
+[storages]
+my_storage = "/path/to/my_storage" 
+some_other_storage = "/some/other/path"
+```
 
-The minimum configuration file consists of a map of folders to be in sync in those computers.  
-Each folder is aliased in the configuration file, so the folder structure can be different in different computers
+Save the configuration file in the default location **$HOME/.config/iron-carrier/config.toml** or pass the path as the first argument to the binary.  
+With the config file set up, you just need to run the binary. It is possible to use **--daemon** (or **-d**) to keep the binary running.
 
-## Group of nodes
-It is possible to provide a `group` in the config file. Each node will only communicate with
-another node in the same group. 
+Directories will be synchronized by the name given to them, **my_storage** and **some_other_storage** in the example above.
 
 ## Ignoring files
 Each root folder can have a **.ignore** file with glob patterns to ignore files, the file must be
-always located at the root.  
-This file is **NOT** synchronized between peers, you need to write the file manually for every peer
-you want to synchronize
+always located at the root of the storage
 
 
-## Configuration File
+# Configuration File
+These are all the options accepted by the configuration file. Values shown are the defaults, except where noted otherwise.
+
 ```toml
-# 10 character long unique id for this node
-node_id = "my_node_id"
+# Specify the id for this machine, must be unique in the group.
+# If omitted (or empty), an id is auto-generated from the machine's hostname.
+# node_id = "my_computer_name"
 
-# 20 character long group name
-group = "sync_group"
+# Logical group to limit which nodes talk with each other.
+# Each node will only synchronize within the same group.
+# There is no default group.
+# group = "my_group"
 
-# listening port, defaults to 25230
-port = 25230  
+# Port to list to connections
+port = 25230
 
-# listen to events in real time, defaults to true
+# IP address to bind to
+bind = "0.0.0.0"
+
+# Optional list of nodes to connect to.
+# Only necessary if service discovery is not enabled
+peers = ["192.168.1.10:25230"]
+
+# Enable file watcher events when running daemon mode
 enable_file_watcher = true
 
-# time to delay watcher events, in seconds, defaults to 10
-# useful to avoid sending the same file a lot of times
-delay_watcher_events = 10
+# When a file change is detected, wait for # seconds to trigger the synchronization
+# This is usefull to avoid too frequent synchronizations when editing a file
+delay_watcher_events = 4
 
+# Cron schedule to execute a full sync. There is no default schedule (disabled).
+# schedule_sync = "0 0 0 0 0"
 
-# Service discovery is active by default, it is possible to disable it and specify a list of  peers
+# Enable service discovery in the same network (mDNS queries on 5353/UDP)
 enable_service_discovery = true
 
-# Path location
-log_path = "~/.iron_carrier/iron_carrier.log"
+# Override the changes log path
+log_path = "$HOME/.config/iron-carrier/iron-carrier.db"
 
-# Optional list of peers to sync
-peers = [
-    "otherpeer:8091"
-]
+# Key used for network encryption 
+encryption = true
 
-# Paths to synchronize
-[paths]
-my_docs = "/home/my_user/Documents"
-some_pictures = "/home/my_user/Pictures"
+# It is also possible to use a pre defined key that will be used to construct the final encryption key
+# encryption = "some super safe key"
+
+# Maximum number of simultaneous file transfers (incoming and outgoing combined)
+max_parallel_transfers = 5
+
+# List of storages to synchronize
+[storages]
+# Simple path format
+my_storage = "path/to/directory"
+
+# Advanced configuration
+some_other_storage = { 
+  path = "path/to/other/directory", 
+
+  # Override the default config
+  enable_watcher = true,
+}
 ```
 
+# Philosophy
 
-# Motivation
-I have decided to implement this project as a way to learn Rust. I strongly believe the best way to learn a programming language is to use it in a real life scenario  
-Rust have features that look very simple to understand, but are actually very complex, they are even harder to understand if you come from high level languages, like C# and JS.   
+I believe well written software should run well with low resources, like a raspberry pi (the first version).
+
+I also have a thing for distributed systems.
+
+With that in mind, the design decisions and requirements for this software are:
+- Minimum resource usage.
+- No Servers. 
+
+These two design decisions impose limits on what this software can do, or at least how it does.  
+The synchronization process is peer to peer, whenever two or more nodes need to synchronize, a leader election protocol is used to decide who leads that session.
+Each session will, potentially, have a different leader.
+
+This allows any number of nodes to participate in the synchronization, and also to have a mixed set of "servers" (processes running as daemons) and ad-hoc nodes.
+
+However, this also limits how and which changes are tracked, since the process may not be running when a file change happens. 
+For processes running in daemon mode, with file watcher enabled, it is possible to track when a file is deleted, renamed or moved. This is done using a log inside a sqlite file.
+
+Otherwise, the only information available is the current state of the file system. Which means, a file deleted or moved when the daemon is not running, will be recreated in the next sync.
+
+## Synchronization process
+
+To minimize resource usage, the process is done per configured storage, one at time.
+
+The first step is to build an index with the current state of the file system across all nodes. The index contains the relative file path, size and timestamps. Nodes in daemon mode will also include deleted files, and moved files with current and previous names.
+
+At this moment, a shallow diff is done, whithout looking at the file contents. If timestamps or size diverge on different nodes, the most recent change will be propagated to the other nodes. If the most recent change for a file is a deletion or move event, that change will be propagated to other nodes.
+
+Now it is time to send file contents to other nodes.  
+
+- If it is a new file, the node that has the file will open the file in reading mode and send the file in chunks simultaneously to all the nodes that need it.
+- If it is an existing file, each node will build an index of the file, by calculating a hash of every non overlaping chunk, so only the divergent chunks are exchanged between the nodes.
+
+## Multiple users in the same network
+Groups are useful when more than one user have iron carrier running in the same network with service discovery enabled.  
+A unique group name will prevent from trying to synchronize with different users.
+
+It is also possible to disable service discovery and use the **peers** configuration to list the nodes to connect to.
+
+## Network encryption
+This software is intended to be used in trusted networks, in machines with low resources, for this reason encryption can be disabled.
+If privacy is a concern, encryption can be enabled by setting the **encryption** property to encrypt all network communication.
+
+The protocol used for encryption is **XChaCha20Poly1305**.
+
+I am not a security expert, this software is not audited, if security is a concern or if you suspect the presence of malicious actors in the network,  
+do not use this software.
+
+If you are a security expert and know of ways this software can be improved, please contact me or open a discussion in github.
 

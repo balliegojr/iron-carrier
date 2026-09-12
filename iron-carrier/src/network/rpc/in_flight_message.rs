@@ -1,0 +1,86 @@
+use std::collections::HashSet;
+use tokio::sync::mpsc::Sender;
+
+use crate::{
+    NodeId,
+    network::rpc::{deadline::Deadline, network_message::NetworkMessage},
+};
+
+/// Represents a message that is waiting for replies of one or more nodes.
+pub struct InFlightMessage {
+    id: u16,
+    nodes: HashSet<NodeId>,
+    reply_channel: Sender<ReplyType>,
+    deadline: Deadline,
+}
+
+impl InFlightMessage {
+    pub fn new(
+        id: u16,
+        nodes: HashSet<NodeId>,
+        reply_channel: Sender<ReplyType>,
+        deadline: Deadline,
+    ) -> Self {
+        Self {
+            id,
+            nodes,
+            reply_channel,
+            deadline,
+        }
+    }
+
+    pub async fn process_reply(
+        &mut self,
+        node_id: NodeId,
+        reply: super::network_message::NetworkMessage,
+    ) -> anyhow::Result<()> {
+        if self.nodes.remove(&node_id) {
+            log::trace!("Message {} received reply from {node_id}", self.id);
+            if reply.is_cancel() {
+                self.reply_channel.send(ReplyType::Cancel(node_id)).await?;
+            } else {
+                self.reply_channel
+                    .send(ReplyType::Message(reply, node_id))
+                    .await?;
+            }
+        } else {
+            log::error!(
+                "Message {} received reply from unexpected node {node_id}",
+                self.id
+            );
+        }
+
+        Ok(())
+    }
+
+    pub async fn send_timeout(self) -> anyhow::Result<()> {
+        log::trace!("Message {} timed out", self.id);
+        self.reply_channel
+            .send(ReplyType::Timeout(self.nodes))
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
+    pub fn received_all_replies(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    pub fn deadline(&self) -> Deadline {
+        self.deadline
+    }
+
+    pub fn set_deadline(&mut self, deadline: Deadline) {
+        self.deadline = deadline;
+    }
+
+    pub fn id(&self) -> u16 {
+        self.id
+    }
+}
+
+#[derive(Debug)]
+pub enum ReplyType {
+    Message(NetworkMessage, NodeId),
+    Cancel(NodeId),
+    Timeout(HashSet<NodeId>),
+}

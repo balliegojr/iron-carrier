@@ -1,0 +1,3 @@
+shared/file_a.txt
+shared/subdir/file_b.dat
+shared/subdir/file_c.bin
