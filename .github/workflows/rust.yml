@@ -33,6 +33,11 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y podman podman-compose
+    - name: Start Podman Socket
+      run: |
+        systemctl --user enable --now podman.socket || podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock &
+        # Give the socket a moment to initialize
+        sleep 2
     - name: Build integration image
       run: podman build -t iron-carrier .
     - name: Run integration tests
