@@ -234,7 +234,6 @@ async fn process_rpc_call(
     net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 ) {
     if message.is_reply() {
-        log::debug!("message {:?} is reply", &message);
         process_reply(message, node_id, state).await;
         return;
     }
