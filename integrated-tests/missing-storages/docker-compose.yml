@@ -9,7 +9,7 @@ services:
     volumes:
       - ./config-node1.toml:/config/config.toml:ro
       - ../../scripts/gen-test-files.sh:/scripts/gen-test-files.sh:ro
-    entrypoint: sh -c '/scripts/gen-test-files.sh node1 /data/alpha && /scripts/gen-test-files.sh node1 /data/bravo && iron-carrier -vvvd /config/config.toml'
+    entrypoint: sh -c '/scripts/gen-test-files.sh node1 /data/alpha && /scripts/gen-test-files.sh node1 /data/bravo && iron-carrier -vvd /config/config.toml'
 
   node2:
     image: localhost/iron-carrier
@@ -21,7 +21,7 @@ services:
     volumes:
       - ./config-node2.toml:/config/config.toml:ro
       - ../../scripts/gen-test-files.sh:/scripts/gen-test-files.sh:ro
-    entrypoint: sh -c '/scripts/gen-test-files.sh node2 /data/alpha && /scripts/gen-test-files.sh node2 /data/charlie && iron-carrier -vvvd /config/config.toml'
+    entrypoint: sh -c '/scripts/gen-test-files.sh node2 /data/alpha && /scripts/gen-test-files.sh node2 /data/charlie && iron-carrier -vvd /config/config.toml'
 
   node3:
     image: localhost/iron-carrier
@@ -33,7 +33,7 @@ services:
     volumes:
       - ./config-node3.toml:/config/config.toml:ro
       - ../../scripts/gen-test-files.sh:/scripts/gen-test-files.sh:ro
-    entrypoint: sh -c '/scripts/gen-test-files.sh node3 /data/bravo && /scripts/gen-test-files.sh node3 /data/charlie && sleep 1 && iron-carrier -vvv /config/config.toml && echo "test completed" && sleep infinity'
+    entrypoint: sh -c '/scripts/gen-test-files.sh node3 /data/bravo && /scripts/gen-test-files.sh node3 /data/charlie && sleep 1 && iron-carrier -vv /config/config.toml && echo "test completed" && sleep infinity'
 
 networks:
   sync-net:

@@ -1,7 +1,6 @@
 # Iron Carrier
 
 Peer to Peer file synchronization, written in Rust.  
-This is not production ready, it is intended for personal use and it is NOT TESTED YET
 
 # How to use
 
@@ -87,15 +86,13 @@ max_parallel_receiving = 4
 
 # Philosophy
 
-I believe that good software should run on a toaster. 
-
-Ok, we can put 12 CPUS and 128 GB of ram in a toaster, but my point is, it should run on something like a raspberry, or any machine with low resources.
+I believe well written software should run well with low resources, like a raspberry pi (the first version).
 
 I also have a thing for distributed systems.
 
-With that in mind, the design decisions/requirements for this software are:
-- No Servers. 
+With that in mind, the design decisions and requirements for this software are:
 - Minimum resource usage.
+- No Servers. 
 
 These two design decisions impose limits on what this software can do, or at least how it does.  
 The synchronization process is peer to peer, whenever two or more nodes need to synchronize, a leader election protocol is used to decide who leads that session.
@@ -110,7 +107,7 @@ Otherwise, the only information available is the current state of the file syste
 
 ## Synchronization process
 
-To minimize resource usage, the process is done per storage, one at time.
+To minimize resource usage, the process is done per configured storage, one at time.
 
 The first step is to build an index with the current state of the file system across all nodes. The index contains the relative file path, size and timestamps. Nodes in daemon mode will also include deleted files, and moved files with current and previous names.
 
