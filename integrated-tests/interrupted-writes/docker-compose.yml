@@ -10,7 +10,7 @@ services:
       - ../encrypted-config.toml:/config/config.toml:ro
       - ../../scripts/gen-files-from-list.sh:/scripts/gen-files-from-list.sh:ro
       - ./interrupted-files.txt:/config/interrupted-files.txt:ro
-    entrypoint: sh -c '/scripts/gen-files-from-list.sh /data /config/interrupted-files.txt && iron-carrier -vvd /config/config.toml'
+    entrypoint: sh -c '/scripts/gen-files-from-list.sh /data /config/interrupted-files.txt && iron-carrier -vd /config/config.toml'
 
   node2:
     image: localhost/iron-carrier
@@ -23,7 +23,7 @@ services:
       - ../encrypted-config.toml:/config/config.toml:ro
       - ../../scripts/gen-files-from-list.sh:/scripts/gen-files-from-list.sh:ro
       - ./interrupted-files.txt:/config/interrupted-files.txt:ro
-    entrypoint: sh -c '/scripts/gen-files-from-list.sh /data /config/interrupted-files.txt && iron-carrier -vvd /config/config.toml'
+    entrypoint: sh -c '/scripts/gen-files-from-list.sh /data /config/interrupted-files.txt && iron-carrier -vd /config/config.toml'
 
   node3:
     image: localhost/iron-carrier
@@ -38,7 +38,7 @@ services:
       - ./seed-interrupted-writes-db.sh:/scripts/seed-interrupted-writes-db.sh:ro
       - ../../iron-carrier/src/transaction_log/database_setup.sql:/scripts/database_setup.sql:ro
       - ./interrupted-files.txt:/config/interrupted-files.txt:ro
-    entrypoint: sh -c '/scripts/gen-files-from-list.sh /data /config/interrupted-files.txt new && /scripts/seed-interrupted-writes-db.sh /app/iron-carrier.db /scripts/database_setup.sql /config/interrupted-files.txt && sleep 1 && iron-carrier -vv /config/config.toml && echo "test completed" && sleep infinity'
+    entrypoint: sh -c '/scripts/gen-files-from-list.sh /data /config/interrupted-files.txt new && /scripts/seed-interrupted-writes-db.sh /app/iron-carrier.db /scripts/database_setup.sql /config/interrupted-files.txt && sleep 1 && iron-carrier -v /config/config.toml && echo "test completed" && sleep infinity'
 
 networks:
   sync-net:

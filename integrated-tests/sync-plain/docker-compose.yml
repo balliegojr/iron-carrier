@@ -9,7 +9,7 @@ services:
     volumes:
       - ../plain-config.toml:/config/config.toml:ro
       - ../../scripts/gen-test-files.sh:/scripts/gen-test-files.sh:ro
-    entrypoint: sh -c '/scripts/gen-test-files.sh node1 /data && iron-carrier -vvd /config/config.toml'
+    entrypoint: sh -c '/scripts/gen-test-files.sh node1 /data && iron-carrier -vd /config/config.toml'
 
   node2:
     image: localhost/iron-carrier
@@ -21,7 +21,7 @@ services:
     volumes:
       - ../plain-config.toml:/config/config.toml:ro
       - ../../scripts/gen-test-files.sh:/scripts/gen-test-files.sh:ro
-    entrypoint: sh -c "/scripts/gen-test-files.sh node2 /data && iron-carrier -vvd /config/config.toml"
+    entrypoint: sh -c "/scripts/gen-test-files.sh node2 /data && iron-carrier -vd /config/config.toml"
 
   node3:
     image: localhost/iron-carrier
@@ -33,7 +33,7 @@ services:
     volumes:
       - ../plain-config.toml:/config/config.toml:ro
       - ../../scripts/gen-test-files.sh:/scripts/gen-test-files.sh:ro
-    entrypoint: sh -c "/scripts/gen-test-files.sh node3 /data && sleep 1 && iron-carrier -vv /config/config.toml && echo 'test completed' && sleep infinity"
+    entrypoint: sh -c "/scripts/gen-test-files.sh node3 /data && sleep 1 && iron-carrier -v /config/config.toml && echo 'test completed' && sleep infinity"
 
 networks:
   sync-net:
