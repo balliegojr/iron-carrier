@@ -192,11 +192,6 @@ impl NetworkMessage {
         self.new_with_flag(flags::REPLY | flags::PING)
     }
 
-    /// Creates a CANCEL NetworkMessage with `id`
-    pub fn cancel_message(&self) -> Self {
-        self.new_with_flag(flags::REPLY | flags::CANCEL)
-    }
-
     /// Creates a reply message with `id` and encoded `data`
     pub fn reply_message<T>(&self, data: T) -> anyhow::Result<Self>
     where

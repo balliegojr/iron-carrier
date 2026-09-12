@@ -1,9 +1,9 @@
-use std::{collections::HashSet, time::Duration};
+use std::collections::HashSet;
 use tokio::sync::mpsc::Sender;
 
-use super::Deadline;
 use crate::{
-    NodeId, constants::DEFAULT_NETWORK_TIMEOUT, network::rpc::network_message::NetworkMessage,
+    NodeId,
+    network::rpc::{deadline::Deadline, network_message::NetworkMessage},
 };
 
 /// Represents a message that is waiting for replies of one or more nodes.
@@ -19,13 +19,13 @@ impl InFlightMessage {
         id: u16,
         nodes: HashSet<NodeId>,
         reply_channel: Sender<ReplyType>,
-        timeout: Duration,
+        deadline: Deadline,
     ) -> Self {
         Self {
             id,
             nodes,
             reply_channel,
-            deadline: Deadline::new(timeout),
+            deadline,
         }
     }
 
@@ -34,9 +34,7 @@ impl InFlightMessage {
         node_id: NodeId,
         reply: super::network_message::NetworkMessage,
     ) -> anyhow::Result<()> {
-        if reply.is_ping() {
-            self.deadline.extend(DEFAULT_NETWORK_TIMEOUT);
-        } else if self.nodes.remove(&node_id) {
+        if self.nodes.remove(&node_id) {
             log::trace!("Message {} received reply from {node_id}", self.id);
             if reply.is_cancel() {
                 self.reply_channel.send(ReplyType::Cancel(node_id)).await?;
@@ -67,8 +65,16 @@ impl InFlightMessage {
         self.nodes.is_empty()
     }
 
-    pub fn is_expired(&self) -> bool {
-        self.deadline.is_expired()
+    pub fn deadline(&self) -> Deadline {
+        self.deadline
+    }
+
+    pub fn set_deadline(&mut self, deadline: Deadline) {
+        self.deadline = deadline;
+    }
+
+    pub fn id(&self) -> u16 {
+        self.id
     }
 }
 

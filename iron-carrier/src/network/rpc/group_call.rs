@@ -59,13 +59,13 @@ where
         let mut canceled_nodes = HashSet::new();
         while let Some(reply) = rx.recv().await {
             match reply {
-                super::message_waiting_reply::ReplyType::Message(reply, node_id) => {
+                super::in_flight_message::ReplyType::Message(reply, node_id) => {
                     replies.push(RPCReply::new(reply, node_id));
                 }
-                super::message_waiting_reply::ReplyType::Cancel(node_id) => {
+                super::in_flight_message::ReplyType::Cancel(node_id) => {
                     canceled_nodes.insert(node_id);
                 }
-                super::message_waiting_reply::ReplyType::Timeout(nodes) => {
+                super::in_flight_message::ReplyType::Timeout(nodes) => {
                     return Ok(GroupCallResponse::Partial(replies, nodes));
                 }
             }

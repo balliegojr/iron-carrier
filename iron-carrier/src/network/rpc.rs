@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque, hash_map::Entry},
     sync::Arc,
     time::Duration,
 };
@@ -15,7 +15,7 @@ use crate::node_id::NodeId;
 
 use self::{
     deadline::Deadline,
-    message_waiting_reply::{InFlightMessage, ReplyType},
+    in_flight_message::{InFlightMessage, ReplyType},
     network_event_decoder::NetWorkEventDecoder,
     network_message::NetworkMessage,
 };
@@ -28,7 +28,7 @@ use super::{
 mod call;
 mod deadline;
 mod group_call;
-mod message_waiting_reply;
+mod in_flight_message;
 mod network_event_decoder;
 mod network_message;
 mod rpc_handler;
@@ -81,9 +81,12 @@ pub fn rpc_service(id: NodeId) -> RPCHandler {
 
 struct RPCState {
     // Holds messages that arrived but didn't had any consumer ready to process it
-    dead_letter: HashMap<SubscriptionKey, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
-    inflight_requests: HashMap<u16, InFlightMessage>,
-
+    orphan_messages: HashMap<SubscriptionKey, VecDeque<(NodeId, NetworkMessage, Deadline)>>,
+    // messages that have been sent and are waiting  for replies
+    sent_messages: HashMap<u16, InFlightMessage>,
+    // messages expiration is handled in a separate collection, for performance
+    sent_messages_expiration: BTreeSet<(Deadline, u16)>,
+    // Current subscriptions
     subscriptions: HashMap<SubscriptionKey, (Sender<RPCMessage>, bool)>,
 
     connections: ConnectionStorage,
@@ -93,8 +96,9 @@ struct RPCState {
 impl RPCState {
     fn new(id: NodeId) -> Self {
         Self {
-            dead_letter: Default::default(),
-            inflight_requests: Default::default(),
+            orphan_messages: Default::default(),
+            sent_messages: Default::default(),
+            sent_messages_expiration: Default::default(),
             subscriptions: Default::default(),
             connections: Default::default(),
             id,
@@ -115,10 +119,13 @@ async fn rpc_loop(
     let mut cleanup = tokio::time::interval(Duration::from_secs(1));
 
     loop {
-        let has_cleanup = !(state.dead_letter.is_empty()
-            // && state.subscriptions.is_empty()
-            && state.inflight_requests.is_empty()
-            && state.connections.is_empty());
+        let has_cleanup = !(state.orphan_messages.is_empty() && state.connections.is_empty());
+
+        let next_expiration = state
+            .sent_messages_expiration
+            .iter()
+            .next()
+            .map(|(deadline, _id)| tokio::time::sleep_until(deadline.0));
 
         tokio::select! {
             biased;
@@ -147,7 +154,7 @@ async fn rpc_loop(
                         )
                         .await;
 
-                        send_deadletter_messages(&subscription_keys, tx, &mut state, &net_out_sender).await;
+                        send_orphan_messages(&subscription_keys, tx, &mut state, &net_out_sender).await;
                     }
                 }
             }
@@ -194,6 +201,9 @@ async fn rpc_loop(
             _ = cleanup.tick(), if has_cleanup => {
                 cleanup_resources(&mut state).await;
             }
+            _ = async { next_expiration.unwrap().await }, if next_expiration.is_some() => {
+                expired_messages(&mut state).await;
+            }
         }
     }
 
@@ -224,6 +234,7 @@ async fn process_rpc_call(
     net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 ) {
     if message.is_reply() {
+        log::debug!("message {:?} is reply", &message);
         process_reply(message, node_id, state).await;
         return;
     }
@@ -238,8 +249,9 @@ async fn process_rpc_call(
     if let Some(message) =
         try_message_consumers(state, net_out_sender, message, node_id, subscription_key).await
     {
+        log::trace!("failed to message consumers for message {:?}", message);
         state
-            .dead_letter
+            .orphan_messages
             .entry(subscription_key)
             .or_default()
             .push_back((
@@ -276,15 +288,30 @@ async fn try_message_consumers(
 }
 
 async fn process_reply(message: NetworkMessage, node_id: NodeId, state: &mut RPCState) {
-    match state.inflight_requests.entry(message.id()) {
+    match state.sent_messages.entry(message.id()) {
         Entry::Occupied(mut entry) => {
             let sent_request = entry.get_mut();
-            if let Err(err) = sent_request.process_reply(node_id, message).await {
-                log::error!("Failed to send reply {err}");
-            }
 
-            if sent_request.received_all_replies() {
-                entry.remove_entry();
+            if message.is_ping() {
+                state
+                    .sent_messages_expiration
+                    .remove(&(sent_request.deadline(), message.id()));
+                let new_deadline = sent_request.deadline().extend();
+                sent_request.set_deadline(new_deadline);
+                state
+                    .sent_messages_expiration
+                    .insert((new_deadline, message.id()));
+            } else {
+                if let Err(err) = sent_request.process_reply(node_id, message).await {
+                    log::error!("Failed to send reply {err}");
+                }
+
+                if sent_request.received_all_replies() {
+                    state
+                        .sent_messages_expiration
+                        .remove(&(sent_request.deadline(), sent_request.id()));
+                    entry.remove_entry();
+                }
             }
         }
         Entry::Vacant(_) => {
@@ -315,10 +342,14 @@ async fn send_outbound_message(
                 log::error!("{err}");
                 let _ = callback.send(ReplyType::Cancel(node_id)).await;
             } else {
-                state.inflight_requests.insert(
+                let deadline = Deadline::new(timeout);
+                state.sent_messages.insert(
                     message.id(),
-                    InFlightMessage::new(message.id(), [node_id].into(), callback, timeout),
+                    InFlightMessage::new(message.id(), [node_id].into(), callback, deadline),
                 );
+                state
+                    .sent_messages_expiration
+                    .insert((deadline, message.id()));
             }
         }
         OutboundNetworkMessageType::MultiNode(nodes, callback, timeout) => {
@@ -332,10 +363,14 @@ async fn send_outbound_message(
                 }
             }
 
-            state.inflight_requests.insert(
+            let deadline = Deadline::new(timeout);
+            state.sent_messages.insert(
                 message.id(),
-                InFlightMessage::new(message.id(), nodes_sent, callback, timeout),
+                InFlightMessage::new(message.id(), nodes_sent, callback, deadline),
             );
+            state
+                .sent_messages_expiration
+                .insert((deadline, message.id()));
         }
         OutboundNetworkMessageType::Broadcast(callback, timeout) => {
             let mut nodes = HashSet::new();
@@ -348,10 +383,14 @@ async fn send_outbound_message(
                 }
             }
 
-            state.inflight_requests.insert(
+            let deadline = Deadline::new(timeout);
+            state.sent_messages.insert(
                 message.id(),
-                InFlightMessage::new(message.id(), nodes, callback, timeout),
+                InFlightMessage::new(message.id(), nodes, callback, deadline),
             );
+            state
+                .sent_messages_expiration
+                .insert((deadline, message.id()));
         }
     }
 }
@@ -403,14 +442,14 @@ async fn add_new_subscription(
     }
 }
 
-async fn send_deadletter_messages(
+async fn send_orphan_messages(
     subscritions: &[SubscriptionKey],
     consumer: Sender<RPCMessage>,
     state: &mut RPCState,
     net_out_sender: &Sender<(NetworkMessage, OutboundNetworkMessageType)>,
 ) {
     for subscription_key in subscritions.iter() {
-        if let Entry::Occupied(mut entry) = state.dead_letter.entry(*subscription_key) {
+        if let Entry::Occupied(mut entry) = state.orphan_messages.entry(*subscription_key) {
             while let Some((node_id, message, deadline)) = entry.get_mut().pop_front() {
                 if let Err(err) = consumer
                     .send(RPCMessage::new(message, node_id, net_out_sender.clone()))
@@ -428,6 +467,19 @@ async fn send_deadletter_messages(
     }
 }
 
+async fn expired_messages(state: &mut RPCState) {
+    for (_deadline, id) in state
+        .sent_messages_expiration
+        .extract_if(.., |(deadline, _id)| deadline.is_expired())
+    {
+        if let Some(message) = state.sent_messages.remove(&id)
+            && let Err(err) = message.send_timeout().await
+        {
+            log::warn!("Failed to send timeout message {err}");
+        }
+    }
+}
+
 async fn cleanup_resources(state: &mut RPCState) {
     state.connections.remove_stale();
     let has_connections = !state.connections.is_empty();
@@ -436,16 +488,7 @@ async fn cleanup_resources(state: &mut RPCState) {
         !consumer.is_closed() && (*keep_alive || has_connections)
     });
 
-    for (_, expired_message) in state
-        .inflight_requests
-        .extract_if(|_, waiting| waiting.is_expired())
-    {
-        if let Err(err) = expired_message.send_timeout().await {
-            log::warn!("Failed to send timeout message {err}");
-        }
-    }
-
-    state.dead_letter.retain(|_, messages| {
+    state.orphan_messages.retain(|_, messages| {
         messages.retain(|(_, _, deadline)| !deadline.is_expired());
         !messages.is_empty()
     });
@@ -491,16 +534,32 @@ mod tests {
     };
 
     #[tokio::test]
+    pub async fn ensure_rpc_single_call_is_processed() -> anyhow::Result<()> {
+        let [zero, one] = crate::context::local_contexts().await;
+
+        ping_rpc(None, one);
+        assert!(zero.rpc.call(StartConsensus, 1.into()).ack().await.is_ok());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     pub async fn ensure_rpc_single_call_times_out() -> anyhow::Result<()> {
         let [zero, one] = crate::context::local_contexts().await;
 
-        ping_rpc(Duration::from_secs(1), one);
-
-        assert!(zero.rpc.call(StartConsensus, 1.into()).ack().await.is_ok());
+        ping_rpc(Some(Duration::from_millis(100)), one);
         assert!(
             zero.rpc
                 .call(StartConsensus, 1.into())
-                .timeout(Duration::from_millis(100))
+                .timeout(Duration::from_secs(1))
+                .ack()
+                .await
+                .is_ok()
+        );
+        assert!(
+            zero.rpc
+                .call(StartConsensus, 1.into())
+                .timeout(Duration::from_millis(10))
                 .ack()
                 .await
                 .is_err()
@@ -513,13 +572,13 @@ mod tests {
     pub async fn ensure_rpc_multi_call_times_out() -> anyhow::Result<()> {
         let [zero, one, two] = crate::context::local_contexts().await;
 
-        ping_rpc(Duration::from_millis(100), one);
-        ping_rpc(Duration::from_secs(3), two);
+        ping_rpc(None, one);
+        ping_rpc(Some(Duration::from_secs(3)), two);
 
         assert_eq!(
             zero.rpc
                 .multi_call(StartConsensus, [1.into()].into())
-                .timeout(Duration::from_secs(1))
+                .timeout(Duration::from_millis(100))
                 .ack()
                 .await?,
             HashSet::from([NodeId::from(1)])
@@ -528,7 +587,7 @@ mod tests {
         assert_eq!(
             zero.rpc
                 .multi_call(StartConsensus, [1.into(), 2.into()].into())
-                .timeout(Duration::from_secs(1))
+                .timeout(Duration::from_millis(100))
                 .ack()
                 .await?,
             HashSet::from([NodeId::from(1)])
@@ -537,7 +596,7 @@ mod tests {
         assert_eq!(
             zero.rpc
                 .multi_call(RequestVote { term: 1 }, [1.into()].into())
-                .timeout(Duration::from_secs(1))
+                .timeout(Duration::from_millis(100))
                 .result()
                 .await?
                 .replies()
@@ -548,7 +607,7 @@ mod tests {
         match zero
             .rpc
             .multi_call(RequestVote { term: 1 }, [1.into()].into())
-            .timeout(Duration::from_secs(1))
+            .timeout(Duration::from_millis(100))
             .result()
             .await?
         {
@@ -559,7 +618,7 @@ mod tests {
         match zero
             .rpc
             .multi_call(RequestVote { term: 1 }, [1.into(), 2.into()].into())
-            .timeout(Duration::from_secs(1))
+            .timeout(Duration::from_millis(100))
             .result()
             .await?
         {
@@ -577,13 +636,13 @@ mod tests {
     pub async fn ensure_rpc_broadcast_times_out() -> anyhow::Result<()> {
         let [zero, one, two] = crate::context::local_contexts().await;
 
-        ping_rpc(Duration::from_millis(100), one);
-        ping_rpc(Duration::from_secs(3), two);
+        ping_rpc(None, one);
+        ping_rpc(Some(Duration::from_secs(3)), two);
 
         assert_eq!(
             zero.rpc
                 .broadcast(StartConsensus)
-                .timeout(Duration::from_secs(1))
+                .timeout(Duration::from_millis(100))
                 .ack()
                 .await?,
             HashSet::from([NodeId::from(1)])
@@ -592,7 +651,7 @@ mod tests {
         match zero
             .rpc
             .broadcast(RequestVote { term: 1 })
-            .timeout(Duration::from_secs(1))
+            .timeout(Duration::from_millis(100))
             .result()
             .await?
         {
@@ -622,7 +681,7 @@ mod tests {
         });
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            // tokio::time::sleep(Duration::from_secs(1)).await;
             drop(one);
             drop(two);
         });
@@ -678,7 +737,7 @@ mod tests {
         Ok(())
     }
 
-    fn ping_rpc(wait_time: Duration, context: Context) {
+    fn ping_rpc(wait_time: Option<Duration>, context: Context) {
         tokio::spawn(async move {
             // Necessary to move the whole context, otherwise it gets dropped
             let context = context;
@@ -691,16 +750,21 @@ mod tests {
 
             while let Some(message) = sub.next().await {
                 tokio::spawn(async move {
-                    tokio::time::sleep(wait_time).await;
+                    if let Some(wait_time) = wait_time {
+                        tokio::time::sleep(wait_time).await;
+                    }
 
                     match message.message_type() {
                         Ok(MessageTypes::StartConsensus) => {
                             let event = message.into_event::<StartConsensus>();
-                            event.ack().await.unwrap();
+                            event.ack().await.expect("failed to ack message");
                         }
                         Ok(MessageTypes::RequestVote) => {
                             let event = message.into_event::<RequestVote>();
-                            event.reply(TermVote { vote: true }).await.unwrap();
+                            event
+                                .reply(TermVote { vote: true })
+                                .await
+                                .expect("failed to reply message");
                         }
                         _ => unreachable!(),
                     }

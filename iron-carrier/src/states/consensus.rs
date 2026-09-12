@@ -38,8 +38,7 @@ pub struct Consensus {
 
 #[derive(Debug)]
 pub struct ConsensusResult {
-    pub leader: NodeId,
-    pub participants: Option<HashSet<NodeId>>,
+    pub participants: HashSet<NodeId>,
 }
 
 impl Consensus {
@@ -60,7 +59,7 @@ impl Display for Consensus {
 type MaybeFuture<T> = Option<std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>>;
 
 impl State for Consensus {
-    type Output = ConsensusResult;
+    type Output = Option<ConsensusResult>;
     async fn execute(mut self, context: &Context) -> Result<Self::Output> {
         // This election process repeats until a candidate becomes the leader
         //
@@ -147,7 +146,7 @@ impl State for Consensus {
                                     .timeout(Duration::from_secs(60))
                                     .ack().await?;
 
-                                break ConsensusResult { leader: context.config.node_id_hashed, participants: Some(nodes) }
+                                break Some(ConsensusResult {  participants: nodes })
                             }
                         }
                         Err(err) => {
@@ -174,9 +173,9 @@ impl State for Consensus {
                             }
                         }
                         ConsensusReached::MESSAGE_TYPE => {
-                            let leader = request.node_id();
+                            log::info!("Node {} won election", request.node_id());
                             request.into_event::<ConsensusReached>().ack().await?;
-                            break ConsensusResult { leader, participants: None };
+                            break None;
                         }
                         StartConsensus::MESSAGE_TYPE => {
                             let _ = request.into_event::<StartConsensus>().ack().await;
@@ -229,7 +228,7 @@ mod tests {
                 async move { Consensus::new([n_two, n_three].into(),).execute(&one).await }
             ),
             tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 Consensus::new([n_one, n_three].into()).execute(&two).await
             }),
             tokio::spawn(
@@ -237,12 +236,11 @@ mod tests {
             ),
         );
 
-        let r_one = r_one??;
-        let r_two = r_two??;
-        let r_three = r_three??;
+        let results = [r_one??, r_two??, r_three??];
+        assert_eq!(2, results.iter().filter(|r| r.is_none()).count());
 
-        assert_eq!(r_one.leader, r_two.leader);
-        assert_eq!(r_one.leader, r_three.leader);
+        let leader = results.into_iter().flatten().next().unwrap();
+        assert_eq!(2, leader.participants.len());
 
         Ok(())
     }

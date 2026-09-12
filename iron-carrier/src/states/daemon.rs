@@ -56,16 +56,7 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
             MessageTypes::StartConsensus => {
                 Ok(DaemonEvent::SyncWithConsensus(request.into_event()))
             }
-            MessageTypes::Follow => {
-                let leader = request.node_id();
-                Ok(DaemonEvent::BecomeFollower(
-                    ConsensusResult {
-                        leader,
-                        participants: None,
-                    },
-                    request.into_event(),
-                ))
-            }
+            MessageTypes::Follow => Ok(DaemonEvent::BecomeFollower(request.into_event())),
             _ => unreachable!(),
         }
     }
@@ -87,7 +78,7 @@ async fn wait_event(context: &Context) -> Result<DaemonEvent> {
 enum DaemonEvent {
     SyncWithoutConsensus(SyncOptions),
     SyncWithConsensus(RPCEvent<StartConsensus>),
-    BecomeFollower(ConsensusResult, RPCEvent<Follow>),
+    BecomeFollower(RPCEvent<Follow>),
 }
 
 async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
@@ -97,7 +88,7 @@ async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
                 .and_then(ConnectAllPeers::new)
                 .and_then(|nodes| AckRequest { nodes, request })
                 .and_then(Consensus::new)
-                .and_then(|leader| SetSyncRole::new(leader, Default::default()))
+                .and_then(|consensus_result| SetSyncRole::new(consensus_result, Default::default()))
                 .execute(context)
                 .await
         }
@@ -105,16 +96,18 @@ async fn execute_event(context: &Context, event: DaemonEvent) -> Result<()> {
             DiscoverPeers::default()
                 .and_then(ConnectAllPeers::new)
                 .and_then(BypassConsensus::new)
-                .and_then(|leader_id| SetSyncRole::new(leader_id, Some(sync_options)))
+                .and_then(|consensus_result| {
+                    SetSyncRole::new(Some(consensus_result), Some(sync_options))
+                })
                 .execute(context)
                 .await
         }
 
-        DaemonEvent::BecomeFollower(consensus_result, request) => {
+        DaemonEvent::BecomeFollower(request) => {
             DiscoverPeers::default()
                 .and_then(ConnectAllPeers::new)
                 .and_then(|nodes| AckRequest { nodes, request })
-                .and_then(|_| SetSyncRole::new(consensus_result, Default::default()))
+                .and_then(|_| SetSyncRole::new(None, Default::default()))
                 .execute(context)
                 .await
         }
@@ -147,8 +140,7 @@ impl State for BypassConsensus {
             .await?;
 
         Ok(ConsensusResult {
-            leader: context.config.node_id_hashed,
-            participants: Some(self.nodes),
+            participants: self.nodes,
         })
     }
 }

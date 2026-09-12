@@ -8,12 +8,15 @@ use super::{follower::Follower, leader::Leader};
 
 #[derive(Debug)]
 pub struct SetSyncRole {
-    consensus_result: ConsensusResult,
+    consensus_result: Option<ConsensusResult>,
     sync_options: Option<SyncOptions>,
 }
 
 impl SetSyncRole {
-    pub fn new(consensus_result: ConsensusResult, sync_options: Option<SyncOptions>) -> Self {
+    pub fn new(
+        consensus_result: Option<ConsensusResult>,
+        sync_options: Option<SyncOptions>,
+    ) -> Self {
         Self {
             consensus_result,
             sync_options,
@@ -25,17 +28,12 @@ impl State for SetSyncRole {
     type Output = ();
 
     async fn execute(self, context: &crate::Context) -> Result<Self::Output> {
-        if self.consensus_result.leader == context.config.node_id_hashed {
-            (Leader::sync(
-                self.sync_options,
-                self.consensus_result.participants.unwrap_or_default(),
-            ))
-            .execute(context)
-            .await
-        } else {
-            Follower::new(self.consensus_result.leader)
+        if let Some(consensus_result) = self.consensus_result {
+            (Leader::sync(self.sync_options, consensus_result.participants))
                 .execute(context)
                 .await
+        } else {
+            Follower.execute(context).await
         }
     }
 }

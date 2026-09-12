@@ -320,7 +320,8 @@ mod tests {
 
     use crate::{
         context::local_contexts,
-        states::sync::follower::Follower,
+        protocol::Protocol,
+        states::sync::{events::SyncCompleted, follower::Follower},
         transaction_log::{append_deleted, append_failed_write, append_moved},
     };
 
@@ -599,22 +600,31 @@ mod tests {
         generate_file(&one, "file.txt", 9).await;
 
         let mut storages = create_storages([&leader, &one, &two]).await;
-        create_followers([two.clone()]);
+        create_followers([leader.clone(), two.clone()]);
 
-        let task = tokio::spawn(assert_no_event::<SendFileTo>(two.clone()));
-        let leader_task = tokio::spawn(assert_event(leader.clone(), |e: SendFileTo| {
-            assert_eq!(e.nodes, HashSet::from([two.config.node_id_hashed]));
-        }));
+        let task = tokio::spawn(assert_no_event::<SendFileTo>(one.clone()));
 
         build_send_actions(&leader, &mut storages)
             .await
             .expect("failed to process move actions");
 
-        drop(leader);
-        drop(one);
+        leader
+            .rpc
+            .multi_call(
+                SyncCompleted,
+                HashSet::from([
+                    leader.config.node_id_hashed,
+                    one.config.node_id_hashed,
+                    two.config.node_id_hashed,
+                ]),
+            )
+            .ack()
+            .await
+            .expect("failed to stop followers");
+
+        assert!(two.fs.exists(PathBuf::from("file.txt").as_path()).await);
 
         task.await?;
-        leader_task.await?;
 
         Ok(())
     }
@@ -699,11 +709,10 @@ mod tests {
     }
 
     fn create_followers<const N: usize>(contexts: [Context; N]) {
-        let leader = contexts[0].config.node_id_hashed;
         for context in contexts {
             tokio::spawn(async move {
                 let context = context;
-                let _ = Follower::new(leader).execute(&context).await;
+                let _ = Follower.execute(&context).await;
             });
         }
     }
@@ -732,12 +741,21 @@ mod tests {
     async fn assert_no_event<T: crate::protocol::Protocol + DeserializeOwned>(context: Context) {
         let mut events = context
             .rpc
-            .subscribe([T::MESSAGE_TYPE])
+            .subscribe([T::MESSAGE_TYPE, SyncCompleted::MESSAGE_TYPE])
             .await
             .expect("failed to subscribe");
 
-        if events.next().await.is_some() {
-            panic!("Receive event");
+        if let Some(event) = events.next().await {
+            if event.message_type().unwrap() == T::MESSAGE_TYPE {
+                panic!("received event");
+            }
+
+            match event.message_type().unwrap() {
+                SyncCompleted::MESSAGE_TYPE => {
+                    let _ = event.into_event::<SyncCompleted>().ack().await;
+                }
+                _ => unreachable!(),
+            }
         }
     }
 

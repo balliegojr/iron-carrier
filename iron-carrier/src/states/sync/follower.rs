@@ -8,7 +8,6 @@ use crate::{
     file_transfer::{self},
     ignored_files::IgnoredFilesCache,
     network::rpc::RPCEvent,
-    node_id::NodeId,
     protocol::MessageTypes,
     state_machine::{Result, State},
     states::sync::events::{ListStorageNames, ListStorageNamesReply, SyncCompleted},
@@ -19,19 +18,11 @@ use super::events::{
 };
 
 #[derive(Debug)]
-pub struct Follower {
-    sync_leader: NodeId,
-}
+pub struct Follower;
 
 impl Display for Follower {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FullSyncFollower")
-    }
-}
-
-impl Follower {
-    pub fn new(sync_leader: NodeId) -> Self {
-        Self { sync_leader }
+        write!(f, "Follower")
     }
 }
 
@@ -62,16 +53,6 @@ impl State for Follower {
 
         loop {
             let request = events.next().await.ok_or(StateMachineError::Abort)?;
-            // avoid processing broadcasts send by leaders in other syncs.
-            // this situation can happen if other nodes started a new sync in the middle of a
-            // ongoing sync.
-
-            if request.node_id() != self.sync_leader {
-                // TODO: introduce a busy response?
-                request.cancel().await?;
-                continue;
-            }
-
             match request.message_type()? {
                 MessageTypes::QueryStorageIndex => {
                     if let Err(err) =

@@ -62,10 +62,6 @@ impl RPCMessage {
         self.send(self.inner.ping_message()).await
     }
 
-    pub async fn cancel(self) -> anyhow::Result<()> {
-        self.send(self.inner.cancel_message()).await
-    }
-
     async fn send(&self, message: NetworkMessage) -> anyhow::Result<()> {
         self.reply_sender
             .send((message, OutboundNetworkMessageType::Response(self.node_id)))

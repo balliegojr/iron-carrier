@@ -68,6 +68,8 @@ impl Display for Leader {
 impl State for Leader {
     type Output = ();
     async fn execute(mut self, context: &Context) -> Result<Self::Output> {
+        // by inserting the leader id in the followers list, it is possible to send multi_call
+        // requests to all followers, including the leader
         self.nodes.insert(context.config.node_id_hashed);
 
         let follower = {
@@ -75,11 +77,7 @@ impl State for Leader {
             // having leader exclusive logic to handle events.
 
             let follower_context = context.clone();
-            tokio::spawn(async move {
-                Follower::new(follower_context.config.node_id_hashed)
-                    .execute(&follower_context)
-                    .await
-            })
+            tokio::spawn(async move { Follower.execute(&follower_context).await })
         };
 
         log::debug!("start sync as leader");
@@ -118,10 +116,9 @@ impl State for Leader {
         context.transaction_log.flush().await?;
         context
             .rpc
-            .call(SyncCompleted, context.config.node_id_hashed)
+            .multi_call(SyncCompleted, self.nodes.clone())
             .ack()
             .await?;
-        context.rpc.broadcast(SyncCompleted).ack().await?;
 
         if let Err(err) = follower.await {
             log::error!("failed to shutdown follower {err:?}");

@@ -10,7 +10,7 @@ use tokio::sync::mpsc::Sender;
 use crate::node_id::NodeId;
 
 use super::{
-    OutboundNetworkMessageType, message_waiting_reply::ReplyType, network_message::NetworkMessage,
+    OutboundNetworkMessageType, in_flight_message::ReplyType, network_message::NetworkMessage,
     rpc_reply::RPCReply,
 };
 
