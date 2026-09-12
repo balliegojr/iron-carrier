@@ -4,7 +4,7 @@ use std::{
     net::SocketAddr,
 };
 
-use rand::Rng;
+use rand::RngExt;
 
 use crate::{
     Context, StateMachineError, node_id::NodeId, state_machine::Result, state_machine::State,

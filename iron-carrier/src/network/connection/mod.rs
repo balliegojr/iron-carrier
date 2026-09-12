@@ -8,9 +8,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use chacha20poly1305::{
-    XChaCha20Poly1305,
-    aead::stream::{DecryptorLE31, EncryptorLE31},
+use async_encrypted_stream::{
+    aead_stream::{DecryptorLE31, EncryptorLE31},
+    chacha20poly1305::XChaCha20Poly1305,
 };
 use pbkdf2::pbkdf2_hmac_array;
 use sha2::Sha256;
@@ -220,9 +220,8 @@ where
     R: AsyncRead + Send + Unpin + Sync + 'static,
     W: AsyncWrite + Send + Unpin + Sync + 'static,
 {
-    use rand_core::OsRng;
     use x25519_dalek::{EphemeralSecret, PublicKey};
-    let secret_key = EphemeralSecret::random_from_rng(OsRng);
+    let secret_key = EphemeralSecret::random_from_rng(&mut rand::rng());
     let public_key = PublicKey::from(&secret_key);
 
     if write.write(public_key.as_bytes()).await? != 32 {
@@ -246,8 +245,8 @@ where
     ) = async_encrypted_stream::encrypted_stream(
         read,
         write,
-        shared_key.as_ref().into(),
-        [0u8; 20].as_ref().into(),
+        (&shared_key).into(),
+        (&[0u8; 20]).into(),
     );
 
     Ok((Box::pin(BufReader::new(read)), Box::pin(write)))

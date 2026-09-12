@@ -5,7 +5,7 @@
 //! This protocol also expects absolute voting instead of majority
 use std::{collections::HashSet, fmt::Display, time::Duration};
 
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 

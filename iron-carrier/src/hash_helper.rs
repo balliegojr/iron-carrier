@@ -1,7 +1,7 @@
 //! Hash related functions
 
 use crc::{CRC_64_GO_ISO, Crc, Digest};
-use rand::Rng;
+use rand::RngExt;
 
 use crate::storage::storage_tree::{DirId, FileId};
 

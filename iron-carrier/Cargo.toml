@@ -13,35 +13,35 @@ bytes = "1.0.1"
 chrono = { version = "0.4.23", default-features = false }
 clap = { version = "4.1", features = ["derive"] }
 crc = "^3.0"
-cron = "0.15.0"
-dirs = "^6.0"
+cron = "0.17.0"
+dirs = "^7.0"
 filetime = "0.2"
 globset = "^0.4"
-if-addrs = "^0.14"
+if-addrs = "^0.15"
 log = "^0.4.11"
-machine-uid = "^0.5"
+machine-uid = "^0.6"
 notify = { version = "^8.0", default-features = false, features = [
     "macos_kqueue",
 ] }
 pin-project-lite = "0.2.0"
-rand = "^0.9"
-rusqlite = { version = "^0.37", features = ["bundled"] }
+rand = "^0.10"
+rusqlite = { version = "^0.40", features = ["bundled", "fallible_uint"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_with = "^3.3"
 simple-mdns = { version = "^0.7", features = ["async-tokio"] }
-stderrlog = "0.5.0"
+stderrlog = "0.6.0"
 tokio = { version = "1.23.0", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["sync"] }
 tokio-util = { version = "0.7.4", features = ["codec"] }
-toml = "^0.9"
+toml = "^1.1"
 iron-carrier-macros = { path = "../iron-carrier-macros" }
 num-traits = "0.2"
-num-derive = "0.4"
+num-derive = "0.5"
 
-async-encrypted-stream = { version = "0.1" }
-chacha20poly1305 = { version = "0.10", features = ["stream"] }
-pbkdf2 = "0.12.1"
-sha2 = "0.10.6"
-x25519-dalek = "2.0.0"
-rand_core = "0.6.4"
+async-encrypted-stream = { version = "0.2" }
+# chacha20poly1305 = { version = "0.10", features = ["stream"] }
+pbkdf2 = "0.13"
+sha2 = "0.11.0"
+x25519-dalek = "3.0.0"
+rand_core = "0.10.1"
 async-trait = "0.1.88"
