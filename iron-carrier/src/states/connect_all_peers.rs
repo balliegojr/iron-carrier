@@ -93,12 +93,25 @@ impl State for ConnectAllPeers {
         }
 
         for handle in handles {
-            if let Ok(Ok(node_id)) = handle.await {
-                nodes.insert(node_id);
+            match handle.await {
+                Ok(Ok(node_id)) => {
+                    nodes.insert(node_id);
+                }
+                Ok(Err(err)) => {
+                    log::error!("{err}");
+                }
+                Err(_) => {
+                    log::error!("Error when trying to connect to peers");
+                }
             }
         }
 
-        Ok(nodes)
+        if nodes.is_empty() {
+            log::info!("no nodes connected");
+            Err(StateMachineError::Abort)
+        } else {
+            Ok(nodes)
+        }
     }
 }
 

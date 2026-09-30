@@ -36,6 +36,8 @@ impl State for DiscoverPeers {
             }
         }
 
+        log::info!("Discovered {} addresses", addresses.len());
+
         Ok(addresses)
     }
 }

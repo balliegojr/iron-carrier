@@ -12,7 +12,7 @@ install-as-user: install-bin
 	systemctl start --user iron-carrier.service
 
 build-rasp:
-    ~/.cargo/bin/cross build --release --target=armv7-unknown-linux-gnueabihf
+    CROSS_CONTAINER_ENGINE=podman ~/.cargo/bin/cross build --release --target=aarch64-unknown-linux-gnu
 
 
 build-integration-image:
